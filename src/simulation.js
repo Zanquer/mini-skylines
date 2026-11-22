@@ -395,13 +395,28 @@ export class CitySimulation {
     this.waterPoll = world.waterPoll;
 
     this.waterPhysics = null;
-    this.meshDirty = true;
+    this.terrainDirty = true;
+    this.infraDirty = true;
+    this.forestDirty = true;
+    this.buildingDirty = true;
     this.simAccum = 0;
     this.econAccum = 0;
     this.dateAccum = 0;
     this.waterAccum = 0;
     this.recentUpgrades = [];
     this.onToast = null;
+  }
+
+  get meshDirty() {
+    return Boolean(this.terrainDirty || this.infraDirty || this.forestDirty || this.buildingDirty);
+  }
+
+  set meshDirty(v) {
+    const flag = Boolean(v);
+    this.terrainDirty = flag;
+    this.infraDirty = flag;
+    this.forestDirty = flag;
+    this.buildingDirty = flag;
   }
 
   emitToast(msg) {
@@ -535,7 +550,7 @@ export class CitySimulation {
     }
 
     if (this.sfx && this.sfx.buildCivic) this.sfx.buildCivic();
-    this.meshDirty = true;
+    this.infraDirty = true;
     this.emitToast(`🔧 大坝全段已注浆加固抢修完毕（恢复 100% 耐久，花费 ¥${cost}）`);
     return { ok: true, repaired, cost };
   }
@@ -571,7 +586,7 @@ export class CitySimulation {
     }
 
     t.junctionMode = mode;
-    this.meshDirty = true;
+    this.infraDirty = true;
     if (this.traffic && typeof this.traffic.refreshRoadGraph === 'function') {
       this.traffic.refreshRoadGraph();
     }
@@ -1568,7 +1583,26 @@ export class CitySimulation {
     if (free) this._suppressPromotions = true;
     this.recomputeNetworksAndFields();
     this._suppressPromotions = prevSuppress;
-    this.meshDirty = true;
+    if (gradedAny) this.terrainDirty = true;
+    if (
+      toolId.startsWith('road_') || toolId === 'rail_track' || toolId === 'water_pipe' ||
+      toolId === 'metro_line' || toolId === 'power_line' || toolId === 'hydro_dam'
+    ) {
+      this.infraDirty = true;
+      this.forestDirty = true;
+      if (toolId === 'road_ramp') this.buildingDirty = true;
+    } else if (toolId.startsWith('zone_') || toolId === 'dezone') {
+      this.buildingDirty = true;
+      this.forestDirty = true;
+    } else if (toolId.startsWith('bulldoze')) {
+      this.infraDirty = true;
+      this.forestDirty = true;
+      this.buildingDirty = true;
+    } else {
+      this.buildingDirty = true;
+      this.forestDirty = true;
+      if (toolId === 'hsr_station' || toolId === 'metro_station') this.infraDirty = true;
+    }
 
     if (!free && this.sfx) {
       if (toolId.startsWith('road_')) this.sfx.road();
@@ -2486,7 +2520,7 @@ export class CitySimulation {
       this.recomputeNetworksAndFields();
       this.addXP(finishedCount * 12, '新建筑落成');
       this.checkMayorQuests();
-      this.meshDirty = true;
+      this.buildingDirty = true;
     }
 
     // City growth & Distress/Abandonment check every 2.2s sim time
@@ -2871,7 +2905,7 @@ export class CitySimulation {
       this.addXP(Math.min(45, Math.floor(5 + this.population * 0.015)), '良政执政');
     }
 
-    if (changed) this.meshDirty = true;
+    if (changed) this.buildingDirty = true;
   }
 
   stepEconomy() {
@@ -3278,7 +3312,7 @@ export class CitySimulation {
       if (this.sfx && this.sfx.bulldoze) this.sfx.bulldoze();
       this.recomputeNetworksAndFields();
       this.stepEconomy();
-      this.meshDirty = true;
+      this.buildingDirty = true;
     }
     return { cleared, cost };
   }

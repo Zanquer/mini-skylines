@@ -1,0 +1,327 @@
+{
+  "version": "v7.0-5d66b1890b-bc7569af",
+  "generatedAt": "2026-11-22T14:21:50.643Z",
+  "totalBytes": 4912361,
+  "fileCount": 58,
+  "textures": [
+    {
+      "key": "facade_office_glass",
+      "albedo": "assets/textures/facade_office_glass.jpg",
+      "normal": "assets/textures/facade_office_glass_norm.jpg",
+      "roughness": "assets/textures/facade_office_glass_rough.jpg"
+    },
+    {
+      "key": "facade_office_stone",
+      "albedo": "assets/textures/facade_office_stone.jpg",
+      "normal": "assets/textures/facade_office_stone_norm.jpg",
+      "roughness": "assets/textures/facade_office_stone_rough.jpg"
+    },
+    {
+      "key": "facade_res_beige",
+      "albedo": "assets/textures/facade_res_beige.jpg",
+      "normal": "assets/textures/facade_res_beige_norm.jpg",
+      "roughness": "assets/textures/facade_res_beige_rough.jpg"
+    },
+    {
+      "key": "facade_res_grey",
+      "albedo": "assets/textures/facade_res_grey.jpg",
+      "normal": "assets/textures/facade_res_grey_norm.jpg",
+      "roughness": "assets/textures/facade_res_grey_rough.jpg"
+    },
+    {
+      "key": "facade_retail_podium",
+      "albedo": "assets/textures/facade_retail_podium.jpg",
+      "normal": "assets/textures/facade_retail_podium_norm.jpg",
+      "roughness": "assets/textures/facade_retail_podium_rough.jpg"
+    },
+    {
+      "key": "facade_villa_plaster",
+      "albedo": "assets/textures/facade_villa_plaster.jpg",
+      "normal": "assets/textures/facade_villa_plaster_norm.jpg",
+      "roughness": "assets/textures/facade_villa_plaster_rough.jpg"
+    },
+    {
+      "key": "facade_industrial_panel",
+      "albedo": "assets/textures/facade_industrial_panel.jpg",
+      "normal": "assets/textures/facade_industrial_panel_norm.jpg",
+      "roughness": "assets/textures/facade_industrial_panel_rough.jpg"
+    },
+    {
+      "key": "roof_concrete",
+      "albedo": "assets/textures/roof_concrete.jpg",
+      "normal": "assets/textures/roof_concrete_norm.jpg",
+      "roughness": "assets/textures/roof_concrete_rough.jpg"
+    },
+    {
+      "key": "roof_solar_green",
+      "albedo": "assets/textures/roof_solar_green.jpg",
+      "normal": "assets/textures/roof_solar_green_norm.jpg",
+      "roughness": "assets/textures/roof_solar_green_rough.jpg"
+    },
+    {
+      "key": "paving_plaza",
+      "albedo": "assets/textures/paving_plaza.jpg",
+      "normal": "assets/textures/paving_plaza_norm.jpg",
+      "roughness": "assets/textures/paving_plaza_rough.jpg"
+    },
+    {
+      "key": "road_2lane",
+      "albedo": "assets/textures/road_2lane.jpg",
+      "normal": "assets/textures/road_2lane_norm.jpg",
+      "roughness": "assets/textures/road_2lane_rough.jpg"
+    },
+    {
+      "key": "road_4lane",
+      "albedo": "assets/textures/road_4lane.jpg",
+      "normal": "assets/textures/road_4lane_norm.jpg",
+      "roughness": "assets/textures/road_4lane_rough.jpg"
+    },
+    {
+      "key": "road_hub",
+      "albedo": "assets/textures/road_hub.jpg",
+      "normal": "assets/textures/road_hub_norm.jpg",
+      "roughness": "assets/textures/road_hub_rough.jpg"
+    },
+    {
+      "key": "dam_concrete",
+      "albedo": "assets/textures/dam_concrete.jpg",
+      "normal": "assets/textures/dam_concrete_norm.jpg",
+      "roughness": "assets/textures/dam_concrete_rough.jpg"
+    }
+  ],
+  "smoke": "assets/textures/smoke.png",
+  "files": [
+    {
+      "path": "assets/models/bldg_a.glb",
+      "bytes": 53104
+    },
+    {
+      "path": "assets/models/bldg_b.glb",
+      "bytes": 63212
+    },
+    {
+      "path": "assets/models/bldg_c.glb",
+      "bytes": 83532
+    },
+    {
+      "path": "assets/models/bldg_d.glb",
+      "bytes": 52792
+    },
+    {
+      "path": "assets/models/bldg_garage.glb",
+      "bytes": 32652
+    },
+    {
+      "path": "assets/models/car_green.glb",
+      "bytes": 117664
+    },
+    {
+      "path": "assets/models/car_purple.glb",
+      "bytes": 91980
+    },
+    {
+      "path": "assets/models/car_red.glb",
+      "bytes": 105864
+    },
+    {
+      "path": "assets/models/car_yellow.glb",
+      "bytes": 106908
+    },
+    {
+      "path": "assets/models/park_fountain.glb",
+      "bytes": 27520
+    },
+    {
+      "path": "assets/models/trees_a.glb",
+      "bytes": 51604
+    },
+    {
+      "path": "assets/models/trees_tall.glb",
+      "bytes": 60460
+    },
+    {
+      "path": "assets/textures/dam_concrete.jpg",
+      "bytes": 110517
+    },
+    {
+      "path": "assets/textures/dam_concrete_norm.jpg",
+      "bytes": 98736
+    },
+    {
+      "path": "assets/textures/dam_concrete_rough.jpg",
+      "bytes": 8608
+    },
+    {
+      "path": "assets/textures/facade_industrial_panel.jpg",
+      "bytes": 114648
+    },
+    {
+      "path": "assets/textures/facade_industrial_panel_norm.jpg",
+      "bytes": 81085
+    },
+    {
+      "path": "assets/textures/facade_industrial_panel_rough.jpg",
+      "bytes": 26000
+    },
+    {
+      "path": "assets/textures/facade_office_glass.jpg",
+      "bytes": 96475
+    },
+    {
+      "path": "assets/textures/facade_office_glass_norm.jpg",
+      "bytes": 65958
+    },
+    {
+      "path": "assets/textures/facade_office_glass_rough.jpg",
+      "bytes": 25983
+    },
+    {
+      "path": "assets/textures/facade_office_stone.jpg",
+      "bytes": 115174
+    },
+    {
+      "path": "assets/textures/facade_office_stone_norm.jpg",
+      "bytes": 75489
+    },
+    {
+      "path": "assets/textures/facade_office_stone_rough.jpg",
+      "bytes": 37767
+    },
+    {
+      "path": "assets/textures/facade_res_beige.jpg",
+      "bytes": 94673
+    },
+    {
+      "path": "assets/textures/facade_res_beige_norm.jpg",
+      "bytes": 72689
+    },
+    {
+      "path": "assets/textures/facade_res_beige_rough.jpg",
+      "bytes": 40368
+    },
+    {
+      "path": "assets/textures/facade_res_grey.jpg",
+      "bytes": 110677
+    },
+    {
+      "path": "assets/textures/facade_res_grey_norm.jpg",
+      "bytes": 99049
+    },
+    {
+      "path": "assets/textures/facade_res_grey_rough.jpg",
+      "bytes": 71081
+    },
+    {
+      "path": "assets/textures/facade_retail_podium.jpg",
+      "bytes": 75838
+    },
+    {
+      "path": "assets/textures/facade_retail_podium_norm.jpg",
+      "bytes": 63055
+    },
+    {
+      "path": "assets/textures/facade_retail_podium_rough.jpg",
+      "bytes": 43355
+    },
+    {
+      "path": "assets/textures/facade_villa_plaster.jpg",
+      "bytes": 64270
+    },
+    {
+      "path": "assets/textures/facade_villa_plaster_norm.jpg",
+      "bytes": 38717
+    },
+    {
+      "path": "assets/textures/facade_villa_plaster_rough.jpg",
+      "bytes": 19621
+    },
+    {
+      "path": "assets/textures/paving_plaza.jpg",
+      "bytes": 162053
+    },
+    {
+      "path": "assets/textures/paving_plaza_norm.jpg",
+      "bytes": 109064
+    },
+    {
+      "path": "assets/textures/paving_plaza_rough.jpg",
+      "bytes": 15774
+    },
+    {
+      "path": "assets/textures/road_2lane.jpg",
+      "bytes": 161930
+    },
+    {
+      "path": "assets/textures/road_2lane_norm.jpg",
+      "bytes": 110151
+    },
+    {
+      "path": "assets/textures/road_2lane_rough.jpg",
+      "bytes": 40969
+    },
+    {
+      "path": "assets/textures/road_4lane.jpg",
+      "bytes": 127712
+    },
+    {
+      "path": "assets/textures/road_4lane_norm.jpg",
+      "bytes": 86232
+    },
+    {
+      "path": "assets/textures/road_4lane_rough.jpg",
+      "bytes": 39624
+    },
+    {
+      "path": "assets/textures/road_hub.jpg",
+      "bytes": 119622
+    },
+    {
+      "path": "assets/textures/road_hub_norm.jpg",
+      "bytes": 82189
+    },
+    {
+      "path": "assets/textures/road_hub_rough.jpg",
+      "bytes": 38046
+    },
+    {
+      "path": "assets/textures/roof_concrete.jpg",
+      "bytes": 77724
+    },
+    {
+      "path": "assets/textures/roof_concrete_norm.jpg",
+      "bytes": 61458
+    },
+    {
+      "path": "assets/textures/roof_concrete_rough.jpg",
+      "bytes": 6731
+    },
+    {
+      "path": "assets/textures/roof_solar_green.jpg",
+      "bytes": 183387
+    },
+    {
+      "path": "assets/textures/roof_solar_green_norm.jpg",
+      "bytes": 100938
+    },
+    {
+      "path": "assets/textures/roof_solar_green_rough.jpg",
+      "bytes": 19159
+    },
+    {
+      "path": "assets/textures/smoke.png",
+      "bytes": 3655
+    },
+    {
+      "path": "icons/apple-touch-icon-180.png",
+      "bytes": 88363
+    },
+    {
+      "path": "icons/icon-192.png",
+      "bytes": 100137
+    },
+    {
+      "path": "icons/icon-512.png",
+      "bytes": 680318
+    }
+  ]
+}

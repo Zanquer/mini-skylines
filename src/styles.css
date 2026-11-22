@@ -27,8 +27,15 @@
 * {
   box-sizing: border-box;
   -webkit-tap-highlight-color: transparent;
+  -webkit-touch-callout: none;
   user-select: none;
   -webkit-user-select: none;
+}
+
+input, textarea {
+  user-select: text;
+  -webkit-user-select: text;
+  -webkit-touch-callout: default;
 }
 
 html, body {
@@ -37,6 +44,8 @@ html, body {
   width: 100%;
   height: 100%;
   overflow: hidden;
+  overscroll-behavior: none;
+  position: fixed;
   background: #070e1c;
   font-family: "Inter", -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Segoe UI", Roboto, sans-serif;
   color: var(--text-main);
@@ -1570,4 +1579,105 @@ html, body {
   #tool-hint { top: calc(130px + var(--safe-top)); font-size: 11px; }
   #toast-container { top: calc(162px + var(--safe-top)); }
   .dock-btn { min-width: 48px; height: 48px; padding: 3px 6px; }
+}
+
+/* ==================== Flagship iOS PWA Boot Splash & Cache Manager ==================== */
+#boot-splash {
+  position: fixed;
+  inset: 0;
+  z-index: 999;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 24px;
+  background: radial-gradient(circle at 50% 35%, #162a4d 0%, #091326 62%, #050a14 100%);
+  transition: opacity 0.38s ease, visibility 0.38s ease;
+}
+
+#boot-splash.hidden {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.boot-logo-ring {
+  width: 82px;
+  height: 82px;
+  border-radius: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 40px;
+  background: linear-gradient(145deg, rgba(56, 189, 248, 0.25), rgba(251, 191, 36, 0.20));
+  border: 1px solid rgba(125, 211, 252, 0.45);
+  box-shadow: 0 12px 36px rgba(2, 132, 199, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.22);
+}
+
+.boot-title {
+  font-size: 20px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  color: #f8fafc;
+}
+
+.boot-subtitle {
+  font-size: 12px;
+  color: #94a3b8;
+  margin-top: -8px;
+}
+
+.boot-bar-track {
+  width: min(260px, 76vw);
+  height: 7px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.10);
+  overflow: hidden;
+  border: 1px solid rgba(148, 197, 255, 0.22);
+}
+
+.boot-bar-fill {
+  width: 8%;
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #38bdf8, #fbbf24);
+  transition: width 0.16s ease;
+}
+
+.boot-status {
+  font-size: 11.5px;
+  color: #7dd3fc;
+  min-height: 16px;
+}
+
+.cache-status-pill {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.72);
+  border: 1px solid rgba(56, 189, 248, 0.28);
+  font-size: 12px;
+  color: #e2e8f0;
+}
+
+.cache-bar-track {
+  width: 100%;
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.10);
+  overflow: hidden;
+  margin: 6px 0 8px;
+  display: none;
+}
+.cache-bar-track.active { display: block; }
+.cache-bar-fill {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, #22c55e, #38bdf8);
+  transition: width 0.15s ease;
 }

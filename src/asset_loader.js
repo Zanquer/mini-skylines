@@ -1,0 +1,311 @@
+// External Binary PBR Asset Loader, iOS Offline Cache Manager & IndexedDB + localStorage Dual-Write Saves
+
+const IDB_NAME = 'mini_skylines_pro_idb';
+const IDB_STORE = 'saves';
+const IDB_VERSION = 1;
+
+export class SaveStorage {
+  constructor() {
+    this._dbPromise = null;
+  }
+
+  _openDB() {
+    if (this._dbPromise) return this._dbPromise;
+    if (typeof indexedDB === 'undefined') {
+      this._dbPromise = Promise.resolve(null);
+      return this._dbPromise;
+    }
+    this._dbPromise = new Promise((resolve) => {
+      try {
+        const req = indexedDB.open(IDB_NAME, IDB_VERSION);
+        req.onupgradeneeded = (ev) => {
+          const db = ev.target.result;
+          if (!db.objectStoreNames.contains(IDB_STORE)) {
+            db.createObjectStore(IDB_STORE);
+          }
+        };
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => resolve(null);
+      } catch {
+        resolve(null);
+      }
+    });
+    return this._dbPromise;
+  }
+
+  saveSyncAndAsync(key, dataObj) {
+    const raw = typeof dataObj === 'string' ? dataObj : JSON.stringify(dataObj);
+    let lsOk = false;
+    try {
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem(key, raw);
+        lsOk = true;
+      }
+    } catch {
+      lsOk = false;
+    }
+    this._openDB().then((db) => {
+      if (!db) return;
+      try {
+        const tx = db.transaction(IDB_STORE, 'readwrite');
+        tx.objectStore(IDB_STORE).put(raw, key);
+      } catch {}
+    });
+    return lsOk;
+  }
+
+  async save(key, dataObj) {
+    const raw = typeof dataObj === 'string' ? dataObj : JSON.stringify(dataObj);
+    let ok = false;
+    try {
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem(key, raw);
+        ok = true;
+      }
+    } catch {}
+    const db = await this._openDB();
+    if (db) {
+      await new Promise((resolve) => {
+        try {
+          const tx = db.transaction(IDB_STORE, 'readwrite');
+          tx.objectStore(IDB_STORE).put(raw, key);
+          tx.oncomplete = () => { ok = true; resolve(); };
+          tx.onerror = () => resolve();
+        } catch {
+          resolve();
+        }
+      });
+    }
+    return ok;
+  }
+
+  loadSync(key) {
+    try {
+      if (typeof localStorage === 'undefined') return null;
+      const raw = localStorage.getItem(key);
+      return raw ? JSON.parse(raw) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  async load(key) {
+    const db = await this._openDB();
+    if (db) {
+      const idbRaw = await new Promise((resolve) => {
+        try {
+          const tx = db.transaction(IDB_STORE, 'readonly');
+          const req = tx.objectStore(IDB_STORE).get(key);
+          req.onsuccess = () => resolve(req.result || null);
+          req.onerror = () => resolve(null);
+        } catch {
+          resolve(null);
+        }
+      });
+      if (idbRaw) {
+        try {
+          // Keep localStorage mirrored if it was cleared by iOS storage pressure
+          if (typeof localStorage !== 'undefined' && !localStorage.getItem(key)) {
+            try { localStorage.setItem(key, idbRaw); } catch {}
+          }
+          return typeof idbRaw === 'string' ? JSON.parse(idbRaw) : idbRaw;
+        } catch {}
+      }
+    }
+    return this.loadSync(key);
+  }
+}
+
+export const saveStorage = new SaveStorage();
+
+export class AssetManager {
+  constructor(baseUrl = './') {
+    this.baseUrl = baseUrl.endsWith('/') ? baseUrl : baseUrl + '/';
+    this.manifest = null;
+    this.textures = {}; // key -> { map, normalMap, roughnessMap }
+    this.glbs = {};
+    this.isExternalSupported =
+      typeof window !== 'undefined' &&
+      typeof fetch === 'function' &&
+      typeof location !== 'undefined' &&
+      (location.protocol === 'https:' || location.protocol === 'http:');
+  }
+
+  async loadManifest() {
+    if (this.manifest) return this.manifest;
+    if (!this.isExternalSupported) return null;
+    try {
+      const res = await fetch(`${this.baseUrl}assets/manifest.json`, { cache: 'no-cache' });
+      if (!res.ok) return null;
+      this.manifest = await res.json();
+      return this.manifest;
+    } catch {
+      return null;
+    }
+  }
+
+  async loadPBRTextures(THREE, { quality = 'high', onProgress = null } = {}) {
+    if (!THREE || !THREE.TextureLoader || !this.isExternalSupported) {
+      if (onProgress) onProgress(1, '内置材质已就绪');
+      return this.textures;
+    }
+    const manifest = await this.loadManifest();
+    if (!manifest || !Array.isArray(manifest.textures)) {
+      if (onProgress) onProgress(1, '使用内置高清材质');
+      return this.textures;
+    }
+
+    const loadPbrMaps = quality !== 'eco';
+    const jobs = [];
+    for (const entry of manifest.textures) {
+      jobs.push({ key: entry.key, channel: 'map', url: this.baseUrl + entry.albedo, srgb: true });
+      if (loadPbrMaps) {
+        if (entry.normal) jobs.push({ key: entry.key, channel: 'normalMap', url: this.baseUrl + entry.normal, srgb: false });
+        if (entry.roughness) jobs.push({ key: entry.key, channel: 'roughnessMap', url: this.baseUrl + entry.roughness, srgb: false });
+      }
+    }
+
+    const loader = new THREE.TextureLoader();
+    let done = 0;
+    const total = Math.max(1, jobs.length);
+    const concurrency = 6;
+    let cursor = 0;
+
+    const runWorker = async () => {
+      while (cursor < jobs.length) {
+        const job = jobs[cursor++];
+        if (!this.textures[job.key]) this.textures[job.key] = {};
+        if (this.textures[job.key][job.channel]) {
+          done++;
+          if (onProgress) onProgress(done / total, `加载 PBR 纹理 (${done}/${total})`);
+          continue;
+        }
+        await new Promise((resolve) => {
+          loader.load(
+            job.url,
+            (tex) => {
+              tex.wrapS = THREE.RepeatWrapping;
+              tex.wrapT = THREE.RepeatWrapping;
+              tex.anisotropy = quality === 'high' ? 4 : 2;
+              tex.colorSpace = job.srgb ? THREE.SRGBColorSpace : (THREE.NoColorSpace || THREE.LinearSRGBColorSpace);
+              tex.needsUpdate = true;
+              this.textures[job.key][job.channel] = tex;
+              done++;
+              if (onProgress) onProgress(done / total, `加载高清 PBR 贴图 (${done}/${total})`);
+              resolve();
+            },
+            undefined,
+            () => {
+              done++;
+              if (onProgress) onProgress(done / total, `加载贴图 (${done}/${total})`);
+              resolve();
+            }
+          );
+        });
+      }
+    };
+
+    const workers = [];
+    for (let i = 0; i < concurrency; i++) workers.push(runWorker());
+    await Promise.all(workers);
+    return this.textures;
+  }
+
+  getCacheName() {
+    const ver = (this.manifest && this.manifest.version) || 'v7.0';
+    return `mini-skylines-${ver}`;
+  }
+
+  async getOfflineCacheStatus() {
+    if (typeof caches === 'undefined' || !this.isExternalSupported) {
+      return { supported: false, version: 'offline-inline', cachedCount: 0, totalCount: 0, totalBytes: 0, complete: false };
+    }
+    const manifest = await this.loadManifest();
+    const version = (manifest && manifest.version) || 'v7.0';
+    const coreUrls = ['./', './index.html', './app.bundle.js', './vendor/three_classic.js', './manifest.json', './assets/manifest.json'];
+    const assetUrls = manifest && Array.isArray(manifest.files) ? manifest.files.map((f) => './' + f.path) : [];
+    const allUrls = [...coreUrls, ...assetUrls];
+    const totalBytes = (manifest ? manifest.totalBytes : 0) + 1400000;
+
+    let cachedCount = 0;
+    try {
+      const names = await caches.keys();
+      const targetName = names.find((n) => n === this.getCacheName()) || names.find((n) => n.startsWith('mini-skylines-'));
+      if (targetName) {
+        const cache = await caches.open(targetName);
+        for (const u of allUrls) {
+          const hit = await cache.match(u, { ignoreSearch: true });
+          if (hit) cachedCount++;
+        }
+      }
+    } catch {}
+
+    return {
+      supported: true,
+      version,
+      cachedCount,
+      totalCount: allUrls.length,
+      totalBytes,
+      complete: allUrls.length > 0 && cachedCount >= allUrls.length - 1
+    };
+  }
+
+  async cacheAllOfflineAssets(onProgress = null) {
+    if (typeof caches === 'undefined' || !this.isExternalSupported) {
+      return { ok: false, reason: '当前运行环境不支持离线 Cache Storage（仅 HTTPS / PWA 可用）' };
+    }
+    const manifest = await this.loadManifest();
+    const coreUrls = ['./', './index.html', './app.bundle.js', './vendor/three_classic.js', './manifest.json', './assets/manifest.json'];
+    const assetUrls = manifest && Array.isArray(manifest.files) ? manifest.files.map((f) => './' + f.path) : [];
+    const allUrls = [...coreUrls, ...assetUrls];
+
+    const cacheName = this.getCacheName();
+    const cache = await caches.open(cacheName);
+    let done = 0;
+    let failed = 0;
+    const total = Math.max(1, allUrls.length);
+
+    const concurrency = 4;
+    let cursor = 0;
+    const run = async () => {
+      while (cursor < allUrls.length) {
+        const url = allUrls[cursor++];
+        try {
+          const existing = await cache.match(url, { ignoreSearch: true });
+          if (!existing) {
+            const resp = await fetch(url, { cache: 'reload' });
+            if (resp && resp.ok) {
+              await cache.put(url, resp.clone());
+            } else {
+              failed++;
+            }
+          }
+        } catch {
+          failed++;
+        }
+        done++;
+        if (onProgress) onProgress(done / total, done, total);
+      }
+    };
+
+    const workers = [];
+    for (let i = 0; i < concurrency; i++) workers.push(run());
+    await Promise.all(workers);
+
+    return { ok: failed === 0, cached: done - failed, total: allUrls.length, failed, version: this.manifest?.version || 'v7.0' };
+  }
+
+  async checkForUpdates() {
+    if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) {
+      return { supported: false, updated: false };
+    }
+    try {
+      const reg = await navigator.serviceWorker.getRegistration();
+      if (!reg) return { supported: true, updated: false };
+      await reg.update();
+      return { supported: true, updated: Boolean(reg.waiting || reg.installing) };
+    } catch {
+      return { supported: true, updated: false };
+    }
+  }
+}

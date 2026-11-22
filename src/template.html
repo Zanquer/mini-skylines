@@ -5,6 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="山河天际线" />
+  <meta name="format-detection" content="telephone=no" />
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="theme-color" content="#0b1324" />
   <title>山河天际线 Pro 3D · 旗舰离线城市模拟</title>
@@ -86,6 +88,13 @@
   </style>
 </head>
 <body>
+  <div id="boot-splash">
+    <div class="boot-logo-ring">🏙️</div>
+    <div class="boot-title">山河天际线 Pro 3D</div>
+    <div class="boot-subtitle">旗舰 PBR 离线立体都市模拟器 v7.0</div>
+    <div class="boot-bar-track"><div class="boot-bar-fill" id="boot-bar-fill"></div></div>
+    <div class="boot-status" id="boot-status">正在初始化三维引擎...</div>
+  </div>
   <canvas id="game-canvas"></canvas>
 
   <!-- Top HUD -->
@@ -295,9 +304,7 @@
     </div>
   </div>
 
-  <script>
-/*INLINE_JS*/
-  </script>
+  <!--APP_SCRIPTS-->
   <!--PWA_SW-->
 </body>
 </html>

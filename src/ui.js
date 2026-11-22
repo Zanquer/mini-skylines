@@ -1,5 +1,6 @@
 import { CATALOG, MILESTONES, LOAN_OFFERS, MAYOR_LEVELS, MAYOR_QUESTS } from './simulation.js';
 import { tileToWorld } from './mapgen.js';
+import { saveStorage } from './asset_loader.js';
 
 const TOOL_GROUPS = {
   terrain:  ['ter_raise', 'ter_lower', 'ter_flatten', 'ter_spring'],
@@ -13,13 +14,14 @@ const TOOL_GROUPS = {
 };
 
 export class GameUI {
-  constructor(canvas, sim, traffic, disasters, renderer, sfx) {
+  constructor(canvas, sim, traffic, disasters, renderer, sfx, assetManager = null) {
     this.canvas = canvas;
     this.sim = sim;
     this.traffic = traffic;
     this.disasters = disasters;
     this.renderer = renderer;
     this.sfx = sfx;
+    this.assetManager = assetManager;
 
     this.activeTool = 'pan';
     this.openCategory = null;
@@ -203,11 +205,17 @@ export class GameUI {
       this.renderer.overlayMode = next;
       this.updateOverlayLegend();
     });
-    document.getElementById('btn-sfx').addEventListener('click', (e) => {
-      this.sfx.enabled = !this.sfx.enabled;
-      e.currentTarget.textContent = this.sfx.enabled ? '🔊' : '🔇';
-      if (this.sfx.enabled) this.sfx.tap();
-    });
+    const sfxBtn = document.getElementById('btn-sfx');
+    if (sfxBtn) {
+      sfxBtn.textContent = this.sfx.enabled ? '🔊' : '🔇';
+      sfxBtn.addEventListener('click', (e) => {
+        const next = !this.sfx.enabled;
+        if (typeof this.sfx.setEnabled === 'function') this.sfx.setEnabled(next);
+        else this.sfx.enabled = next;
+        e.currentTarget.textContent = this.sfx.enabled ? '🔊' : '🔇';
+        if (this.sfx.enabled) this.sfx.tap();
+      });
+    }
 
     const xrayBtn = document.getElementById('btn-xray');
     if (xrayBtn) {
@@ -1660,7 +1668,37 @@ export class GameUI {
       </div>
 
       <div class="modal-section">
-        <h4>✏️ 城市改名 & 手机离线存档</h4>
+        <h4>🎨 画质档位 & 实景视听设置 (iPhone 性能调优)</h4>
+        <div class="btn-grid" style="grid-template-columns:1fr 1fr 1fr;margin-bottom:8px;">
+          <button class="${(this.renderer.qualityMode || 'high') === 'high' ? 'btn-primary' : 'btn-secondary'}" data-quality="high">✨ 高清旗舰</button>
+          <button class="${this.renderer.qualityMode === 'medium' ? 'btn-primary' : 'btn-secondary'}" data-quality="medium">⚖️ 均衡流畅</button>
+          <button class="${this.renderer.qualityMode === 'eco' ? 'btn-primary' : 'btn-secondary'}" data-quality="eco">🔋 极致省电</button>
+        </div>
+        <label class="policy-toggle">
+          <span>🎵 <strong>舒缓城市背景乐 (BGM)</strong></span>
+          <input type="checkbox" id="chk-bgm-enabled" ${this.sfx.bgmEnabled !== false ? 'checked' : ''}>
+        </label>
+        <label class="policy-toggle" style="margin-top:5px;">
+          <span>🌊 <strong>实景动态环境音 (山风 / 水坝激流 / 城市车声)</strong></span>
+          <input type="checkbox" id="chk-ambient-enabled" ${this.sfx.ambientEnabled !== false ? 'checked' : ''}>
+        </label>
+      </div>
+
+      <div class="modal-section">
+        <h4>✈️ iPhone 全离线高清包 (添加到主屏幕后飞行模式畅玩)</h4>
+        <div class="cache-status-pill">
+          <span id="offline-cache-status">正在检测离线缓存状态...</span>
+          <span id="offline-cache-ver" style="color:#7dd3fc;font-size:11px;">v7.0</span>
+        </div>
+        <div class="cache-bar-track" id="offline-cache-bar"><div class="cache-bar-fill" id="offline-cache-fill"></div></div>
+        <div class="btn-grid">
+          <button class="btn-primary" id="btn-download-offline">📥 一键下载全量离线包</button>
+          <button class="btn-secondary" id="btn-check-update">🔄 检查新版本更新</button>
+        </div>
+      </div>
+
+      <div class="modal-section">
+        <h4>✏️ 城市改名 & 手机双保险离线存档 (IndexedDB)</h4>
         <div style="display:flex;gap:8px;margin-bottom:10px;">
           <input id="city-name-input" type="text" maxlength="14" value="${this.sim.cityName}"
             style="flex:1;background:#1e293b;border:1px solid #475569;color:#fff;padding:7px 10px;border-radius:9px;font-size:13px;">
@@ -1677,6 +1715,110 @@ export class GameUI {
         `).join('')}
       </div>
     `;
+
+    // Graphics tier switcher
+    body.querySelectorAll('[data-quality]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        this.sfx.tap();
+        const mode = btn.dataset.quality;
+        try { localStorage.setItem('ms_quality_tier', mode); } catch {}
+        if (typeof this.renderer.setQualityMode === 'function') {
+          this.renderer.setQualityMode(mode);
+        }
+        const labels = {
+          high: '✨ 已切换至【高清旗舰】(2048阴影 + 全套PBR法线/粗糙度 + 夜景辉光)',
+          medium: '⚖️ 已切换至【均衡流畅】(1024阴影 + 全套PBR贴图，iPhone 高帧推荐)',
+          eco: '🔋 已切换至【极致省电】(关闭阴影与高耗特效，低发热超长续航)'
+        };
+        this.showToast(labels[mode] || '已切换画质');
+        this.openSaveAndCityModal();
+      });
+    });
+
+    const chkBgm = document.getElementById('chk-bgm-enabled');
+    if (chkBgm) {
+      chkBgm.addEventListener('change', (e) => {
+        if (typeof this.sfx.setBgmEnabled === 'function') this.sfx.setBgmEnabled(e.target.checked);
+        this.sfx.tap();
+        this.showToast(e.target.checked ? '🎵 已开启城市背景音乐' : '🔇 已静音背景音乐');
+      });
+    }
+    const chkAmb = document.getElementById('chk-ambient-enabled');
+    if (chkAmb) {
+      chkAmb.addEventListener('change', (e) => {
+        if (typeof this.sfx.setAmbientEnabled === 'function') this.sfx.setAmbientEnabled(e.target.checked);
+        this.sfx.tap();
+        this.showToast(e.target.checked ? '🌊 已开启实景动态环境音' : '🔇 已关闭实景环境音');
+      });
+    }
+
+    // Offline cache pack manager
+    const refreshCacheStatus = async () => {
+      const statusEl = document.getElementById('offline-cache-status');
+      const verEl = document.getElementById('offline-cache-ver');
+      if (!statusEl) return;
+      if (!this.assetManager || !this.assetManager.isExternalSupported) {
+        statusEl.textContent = '📦 当前为本地单文件运行，无需额外离线下载';
+        return;
+      }
+      const st = await this.assetManager.getOfflineCacheStatus();
+      if (verEl && st.version) verEl.textContent = st.version;
+      const mb = (st.totalBytes / 1024 / 1024).toFixed(1);
+      if (!st.supported) {
+        statusEl.textContent = '⚠️ 仅 HTTPS / Safari 主屏幕模式支持离线包缓存';
+      } else if (st.complete) {
+        statusEl.textContent = `✅ 已完整缓存 ${st.cachedCount}/${st.totalCount} 项 (约 ${mb} MB) · 飞行模式畅玩`;
+      } else {
+        statusEl.textContent = `☁️ 已缓存 ${st.cachedCount}/${st.totalCount} 项 (全包约 ${mb} MB)`;
+      }
+    };
+    refreshCacheStatus();
+
+    const dlBtn = document.getElementById('btn-download-offline');
+    if (dlBtn) {
+      dlBtn.addEventListener('click', async () => {
+        this.sfx.tap();
+        if (!this.assetManager || !this.assetManager.isExternalSupported) {
+          this.showToast('ℹ️ 请在 iPhone Safari 访问 GitHub Pages 网址并添加到主屏幕使用离线包');
+          return;
+        }
+        dlBtn.disabled = true;
+        dlBtn.textContent = '⏳ 正在下载离线资源...';
+        const bar = document.getElementById('offline-cache-bar');
+        const fill = document.getElementById('offline-cache-fill');
+        const statusEl = document.getElementById('offline-cache-status');
+        if (bar) bar.classList.add('active');
+        const res = await this.assetManager.cacheAllOfflineAssets((frac, done, total) => {
+          if (fill) fill.style.width = `${Math.round(frac * 100)}%`;
+          if (statusEl) statusEl.textContent = `📥 正在离线缓存 (${done}/${total})...`;
+        });
+        dlBtn.disabled = false;
+        dlBtn.textContent = '📥 一键下载全量离线包';
+        if (res.ok) {
+          this.sfx.milestone();
+          this.showToast(`✈️ 离线高清包已全部就绪 (${res.cached} 项)！开启飞行模式也能完整畅玩！`, 3600);
+        } else {
+          this.showToast(`⚠️ 离线缓存部分未完成 (${res.cached || 0}/${res.total || 0})，请检查网络后重试`);
+        }
+        refreshCacheStatus();
+      });
+    }
+
+    const updBtn = document.getElementById('btn-check-update');
+    if (updBtn) {
+      updBtn.addEventListener('click', async () => {
+        this.sfx.tap();
+        if (!this.assetManager) return;
+        const r = await this.assetManager.checkForUpdates();
+        if (!r.supported) {
+          this.showToast('ℹ️ 当前为本地离线模式，无远程更新服务');
+        } else if (r.updated) {
+          this.showToast('🎉 发现新版本！关闭重开主屏幕图标或刷新页面即可升级');
+        } else {
+          this.showToast('✅ 当前已是最新旗舰版 v7.0');
+        }
+      });
+    }
 
     body.querySelectorAll('[data-diff]').forEach((btn) => {
       btn.addEventListener('click', () => {
@@ -1777,13 +1919,19 @@ export class GameUI {
     });
 
     body.querySelectorAll('[data-save-slot]').forEach((btn) => {
-      btn.addEventListener('click', () => {
+      btn.addEventListener('click', async () => {
         const s = btn.dataset.saveSlot;
         try {
-          localStorage.setItem(`mini_skylines_pro_slot_${s}`, JSON.stringify(this.sim.toJSON()));
-          document.getElementById(`slot-lbl-${s}`).textContent = `槽位 ${s}：${slotInfo(s)}`;
-          this.sfx.buildCivic();
-          this.showToast(`💾 已保存至离线槽位 ${s}`);
+          const payload = this.sim.toJSON();
+          const ok = await saveStorage.save(`mini_skylines_pro_slot_${s}`, payload);
+          const lbl = document.getElementById(`slot-lbl-${s}`);
+          if (lbl) lbl.textContent = `槽位 ${s}：${payload.cityName || '存档'} (Lv.${payload.mayorLevel || 1} · ¥${Math.round(payload.money || 0).toLocaleString()})`;
+          if (ok) {
+            this.sfx.buildCivic();
+            this.showToast(`💾 已双保险保存至槽位 ${s} (IndexedDB + 本地)`);
+          } else {
+            this.showToast('⚠️ 浏览器本地存储空间不足');
+          }
         } catch {
           this.showToast('⚠️ 浏览器本地存储空间不足');
         }
@@ -1791,12 +1939,12 @@ export class GameUI {
     });
 
     body.querySelectorAll('[data-load-slot]').forEach((btn) => {
-      btn.addEventListener('click', () => {
+      btn.addEventListener('click', async () => {
         const s = btn.dataset.loadSlot;
         try {
-          const raw = localStorage.getItem(`mini_skylines_pro_slot_${s}`);
-          if (!raw) { this.showToast(`槽位 ${s} 暂无存档`); return; }
-          if (this.sim.fromJSON(JSON.parse(raw))) {
+          const parsed = await saveStorage.load(`mini_skylines_pro_slot_${s}`);
+          if (!parsed) { this.showToast(`槽位 ${s} 暂无存档`); return; }
+          if (this.sim.fromJSON(parsed)) {
             this.traffic.reset();
             this.refreshSubToolbarUnlocks();
             this.refreshHUD();

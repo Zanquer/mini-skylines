@@ -1,5 +1,5 @@
-// High-Detail Photorealistic 3D Architectural Asset Library, CR400 Bullet Trains, Aircraft, Ships & Sky Dome
-// Offline single-file bundle compatible: imports FACADE_TEXTURES data URIs and accesses THREE via constructor / globalThis.THREE.
+// Flagship v7.0 PBR 3D Architectural Asset Library, True-Proportion Vehicles, CR400 Trains, Hydro Dam, Aircraft, Ships & Sky Dome
+// Supports full Albedo + Normal + Roughness PBR channels (via globalThis.__ASSET_MGR / applyLoadedPBRTextures) with offline DataURI fallback.
 
 import { FACADE_TEXTURES } from './facade_textures.js';
 
@@ -63,9 +63,34 @@ function mergeParts(THREE, parts) {
   return out;
 }
 
+// Helper: Extrude a 2D automotive side profile (x = +Z forward, y = +Y up) centered on X width
+function buildSideProfileGeo(THREE, pts, totalWidth, bevel = 0.008) {
+  const sh = new THREE.Shape();
+  sh.moveTo(pts[0][0], pts[0][1]);
+  for (let i = 1; i < pts.length; i++) {
+    const pt = pts[i];
+    if (pt.length === 4) {
+      sh.quadraticCurveTo(pt[0], pt[1], pt[2], pt[3]);
+    } else {
+      sh.lineTo(pt[0], pt[1]);
+    }
+  }
+  sh.closePath();
+  const depth = Math.max(0.01, totalWidth - bevel * 2);
+  const g = new THREE.ExtrudeGeometry(sh, {
+    depth,
+    bevelEnabled: bevel > 0,
+    bevelThickness: bevel,
+    bevelSize: bevel * 0.85,
+    bevelSegments: 2
+  });
+  g.translate(0, 0, -depth * 0.5);
+  g.rotateY(-Math.PI * 0.5);
+  return g;
+}
+
 // Lofted Streamlined Parabolic Nose Geometry for CR400 "Fuxing" Bullet Train (facing +Z, rail-head at y=0)
 function buildCR400NoseGeometry(THREE) {
-  // Stations from z = +0.04 (full CR400 cross-section) to z = +0.355 (aerodynamic nose cone)
   const stations = [
     { z: 0.040, rx: 0.104, yBot: 0.022, yTop: 0.240 },
     { z: 0.105, rx: 0.101, yBot: 0.023, yTop: 0.228 },
@@ -83,10 +108,8 @@ function buildCR400NoseGeometry(THREE) {
     const pts = [];
     for (let k = 0; k < N; k++) {
       const a = (k * Math.PI * 2) / N;
-      // Counter-clockwise when viewed from +Z so outward normals point UP/OUT/+Z
       const sx = -Math.sin(a);
       const ca = Math.cos(a);
-      // Slight flat-bottom skirt shaping on lower half
       const yShape = ca < 0 ? Math.pow(-ca, 0.78) * -1 : Math.pow(ca, 0.88);
       const xShape = Math.sign(sx) * Math.pow(Math.abs(sx), 0.88);
       pts.push([xShape * st.rx, cy + yShape * ry, st.z]);
@@ -111,7 +134,6 @@ function buildCR400NoseGeometry(THREE) {
     }
   }
 
-  // Smooth front nose cap at final station
   const lastRing = ringPts[stations.length - 1];
   const tip = [0, 0.060, 0.362];
   for (let k = 0; k < N; k++) {
@@ -126,7 +148,7 @@ function buildCR400NoseGeometry(THREE) {
   return geo;
 }
 
-// ==================== World-Space Facade & Night-Window Shader Patch ====================
+// ==================== World-Space Full PBR (Albedo + Normal + Roughness) & Night-Window Shader Patch ====================
 
 function applyWorldFacadePatch(mat, opts) {
   const {
@@ -134,6 +156,8 @@ function applyWorldFacadePatch(mat, opts) {
     tileW = 0.64,
     tileH = 0.60,
     roofTex = null,
+    roofNormTex = null,
+    roofRoughTex = null,
     roofScale = 0.72,
     nightMode = 0,
     cellsX = 4.0,
@@ -149,8 +173,17 @@ function applyWorldFacadePatch(mat, opts) {
   const iNightMode = nightMode | 0;
   const iPlanar = planarOnly ? 1 : 0;
 
+  // Shared mutable uniform holders so applyLoadedPBRTextures() hot-updates roof PBR channels without rebuilding meshes!
+  const pbrUniforms = {
+    uArchRoofMap: { value: roofTex || mat.map },
+    uArchRoofNormMap: { value: roofNormTex },
+    uArchRoofRoughMap: { value: roofRoughTex }
+  };
+
   const patchFn = (shader) => {
-    shader.uniforms.uArchRoofMap = { value: roofTex || mat.map };
+    shader.uniforms.uArchRoofMap = pbrUniforms.uArchRoofMap;
+    shader.uniforms.uArchRoofNormMap = pbrUniforms.uArchRoofNormMap;
+    shader.uniforms.uArchRoofRoughMap = pbrUniforms.uArchRoofRoughMap;
 
     shader.vertexShader = shader.vertexShader
       .replace(
@@ -180,6 +213,8 @@ vArchBasePos = (modelMatrix * vec4(0.0, -0.5, 0.0, 1.0)).xyz;`
         '#include <common>',
         `#include <common>
 uniform sampler2D uArchRoofMap;
+uniform sampler2D uArchRoofNormMap;
+uniform sampler2D uArchRoofRoughMap;
 varying vec3 vArchWorldPos;
 varying vec3 vArchWorldNorm;
 varying vec3 vArchBasePos;`
@@ -193,12 +228,49 @@ vec2 archWallUV = vec2(
   max(0.0, vArchWorldPos.y - vArchBasePos.y) / ${fTileH}
 );
 vec2 archRoofUV = vArchWorldPos.xz / ${fRoofS};
+vec2 archActiveUV = archIsRoof ? archRoofUV : archWallUV;
 vec4 archTexel = vec4(1.0);
 #ifdef USE_MAP
   vec4 archWallSample = texture2D(map, archWallUV);
   vec4 archRoofSample = texture2D(uArchRoofMap, archRoofUV);
   archTexel = archIsRoof ? archRoofSample : archWallSample;
   diffuseColor *= archTexel;
+#endif`
+      )
+      .replace(
+        '#include <roughnessmap_fragment>',
+        `float roughnessFactor = roughness;
+#ifdef USE_ROUGHNESSMAP
+  vec4 archRoughWall = texture2D(roughnessMap, archWallUV);
+  vec4 archRoughRoof = texture2D(uArchRoofRoughMap, archRoofUV);
+  vec4 texelRoughness = archIsRoof ? archRoughRoof : archRoughWall;
+  roughnessFactor *= texelRoughness.g;
+#endif`
+      )
+      .replace(
+        '#include <normal_fragment_maps>',
+        `#ifdef USE_NORMALMAP_OBJECTSPACE
+  normal = texture2D(normalMap, archActiveUV).xyz * 2.0 - 1.0;
+  #ifdef FLIP_SIDED
+    normal = -normal;
+  #endif
+  #ifdef DOUBLE_SIDED
+    normal = normal * faceDirection;
+  #endif
+  normal = normalize(normalMatrix * normal);
+#elif defined(USE_NORMALMAP_TANGENTSPACE)
+  vec3 archNormWall = texture2D(normalMap, archWallUV).xyz * 2.0 - 1.0;
+  vec3 archNormRoof = texture2D(uArchRoofNormMap, archRoofUV).xyz * 2.0 - 1.0;
+  vec3 mapN = archIsRoof ? archNormRoof : archNormWall;
+  mapN.xy *= normalScale;
+  mat3 archTbn = getTangentFrame(-vViewPosition, nonPerturbedNormal, archActiveUV);
+  #if defined(DOUBLE_SIDED) && !defined(FLAT_SHADED)
+    archTbn[0] *= faceDirection;
+    archTbn[1] *= faceDirection;
+  #endif
+  normal = normalize(archTbn * mapN);
+#elif defined(USE_BUMPMAP)
+  normal = perturbNormalArb(-vViewPosition, normal, dHdxy_fwd(), faceDirection);
 #endif`
       )
       .replace(
@@ -216,35 +288,28 @@ totalEmissiveRadiance = vec3(0.0);
     float rnd = fract(sin(dot(archCellId + vec2(bldgSeed, faceSeed), vec2(127.1, 311.7))) * 43758.5453);
     float rndTemp = fract(rnd * 17.37 + 0.23);
 
-    // Perceptual sRGB brightness & channel values from linear hardware-sRGB sample
     vec3 srgbTex = sqrt(max(vec3(0.0), archTexel.rgb));
     float sLum = dot(srgbTex, vec3(0.299, 0.587, 0.114));
     float glassMask = 0.0;
 
     #if ${iNightMode} == 1
-      // Residential (res_beige / res_grey): 4x4 window/balcony cells; exclude bright walls & lower AC louvers
       float inResPane = step(0.09, archCellFrac.x) * step(archCellFrac.x, 0.91) * step(0.28, archCellFrac.y) * step(archCellFrac.y, 0.90);
       float darkPane = smoothstep(0.73, 0.52, sLum) * smoothstep(0.18, 0.28, sLum);
       float coolPane = smoothstep(-0.01, 0.03, srgbTex.b - srgbTex.r) * smoothstep(0.80, 0.56, sLum);
       glassMask = inResPane * max(darkPane, coolPane);
     #elif ${iNightMode} == 2
-      // Unitized blue-grey office glass curtain wall (4x4): vision pane in middle 20%..84%, keep spandrels & silver mullions crisp
       float inVision = step(0.05, archCellFrac.x) * step(archCellFrac.x, 0.95) * step(0.20, archCellFrac.y) * step(archCellFrac.y, 0.84);
       glassMask = inVision * smoothstep(0.01, 0.06, srgbTex.b - srgbTex.r * 0.94) * smoothstep(0.74, 0.55, sLum) * smoothstep(0.16, 0.26, sLum);
     #elif ${iNightMode} == 3
-      // Limestone pilaster office facade (4x4): dark recessed window apertures between bright stone piers
       float inStoneWin = step(0.15, archCellFrac.x) * step(archCellFrac.x, 0.85) * step(0.10, archCellFrac.y) * step(archCellFrac.y, 0.88);
       glassMask = inStoneWin * smoothstep(0.58, 0.40, sLum) * smoothstep(0.14, 0.23, sLum);
     #elif ${iNightMode} == 4
-      // Ground-floor retail shopfront podium (4x1): warm boutique display glass in lower 62%
       float inShop = step(0.06, archCellFrac.x) * step(archCellFrac.x, 0.94) * step(0.03, archCellFrac.y) * step(archCellFrac.y, 0.62);
       glassMask = inShop * smoothstep(0.20, 0.30, sLum) * smoothstep(0.86, 0.64, sLum);
     #elif ${iNightMode} == 5
-      // Villa / Townhouse cream plaster (2x2): dark casement panes inside crisp white window muntins
       float inVilla = step(0.16, archCellFrac.x) * step(archCellFrac.x, 0.84) * step(0.16, archCellFrac.y) * step(archCellFrac.y, 0.82);
       glassMask = inVilla * smoothstep(0.52, 0.34, sLum);
     #elif ${iNightMode} == 6
-      // Industrial corrugated panel: upper horizontal clerestory window band (v in 0.75..0.89)
       float vBand = fract(archWallUV.y);
       float inClere = step(0.75, vBand) * step(vBand, 0.89);
       glassMask = inClere * smoothstep(0.68, 0.48, sLum) * smoothstep(0.22, 0.32, sLum);
@@ -253,7 +318,6 @@ totalEmissiveRadiance = vec3(0.0);
     float litProb = (${iNightMode} == 4) ? 0.78 : ((${iNightMode} == 2 || ${iNightMode} == 3) ? 0.48 : 0.44);
     float isLit = step(1.0 - litProb, rnd);
 
-    // Warm residential/retail amber-gold (0xffd9a0) mixed with cool white-sky executive suites
     vec3 warmGlow = vec3(1.0, 0.83, 0.58);
     vec3 coolGlow = vec3(0.82, 0.92, 1.0);
     float coolMix = (${iNightMode} == 2 || ${iNightMode} == 3) ? step(0.60, rndTemp) : step(0.88, rndTemp);
@@ -268,14 +332,48 @@ totalEmissiveRadiance = vec3(0.0);
   mat.userData = mat.userData || {};
   mat.userData.facadePatch = true;
   mat.userData.facadePatchOpts = opts;
+  mat.userData.pbrUniforms = pbrUniforms;
   mat.onBeforeCompile = patchFn;
   mat.customProgramCacheKey = function () {
-    return cacheKey;
+    return cacheKey + (this.normalMap ? '_N' : '') + (this.roughnessMap ? '_R' : '');
   };
   return mat;
 }
 
-// ==================== Special Procedural Decal Canvas Textures ====================
+// ==================== Special Procedural Decal & AO Canvas Textures ====================
+
+function createSolidLinearTexture(THREE, cssColor) {
+  const c = document.createElement('canvas');
+  c.width = 4;
+  c.height = 4;
+  const g = c.getContext('2d');
+  g.fillStyle = cssColor;
+  g.fillRect(0, 0, 4, 4);
+  const tex = new THREE.CanvasTexture(c);
+  if ('NoColorSpace' in THREE) tex.colorSpace = THREE.NoColorSpace;
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.wrapT = THREE.RepeatWrapping;
+  return tex;
+}
+
+function createContactAOTexture(THREE) {
+  const c = document.createElement('canvas');
+  c.width = 128;
+  c.height = 128;
+  const g = c.getContext('2d');
+
+  const grad = g.createRadialGradient(64, 64, 14, 64, 64, 63);
+  grad.addColorStop(0.0, 'rgba(9, 13, 20, 0.58)');
+  grad.addColorStop(0.58, 'rgba(9, 13, 20, 0.34)');
+  grad.addColorStop(0.84, 'rgba(9, 13, 20, 0.12)');
+  grad.addColorStop(1.0, 'rgba(9, 13, 20, 0.0)');
+  g.fillStyle = grad;
+  g.fillRect(0, 0, 128, 128);
+
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
 
 function createHelipadTexture(THREE) {
   const c = document.createElement('canvas');
@@ -479,10 +577,29 @@ export class ArchitectureLibrary {
     this.glbProtos = glbProtos;
     this.baseMats = mats;
     this.emissiveMaterials = [];
+    this._pbrBindings = [];
     this._glbAbandonedCache = new WeakMap();
 
     this._initTexturesAndMaterials();
     this._initSculptedGeometries();
+
+    // Seamlessly bind external PBR textures if AssetManager already preloaded them!
+    if (globalThis.__ASSET_MGR) {
+      this.applyLoadedPBRTextures(globalThis.__ASSET_MGR);
+    }
+  }
+
+  _configureTexture(tex, isColor = true) {
+    if (!tex) return null;
+    const THREE = this.THREE;
+    tex.colorSpace = isColor ? THREE.SRGBColorSpace : (THREE.NoColorSpace ?? '');
+    tex.wrapS = THREE.RepeatWrapping;
+    tex.wrapT = THREE.RepeatWrapping;
+    tex.anisotropy = 8;
+    tex.generateMipmaps = true;
+    if (THREE.LinearMipmapLinearFilter) tex.minFilter = THREE.LinearMipmapLinearFilter;
+    if (THREE.LinearFilter) tex.magFilter = THREE.LinearFilter;
+    return tex;
   }
 
   _loadPhotoTexture(loader, uri) {
@@ -497,14 +614,99 @@ export class ArchitectureLibrary {
     } else {
       tex = {};
     }
-    tex.colorSpace = THREE.SRGBColorSpace;
-    tex.wrapS = THREE.RepeatWrapping;
-    tex.wrapT = THREE.RepeatWrapping;
-    tex.anisotropy = 8;
-    tex.generateMipmaps = true;
-    if (THREE.LinearMipmapLinearFilter) tex.minFilter = THREE.LinearMipmapLinearFilter;
-    if (THREE.LinearFilter) tex.magFilter = THREE.LinearFilter;
-    return tex;
+    return this._configureTexture(tex, true);
+  }
+
+  _resolveAssetEntry(source, key) {
+    if (!source || !key) return null;
+    if (typeof source.getTexture === 'function') {
+      const t = source.getTexture(key);
+      if (t) return t;
+    }
+    if (typeof source.get === 'function') {
+      const t = source.get(key);
+      if (t) return t;
+    }
+    if (source.textures) {
+      if (typeof source.textures.get === 'function') {
+        const t = source.textures.get(key);
+        if (t) return t;
+      }
+      if (source.textures[key]) return source.textures[key];
+    }
+    return source[key] || null;
+  }
+
+  // Hot-binds external Albedo + Normal + Roughness PBR textures onto all shared materials with ZERO scene rebuild!
+  applyLoadedPBRTextures(texMap) {
+    const src = texMap || globalThis.__ASSET_MGR;
+    if (!src) return 0;
+
+    const THREE = this.THREE;
+    const pbrKeys = [
+      'res_beige', 'res_grey', 'office_glass', 'office_stone',
+      'retail_podium', 'villa_plaster', 'industrial_panel',
+      'roof_concrete', 'paving_plaza', 'roof_solar_green', 'dam_concrete'
+    ];
+
+    for (const k of pbrKeys) {
+      const entry = this._resolveAssetEntry(src, k);
+      const albedo = (entry && entry.isTexture) ? entry : (entry && (entry.map || entry.albedo)) || null;
+      const norm = this._resolveAssetEntry(src, `${k}_norm`)
+        || this._resolveAssetEntry(src, `${k}_normal`)
+        || (entry && !entry.isTexture && (entry.normalMap || entry.norm || entry.normal))
+        || null;
+      const rough = this._resolveAssetEntry(src, `${k}_rough`)
+        || this._resolveAssetEntry(src, `${k}_roughness`)
+        || (entry && !entry.isTexture && (entry.roughnessMap || entry.rough || entry.roughness))
+        || null;
+
+      if (albedo) this.photoTex[k] = this._configureTexture(albedo, true);
+      if (norm) this.normTex[k] = this._configureTexture(norm, false);
+      if (rough) this.roughTex[k] = this._configureTexture(rough, false);
+    }
+
+    let updatedCount = 0;
+    for (const b of this._pbrBindings) {
+      const { mat, wallKey, roofKey, fallbackRough, normalStrength } = b;
+      const wMap = this.photoTex[wallKey];
+      const wNorm = this.normTex[wallKey] || null;
+      const wRough = this.roughTex[wallKey] || null;
+      const rMap = this.photoTex[roofKey] || wMap;
+      const rNorm = this.normTex[roofKey] || this._flatNormalTex;
+      const rRough = this.roughTex[roofKey] || this._neutralRoughTex;
+
+      let changed = false;
+      if (wMap && mat.map !== wMap) {
+        mat.map = wMap;
+        changed = true;
+      }
+      if (wNorm && mat.normalMap !== wNorm) {
+        mat.normalMap = wNorm;
+        mat.normalScale = new THREE.Vector2(normalStrength, normalStrength);
+        changed = true;
+      }
+      if (wRough && mat.roughnessMap !== wRough) {
+        mat.roughnessMap = wRough;
+        mat.roughness = 1.0;
+        changed = true;
+      } else if (!wRough) {
+        mat.roughness = fallbackRough;
+      }
+
+      const u = mat.userData && mat.userData.pbrUniforms;
+      if (u) {
+        if (rMap && u.uArchRoofMap.value !== rMap) { u.uArchRoofMap.value = rMap; changed = true; }
+        if (u.uArchRoofNormMap.value !== rNorm) { u.uArchRoofNormMap.value = rNorm; changed = true; }
+        if (u.uArchRoofRoughMap.value !== rRough) { u.uArchRoofRoughMap.value = rRough; changed = true; }
+      }
+
+      if (changed) {
+        mat.needsUpdate = true;
+        updatedCount++;
+      }
+    }
+    return updatedCount;
   }
 
   _initTexturesAndMaterials() {
@@ -512,7 +714,10 @@ export class ArchitectureLibrary {
     const texSrc = (typeof FACADE_TEXTURES !== 'undefined' && FACADE_TEXTURES) ? FACADE_TEXTURES : {};
     const loader = THREE.TextureLoader ? new THREE.TextureLoader() : null;
 
-    // 10 Offline Photorealistic Orthographic Textures (loaded once & shared city-wide!)
+    // Neutral linear fallbacks for roof normal/roughness uniforms prior to external PBR load
+    this._flatNormalTex = createSolidLinearTexture(THREE, '#8080ff');
+    this._neutralRoughTex = createSolidLinearTexture(THREE, '#c8c8c8');
+
     this.photoTex = {
       res_beige: this._loadPhotoTexture(loader, texSrc.res_beige),
       res_grey: this._loadPhotoTexture(loader, texSrc.res_grey),
@@ -523,9 +728,13 @@ export class ArchitectureLibrary {
       industrial_panel: this._loadPhotoTexture(loader, texSrc.industrial_panel),
       roof_concrete: this._loadPhotoTexture(loader, texSrc.roof_concrete),
       paving_plaza: this._loadPhotoTexture(loader, texSrc.paving_plaza),
-      roof_solar_green: this._loadPhotoTexture(loader, texSrc.roof_solar_green)
+      roof_solar_green: this._loadPhotoTexture(loader, texSrc.roof_solar_green),
+      dam_concrete: this._loadPhotoTexture(loader, texSrc.dam_concrete || texSrc.roof_concrete)
     };
+    this.normTex = {};
+    this.roughTex = {};
 
+    this.texContactAO = createContactAOTexture(THREE);
     this.texHelipad = createHelipadTexture(THREE);
     this.texPitch = createSoccerPitchTexture(THREE);
     this.texSolar = createSolarMirrorTexture(THREE);
@@ -533,8 +742,10 @@ export class ArchitectureLibrary {
     this.texRunway = createRunwayTexture(THREE);
     this.texPool = createPoolTexture(THREE);
 
-    const makeWorldFacadeMat = (key, tex, colorHex, rough, metal, patchCfg) => {
+    const makeWorldFacadeMat = (key, wallKey, roofKey, colorHex, rough, metal, patchCfg, normalStrength = 0.55) => {
       const isLit = (patchCfg.nightMode || 0) > 0;
+      const tex = this.photoTex[wallKey];
+      const rTex = this.photoTex[roofKey] || tex;
       const m = new THREE.MeshStandardMaterial({
         color: colorHex,
         map: tex,
@@ -543,12 +754,20 @@ export class ArchitectureLibrary {
         roughness: rough,
         metalness: metal
       });
-      applyWorldFacadePatch(m, { cacheKey: key, ...patchCfg });
+      applyWorldFacadePatch(m, {
+        cacheKey: key,
+        roofTex: rTex,
+        roofNormTex: this._flatNormalTex,
+        roofRoughTex: this._neutralRoughTex,
+        ...patchCfg
+      });
+      this._pbrBindings.push({ mat: m, wallKey, roofKey, fallbackRough: rough, normalStrength });
       if (isLit) this.emissiveMaterials.push(m);
       return m;
     };
 
-    const makePlanarMat = (key, tex, colorHex, rough, metal, scaleXZ) => {
+    const makePlanarMat = (key, texKey, colorHex, rough, metal, scaleXZ, normalStrength = 0.55) => {
+      const tex = this.photoTex[texKey];
       const m = new THREE.MeshStandardMaterial({
         color: colorHex,
         map: tex,
@@ -560,10 +779,13 @@ export class ArchitectureLibrary {
         tileW: scaleXZ,
         tileH: scaleXZ,
         roofTex: tex,
+        roofNormTex: this._flatNormalTex,
+        roofRoughTex: this._neutralRoughTex,
         roofScale: scaleXZ,
         nightMode: 0,
         planarOnly: true
       });
+      this._pbrBindings.push({ mat: m, wallKey: texKey, roofKey: texKey, fallbackRough: rough, normalStrength });
       return m;
     };
 
@@ -574,108 +796,114 @@ export class ArchitectureLibrary {
       metalness: 0.28
     });
 
-    const roofConc = this.photoTex.roof_concrete;
-    const roofGreen = this.photoTex.roof_solar_green;
-
-    // World-Space Scales:
-    // - Residential (4 floors x 4 bays): floor = 0.15 -> tileH = 0.60, tileW = 0.64
-    // - Office Glass / Stone (4 floors x 4 bays): floor = 0.17 -> tileH = 0.68, tileW = 0.64
-    // - Retail Podium (1 storey x 4 bays): storey = 0.36 -> tileH = 0.36, tileW = 0.72
-    // - Villa Plaster (2 floors x 2 bays): 2 floors = 0.34 -> tileH = 0.34, tileW = 0.44
-    // - Industrial Panel (corrugated + clerestory): tileH = 0.42, tileW = 0.60
+    const contactAO = new THREE.MeshBasicMaterial({
+      map: this.texContactAO,
+      transparent: true,
+      opacity: 0.80,
+      depthWrite: false,
+      polygonOffset: true,
+      polygonOffsetFactor: -2,
+      polygonOffsetUnits: -2
+    });
+    contactAO.userData = { skipGhost: true };
 
     this.m = {
-      // Top-down world-space granite plaza paving, concrete roof membrane & green roof
-      pavingPlaza: makePlanarMat('arch_planar_plaza_v1', this.photoTex.paving_plaza, 0xffffff, 0.78, 0.05, 0.46),
-      pavingPlazaDusty: makePlanarMat('arch_planar_plaza_dusty_v1', this.photoTex.paving_plaza, 0x8e9298, 0.90, 0.03, 0.46),
-      roofConcrete: makePlanarMat('arch_planar_roof_conc_v1', roofConc, 0xf1f5f9, 0.84, 0.04, 0.72),
-      roofGreen: makePlanarMat('arch_planar_roof_green_v1', roofGreen, 0xffffff, 0.82, 0.04, 0.78),
+      contactAO,
+
+      // Top-down world-space granite plaza paving, concrete roof membrane, green roof & gravity dam concrete
+      pavingPlaza: makePlanarMat('arch_planar_plaza_v2', 'paving_plaza', 0xffffff, 0.78, 0.05, 0.46),
+      pavingPlazaDusty: makePlanarMat('arch_planar_plaza_dusty_v2', 'paving_plaza', 0x8e9298, 0.90, 0.03, 0.46),
+      roofConcrete: makePlanarMat('arch_planar_roof_conc_v2', 'roof_concrete', 0xf1f5f9, 0.84, 0.04, 0.72),
+      roofGreen: makePlanarMat('arch_planar_roof_green_v2', 'roof_solar_green', 0xffffff, 0.82, 0.04, 0.78),
+      damConcrete: makeWorldFacadeMat('arch_fac_dam_conc_v2', 'dam_concrete', 'roof_concrete', 0xd8dee6, 0.80, 0.06, {
+        tileW: 0.85, tileH: 0.85, roofScale: 0.75, nightMode: 0, cellsX: 2, cellsY: 2
+      }, 0.65),
 
       // Contemporary Grade-A Office & Commercial Curtain-Wall Facades (CH & O)
-      cbdIceBlue: makeWorldFacadeMat('arch_fac_off_glass_ice_v1', this.photoTex.office_glass, 0xdceeff, 0.18, 0.38, {
-        tileW: 0.64, tileH: 0.68, roofTex: roofConc, roofScale: 0.72, nightMode: 2, cellsX: 4, cellsY: 4
+      cbdIceBlue: makeWorldFacadeMat('arch_fac_off_glass_ice_v2', 'office_glass', 'roof_concrete', 0xdceeff, 0.18, 0.38, {
+        tileW: 0.64, tileH: 0.68, roofScale: 0.72, nightMode: 2, cellsX: 4, cellsY: 4
       }),
-      cbdSlateSilver: makeWorldFacadeMat('arch_fac_off_glass_sil_v1', this.photoTex.office_glass, 0xf1f5f9, 0.17, 0.42, {
-        tileW: 0.64, tileH: 0.68, roofTex: roofConc, roofScale: 0.72, nightMode: 2, cellsX: 4, cellsY: 4
+      cbdSlateSilver: makeWorldFacadeMat('arch_fac_off_glass_sil_v2', 'office_glass', 'roof_concrete', 0xf1f5f9, 0.17, 0.42, {
+        tileW: 0.64, tileH: 0.68, roofScale: 0.72, nightMode: 2, cellsX: 4, cellsY: 4
       }),
-      cbdDeepAzure: makeWorldFacadeMat('arch_fac_off_glass_az_v1', this.photoTex.office_glass, 0xbcd8f4, 0.19, 0.38, {
-        tileW: 0.64, tileH: 0.68, roofTex: roofConc, roofScale: 0.72, nightMode: 2, cellsX: 4, cellsY: 4
+      cbdDeepAzure: makeWorldFacadeMat('arch_fac_off_glass_az_v2', 'office_glass', 'roof_concrete', 0xbcd8f4, 0.19, 0.38, {
+        tileW: 0.64, tileH: 0.68, roofScale: 0.72, nightMode: 2, cellsX: 4, cellsY: 4
       }),
-      cbdTealGlass: makeWorldFacadeMat('arch_fac_off_glass_tl_v1', this.photoTex.office_glass, 0xc4edea, 0.18, 0.36, {
-        tileW: 0.64, tileH: 0.68, roofTex: roofConc, roofScale: 0.72, nightMode: 2, cellsX: 4, cellsY: 4
+      cbdTealGlass: makeWorldFacadeMat('arch_fac_off_glass_tl_v2', 'office_glass', 'roof_concrete', 0xc4edea, 0.18, 0.36, {
+        tileW: 0.64, tileH: 0.68, roofScale: 0.72, nightMode: 2, cellsX: 4, cellsY: 4
       }),
-      finStoneChampagne: makeWorldFacadeMat('arch_fac_off_stone_ch_v1', this.photoTex.office_stone, 0xfbf6ee, 0.52, 0.12, {
-        tileW: 0.64, tileH: 0.68, roofTex: roofConc, roofScale: 0.72, nightMode: 3, cellsX: 4, cellsY: 4
+      finStoneChampagne: makeWorldFacadeMat('arch_fac_off_stone_ch_v2', 'office_stone', 'roof_concrete', 0xfbf6ee, 0.52, 0.12, {
+        tileW: 0.64, tileH: 0.68, roofScale: 0.72, nightMode: 3, cellsX: 4, cellsY: 4
       }),
-      finStoneSilver: makeWorldFacadeMat('arch_fac_off_stone_sl_v1', this.photoTex.office_stone, 0xe8eef5, 0.48, 0.16, {
-        tileW: 0.64, tileH: 0.68, roofTex: roofConc, roofScale: 0.72, nightMode: 3, cellsX: 4, cellsY: 4
+      finStoneSilver: makeWorldFacadeMat('arch_fac_off_stone_sl_v2', 'office_stone', 'roof_concrete', 0xe8eef5, 0.48, 0.16, {
+        tileW: 0.64, tileH: 0.68, roofScale: 0.72, nightMode: 3, cellsX: 4, cellsY: 4
       }),
 
       // Ground-Floor Luxury Retail Shopfront Podium (CL, RH, CH, O podiums)
-      retailPodium: makeWorldFacadeMat('arch_fac_retail_pod_v1', this.photoTex.retail_podium, 0xffffff, 0.38, 0.18, {
-        tileW: 0.72, tileH: 0.36, roofTex: roofGreen, roofScale: 0.78, nightMode: 4, cellsX: 4, cellsY: 1
+      retailPodium: makeWorldFacadeMat('arch_fac_retail_pod_v2', 'retail_podium', 'roof_solar_green', 0xffffff, 0.38, 0.18, {
+        tileW: 0.72, tileH: 0.36, roofScale: 0.78, nightMode: 4, cellsX: 4, cellsY: 1
       }),
-      retailPodiumConc: makeWorldFacadeMat('arch_fac_retail_podc_v1', this.photoTex.retail_podium, 0xf8fafc, 0.38, 0.18, {
-        tileW: 0.72, tileH: 0.36, roofTex: roofConc, roofScale: 0.72, nightMode: 4, cellsX: 4, cellsY: 1
+      retailPodiumConc: makeWorldFacadeMat('arch_fac_retail_podc_v2', 'retail_podium', 'roof_concrete', 0xf8fafc, 0.38, 0.18, {
+        tileW: 0.72, tileH: 0.36, roofScale: 0.72, nightMode: 4, cellsX: 4, cellsY: 1
       }),
 
       // Contemporary Chinese High-Rise Residential Facades (RH: res_beige & res_grey)
-      condoWarmWhite: makeWorldFacadeMat('arch_fac_res_beige_w_v1', this.photoTex.res_beige, 0xffffff, 0.62, 0.06, {
-        tileW: 0.64, tileH: 0.60, roofTex: roofConc, roofScale: 0.72, nightMode: 1, cellsX: 4, cellsY: 4
+      condoWarmWhite: makeWorldFacadeMat('arch_fac_res_beige_w_v2', 'res_beige', 'roof_concrete', 0xffffff, 0.62, 0.06, {
+        tileW: 0.64, tileH: 0.60, roofScale: 0.72, nightMode: 1, cellsX: 4, cellsY: 4
       }),
-      condoChampagne: makeWorldFacadeMat('arch_fac_res_beige_c_v1', this.photoTex.res_beige, 0xf5eadc, 0.64, 0.06, {
-        tileW: 0.64, tileH: 0.60, roofTex: roofConc, roofScale: 0.72, nightMode: 1, cellsX: 4, cellsY: 4
+      condoChampagne: makeWorldFacadeMat('arch_fac_res_beige_c_v2', 'res_beige', 'roof_concrete', 0xf5eadc, 0.64, 0.06, {
+        tileW: 0.64, tileH: 0.60, roofScale: 0.72, nightMode: 1, cellsX: 4, cellsY: 4
       }),
-      condoWarmGrey: makeWorldFacadeMat('arch_fac_res_grey_g_v1', this.photoTex.res_grey, 0xf8fafc, 0.58, 0.08, {
-        tileW: 0.64, tileH: 0.60, roofTex: roofConc, roofScale: 0.72, nightMode: 1, cellsX: 4, cellsY: 4
+      condoWarmGrey: makeWorldFacadeMat('arch_fac_res_grey_g_v2', 'res_grey', 'roof_concrete', 0xf8fafc, 0.58, 0.08, {
+        tileW: 0.64, tileH: 0.60, roofScale: 0.72, nightMode: 1, cellsX: 4, cellsY: 4
       }),
-      condoSandStone: makeWorldFacadeMat('arch_fac_res_grey_s_v1', this.photoTex.res_grey, 0xeee8df, 0.60, 0.08, {
-        tileW: 0.64, tileH: 0.60, roofTex: roofConc, roofScale: 0.72, nightMode: 1, cellsX: 4, cellsY: 4
+      condoSandStone: makeWorldFacadeMat('arch_fac_res_grey_s_v2', 'res_grey', 'roof_concrete', 0xeee8df, 0.60, 0.08, {
+        tileW: 0.64, tileH: 0.60, roofScale: 0.72, nightMode: 1, cellsX: 4, cellsY: 4
       }),
 
       // Low-Density Villa / Townhouse Cream Plaster Facades (RL)
-      villaCream: makeWorldFacadeMat('arch_fac_villa_cr_v1', this.photoTex.villa_plaster, 0xffffff, 0.72, 0.04, {
-        tileW: 0.44, tileH: 0.34, roofTex: roofConc, roofScale: 0.64, nightMode: 5, cellsX: 2, cellsY: 2
+      villaCream: makeWorldFacadeMat('arch_fac_villa_cr_v2', 'villa_plaster', 'roof_concrete', 0xffffff, 0.72, 0.04, {
+        tileW: 0.44, tileH: 0.34, roofScale: 0.64, nightMode: 5, cellsX: 2, cellsY: 2
       }),
-      villaSand: makeWorldFacadeMat('arch_fac_villa_sd_v1', this.photoTex.villa_plaster, 0xf3e7d8, 0.74, 0.04, {
-        tileW: 0.44, tileH: 0.34, roofTex: roofConc, roofScale: 0.64, nightMode: 5, cellsX: 2, cellsY: 2
+      villaSand: makeWorldFacadeMat('arch_fac_villa_sd_v2', 'villa_plaster', 'roof_concrete', 0xf3e7d8, 0.74, 0.04, {
+        tileW: 0.44, tileH: 0.34, roofScale: 0.64, nightMode: 5, cellsX: 2, cellsY: 2
       }),
-      villaCool: makeWorldFacadeMat('arch_fac_villa_cl_v1', this.photoTex.villa_plaster, 0xeaeff5, 0.70, 0.05, {
-        tileW: 0.44, tileH: 0.34, roofTex: roofConc, roofScale: 0.64, nightMode: 5, cellsX: 2, cellsY: 2
+      villaCool: makeWorldFacadeMat('arch_fac_villa_cl_v2', 'villa_plaster', 'roof_concrete', 0xeaeff5, 0.70, 0.05, {
+        tileW: 0.44, tileH: 0.34, roofScale: 0.64, nightMode: 5, cellsX: 2, cellsY: 2
       }),
 
       // Industrial Cladding + Clerestory Strip Facades (I)
-      indPanelBlue: makeWorldFacadeMat('arch_fac_ind_bl_v1', this.photoTex.industrial_panel, 0xdce8f5, 0.52, 0.32, {
-        tileW: 0.60, tileH: 0.42, roofTex: roofConc, roofScale: 0.72, nightMode: 6, cellsX: 3, cellsY: 1
+      indPanelBlue: makeWorldFacadeMat('arch_fac_ind_bl_v2', 'industrial_panel', 'roof_concrete', 0xdce8f5, 0.52, 0.32, {
+        tileW: 0.60, tileH: 0.42, roofScale: 0.72, nightMode: 6, cellsX: 3, cellsY: 1
       }),
-      indPanelSilver: makeWorldFacadeMat('arch_fac_ind_sl_v1', this.photoTex.industrial_panel, 0xf4f7fb, 0.44, 0.38, {
-        tileW: 0.60, tileH: 0.42, roofTex: roofConc, roofScale: 0.72, nightMode: 6, cellsX: 3, cellsY: 1
+      indPanelSilver: makeWorldFacadeMat('arch_fac_ind_sl_v2', 'industrial_panel', 'roof_concrete', 0xf4f7fb, 0.44, 0.38, {
+        tileW: 0.60, tileH: 0.42, roofScale: 0.72, nightMode: 6, cellsX: 3, cellsY: 1
       }),
-      indPanelWarm: makeWorldFacadeMat('arch_fac_ind_wm_v1', this.photoTex.industrial_panel, 0xd8cec4, 0.60, 0.26, {
-        tileW: 0.60, tileH: 0.42, roofTex: roofConc, roofScale: 0.72, nightMode: 6, cellsX: 3, cellsY: 1
+      indPanelWarm: makeWorldFacadeMat('arch_fac_ind_wm_v2', 'industrial_panel', 'roof_concrete', 0xd8cec4, 0.60, 0.26, {
+        tileW: 0.60, tileH: 0.42, roofScale: 0.72, nightMode: 6, cellsX: 3, cellsY: 1
       }),
 
-      // Dusty Desaturated Abandoned Versions of the Exact Same Photorealistic Textures (nightMode: 0, NEVER black!)
-      dustyCBD: makeWorldFacadeMat('arch_fac_dusty_cbd_v1', this.photoTex.office_glass, 0x8b929a, 0.88, 0.08, {
-        tileW: 0.64, tileH: 0.68, roofTex: roofConc, roofScale: 0.72, nightMode: 0, cellsX: 4, cellsY: 4
+      // Dusty Desaturated Abandoned Versions of the Same PBR Textures (nightMode: 0)
+      dustyCBD: makeWorldFacadeMat('arch_fac_dusty_cbd_v2', 'office_glass', 'roof_concrete', 0x8b929a, 0.88, 0.08, {
+        tileW: 0.64, tileH: 0.68, roofScale: 0.72, nightMode: 0, cellsX: 4, cellsY: 4
       }),
-      dustyStoneFin: makeWorldFacadeMat('arch_fac_dusty_st_v1', this.photoTex.office_stone, 0x908d88, 0.90, 0.05, {
-        tileW: 0.64, tileH: 0.68, roofTex: roofConc, roofScale: 0.72, nightMode: 0, cellsX: 4, cellsY: 4
+      dustyStoneFin: makeWorldFacadeMat('arch_fac_dusty_st_v2', 'office_stone', 'roof_concrete', 0x908d88, 0.90, 0.05, {
+        tileW: 0.64, tileH: 0.68, roofScale: 0.72, nightMode: 0, cellsX: 4, cellsY: 4
       }),
-      dustyRetail: makeWorldFacadeMat('arch_fac_dusty_ret_v1', this.photoTex.retail_podium, 0x8a8e94, 0.90, 0.05, {
-        tileW: 0.72, tileH: 0.36, roofTex: roofConc, roofScale: 0.72, nightMode: 0, cellsX: 4, cellsY: 1
+      dustyRetail: makeWorldFacadeMat('arch_fac_dusty_ret_v2', 'retail_podium', 'roof_concrete', 0x8a8e94, 0.90, 0.05, {
+        tileW: 0.72, tileH: 0.36, roofScale: 0.72, nightMode: 0, cellsX: 4, cellsY: 1
       }),
-      dustyCondo: makeWorldFacadeMat('arch_fac_dusty_res_v1', this.photoTex.res_beige, 0x92908b, 0.90, 0.04, {
-        tileW: 0.64, tileH: 0.60, roofTex: roofConc, roofScale: 0.72, nightMode: 0, cellsX: 4, cellsY: 4
+      dustyCondo: makeWorldFacadeMat('arch_fac_dusty_res_v2', 'res_beige', 'roof_concrete', 0x92908b, 0.90, 0.04, {
+        tileW: 0.64, tileH: 0.60, roofScale: 0.72, nightMode: 0, cellsX: 4, cellsY: 4
       }),
-      dustyCondoGrey: makeWorldFacadeMat('arch_fac_dusty_resg_v1', this.photoTex.res_grey, 0x8d9196, 0.90, 0.04, {
-        tileW: 0.64, tileH: 0.60, roofTex: roofConc, roofScale: 0.72, nightMode: 0, cellsX: 4, cellsY: 4
+      dustyCondoGrey: makeWorldFacadeMat('arch_fac_dusty_resg_v2', 'res_grey', 'roof_concrete', 0x8d9196, 0.90, 0.04, {
+        tileW: 0.64, tileH: 0.60, roofScale: 0.72, nightMode: 0, cellsX: 4, cellsY: 4
       }),
-      dustyVilla: makeWorldFacadeMat('arch_fac_dusty_vil_v1', this.photoTex.villa_plaster, 0x938f88, 0.92, 0.03, {
-        tileW: 0.44, tileH: 0.34, roofTex: roofConc, roofScale: 0.64, nightMode: 0, cellsX: 2, cellsY: 2
+      dustyVilla: makeWorldFacadeMat('arch_fac_dusty_vil_v2', 'villa_plaster', 'roof_concrete', 0x938f88, 0.92, 0.03, {
+        tileW: 0.44, tileH: 0.34, roofScale: 0.64, nightMode: 0, cellsX: 2, cellsY: 2
       }),
-      dustyInd: makeWorldFacadeMat('arch_fac_dusty_ind_v1', this.photoTex.industrial_panel, 0x888e95, 0.90, 0.08, {
-        tileW: 0.60, tileH: 0.42, roofTex: roofConc, roofScale: 0.72, nightMode: 0, cellsX: 3, cellsY: 1
+      dustyInd: makeWorldFacadeMat('arch_fac_dusty_ind_v2', 'industrial_panel', 'roof_concrete', 0x888e95, 0.90, 0.08, {
+        tileW: 0.60, tileH: 0.42, roofScale: 0.72, nightMode: 0, cellsX: 3, cellsY: 1
       }),
 
       // Architectural trims, concrete, metals & glass
@@ -697,7 +925,34 @@ export class ArchitectureLibrary {
         transparent: true,
         opacity: 0.86
       }),
-      cockpitGlass: new THREE.MeshStandardMaterial({ color: 0x111a2b, roughness: 0.10, metalness: 0.68 }),
+      cockpitGlass: new THREE.MeshStandardMaterial({ color: 0x111a2b, roughness: 0.09, metalness: 0.72 }),
+
+      // Realistic Automotive Metallic Paints, Tires & Night Headlight/Taillight Lenses
+      carPearlWhite: new THREE.MeshStandardMaterial({ color: 0xf4f7fb, roughness: 0.20, metalness: 0.34 }),
+      carGraphite: new THREE.MeshStandardMaterial({ color: 0x475569, roughness: 0.22, metalness: 0.56 }),
+      carMidnightBlue: new THREE.MeshStandardMaterial({ color: 0x1e3a6e, roughness: 0.22, metalness: 0.48 }),
+      carSilver: new THREE.MeshStandardMaterial({ color: 0xcbd5e1, roughness: 0.19, metalness: 0.60 }),
+      carCrimson: new THREE.MeshStandardMaterial({ color: 0xa61b34, roughness: 0.22, metalness: 0.44 }),
+      carEmeraldEV: new THREE.MeshStandardMaterial({ color: 0x0f766e, roughness: 0.22, metalness: 0.44 }),
+      taxiYellow: new THREE.MeshStandardMaterial({ color: 0xf5be0b, roughness: 0.24, metalness: 0.28 }),
+      taxiSignGlow: new THREE.MeshStandardMaterial({ color: 0xfffbeb, emissive: 0xfde68a, emissiveIntensity: 0.75, roughness: 0.25 }),
+      busTurquoise: new THREE.MeshStandardMaterial({ color: 0x0d9488, roughness: 0.26, metalness: 0.32 }),
+      garbageGreen: new THREE.MeshStandardMaterial({ color: 0x16a34a, roughness: 0.34, metalness: 0.22 }),
+      tireRubber: new THREE.MeshStandardMaterial({ color: 0x1e2229, roughness: 0.84, metalness: 0.12 }),
+      vehHeadlight: new THREE.MeshStandardMaterial({
+        color: 0xfff9eb,
+        emissive: 0xffe8b0,
+        emissiveIntensity: 0.16,
+        roughness: 0.14,
+        metalness: 0.10
+      }),
+      vehTaillight: new THREE.MeshStandardMaterial({
+        color: 0xef4444,
+        emissive: 0xff1e2d,
+        emissiveIntensity: 0.20,
+        roughness: 0.18,
+        metalness: 0.10
+      }),
 
       // CR400 "Fuxing" Bullet Train Livery Materials
       fuxingBody: new THREE.MeshStandardMaterial({ color: 0xf8fafc, roughness: 0.18, metalness: 0.22 }),
@@ -764,11 +1019,18 @@ export class ArchitectureLibrary {
       beaconRed: new THREE.MeshBasicMaterial({ color: 0xff2438 }),
       strobeGreen: new THREE.MeshBasicMaterial({ color: 0x22c55e }),
 
-      // Non-black dusty grey-taupe weathered materials for untextured parts when b.abandoned = true
       abandoned: new THREE.MeshStandardMaterial({ color: 0x8b9098, roughness: 0.90, metalness: 0.05 }),
       abandonedRust: new THREE.MeshStandardMaterial({ color: 0x7c7874, roughness: 0.92, metalness: 0.06 })
     };
 
+    this.carBodyPalette = [
+      this.m.carPearlWhite,
+      this.m.carGraphite,
+      this.m.carMidnightBlue,
+      this.m.carSilver,
+      this.m.carCrimson,
+      this.m.carEmeraldEV
+    ];
     this.containerMats = [this.m.contRed, this.m.contBlue, this.m.contAmber, this.m.contTeal, this.m.contGreen];
     this.neonMats = [this.m.neonCyan, this.m.neonRose, this.m.neonGold, this.m.neonEmerald, this.m.neonViolet];
   }
@@ -791,6 +1053,9 @@ export class ArchitectureLibrary {
   _initSculptedGeometries() {
     const THREE = this.THREE;
     const box = new THREE.BoxGeometry(1, 1, 1);
+    const aoQuad = new THREE.PlaneGeometry(1, 1);
+    aoQuad.rotateX(-Math.PI * 0.5);
+
     const cyl16 = new THREE.CylinderGeometry(0.5, 0.5, 1, 16);
     const cyl24 = new THREE.CylinderGeometry(0.5, 0.5, 1, 24);
     const oct = new THREE.CylinderGeometry(0.5, 0.5, 1, 8);
@@ -802,12 +1067,26 @@ export class ArchitectureLibrary {
     const capsule = new THREE.CapsuleGeometry(0.25, 0.5, 8, 14);
     const treeCrown = new THREE.DodecahedronGeometry(0.11, 1);
 
-    // 1. Flat-shaded Axis-Aligned Tapered Square Shaft (CTF / CITIC / Ping An supertalls)
+    // 1. Flat-shaded Axis-Aligned Tapered Square Shaft & Tapered Gravity Dam Monolith
     const rawTaperSq = new THREE.CylinderGeometry(0.52, 0.7071, 1, 4);
     rawTaperSq.rotateY(Math.PI * 0.25);
     const taperSquare = rawTaperSq.toNonIndexed();
     taperSquare.computeVertexNormals();
     rawTaperSq.dispose();
+
+    const rawDamSq = new THREE.CylinderGeometry(0.68, 0.835, 1, 4);
+    rawDamSq.rotateY(Math.PI * 0.25);
+    const damGravityBody = rawDamSq.toNonIndexed();
+    damGravityBody.computeVertexNormals();
+    rawDamSq.dispose();
+
+    // 4-Corner Buttress Piers for Hydroelectric Gravity Dam
+    const damButtresses = mergeParts(THREE, [
+      { geo: box, px: -0.38, py: 0, pz: 0, sx: 0.16, sy: 1.0, sz: 1.04 },
+      { geo: box, px: 0.38, py: 0, pz: 0, sx: 0.16, sy: 1.0, sz: 1.04 },
+      { geo: box, px: 0, py: 0, pz: -0.38, sx: 1.04, sy: 1.0, sz: 0.16 },
+      { geo: box, px: 0, py: 0, pz: 0.38, sx: 1.04, sy: 1.0, sz: 0.16 }
+    ]);
 
     // 2. Pre-merged 4-Wall Rectangular Roof Parapet Frame (女儿墙)
     const parapetFrame = mergeParts(THREE, [
@@ -829,10 +1108,7 @@ export class ArchitectureLibrary {
       { geo: box, px: -0.50, py: 0, pz: 0, sx: 0.028, sy: 1.0, sz: 0.028 }
     ]);
 
-    // 4. Pre-merged Street Tree Planters & Canopies for Plot Edges (ultra-low draw calls!)
-    const cornerCoords4 = [[-0.39, -0.39], [0.39, -0.39], [-0.39, 0.39], [0.39, 0.39]];
-    const frontCoords2 = [[-0.38, 0.39], [0.38, 0.39]];
-
+    // 4. Pre-merged Street Tree Planters & Canopies for Plot Edges
     const buildPlanterSet = (coords) => {
       const curbParts = [];
       const trunkParts = [];
@@ -848,48 +1124,29 @@ export class ArchitectureLibrary {
         leaves: mergeParts(THREE, leafParts)
       };
     };
-    const planters4 = buildPlanterSet(cornerCoords4);
-    const planters2 = buildPlanterSet(frontCoords2);
+    const planters4 = buildPlanterSet([[-0.39, -0.39], [0.39, -0.39], [-0.39, 0.39], [0.39, 0.39]]);
+    const planters2 = buildPlanterSet([[-0.38, 0.39], [0.38, 0.39]]);
 
-    // 5. Sawtooth Industrial Roof (3 pitched ridges)
+    // 5. Sawtooth Industrial Roof & Gas Sphere Support Legs
     const triRidge = new THREE.CylinderGeometry(0.5, 0.5, 1, 3);
     const sawParts = [];
     for (let i = -1; i <= 1; i++) {
-      sawParts.push({
-        geo: triRidge,
-        px: 0,
-        py: 0,
-        pz: i * 0.22,
-        rz: Math.PI * 0.5,
-        rx: 0.22,
-        sx: 0.22,
-        sy: 0.68,
-        sz: 0.24
-      });
+      sawParts.push({ geo: triRidge, px: 0, py: 0, pz: i * 0.22, rz: Math.PI * 0.5, rx: 0.22, sx: 0.22, sy: 0.68, sz: 0.24 });
     }
     const sawtoothRoof = mergeParts(THREE, sawParts);
     triRidge.dispose();
 
-    // 6. Spherical Horton Gas Tank Support Legs
     const legParts = [];
     for (let i = 0; i < 4; i++) {
       const a = (i * Math.PI) / 2 + Math.PI / 4;
-      legParts.push({
-        geo: cyl16,
-        px: Math.cos(a) * 0.13,
-        py: 0.18,
-        pz: Math.sin(a) * 0.13,
-        sx: 0.028,
-        sy: 0.36,
-        sz: 0.028
-      });
+      legParts.push({ geo: cyl16, px: Math.cos(a) * 0.13, py: 0.18, pz: Math.sin(a) * 0.13, sx: 0.028, sy: 0.36, sz: 0.028 });
     }
     const eqTorus = new THREE.TorusGeometry(0.175, 0.014, 8, 20);
     legParts.push({ geo: eqTorus, px: 0, py: 0.28, pz: 0, rx: Math.PI * 0.5 });
     const gasSphereSupport = mergeParts(THREE, legParts);
     eqTorus.dispose();
 
-    // 7. Hyperboloid Cooling Tower & Olympic Stadium LatheGeometries
+    // 6. Cooling Tower, Stadium, Ferris Wheel, Heliostats & Gantry Crane
     const coolingTower = new THREE.LatheGeometry([
       new THREE.Vector2(0.24, 0.0),
       new THREE.Vector2(0.20, 0.22),
@@ -916,7 +1173,6 @@ export class ArchitectureLibrary {
       new THREE.Vector2(0.335, 0.405)
     ], 32);
 
-    // 8. Spoked 3D Ferris Wheel Frame
     const rimOuter = new THREE.TorusGeometry(0.68, 0.022, 10, 32);
     const rimInner = new THREE.TorusGeometry(0.50, 0.012, 8, 28);
     const fwParts = [
@@ -938,14 +1194,9 @@ export class ArchitectureLibrary {
     rimOuter.dispose();
     rimInner.dispose();
 
-    // 9. Twin Concentric Rings of 16 Angled Heliostats
     const helioMirParts = [];
     const helioPedParts = [];
-    const ringDefs = [
-      { count: 6, r: 0.26, tilt: 0.42 },
-      { count: 10, r: 0.43, tilt: 0.58 }
-    ];
-    for (const rd of ringDefs) {
+    for (const rd of [{ count: 6, r: 0.26, tilt: 0.42 }, { count: 10, r: 0.43, tilt: 0.58 }]) {
       for (let i = 0; i < rd.count; i++) {
         const a = (i * Math.PI * 2) / rd.count + (rd.count === 10 ? 0.16 : 0);
         const px = Math.cos(a) * rd.r;
@@ -957,8 +1208,7 @@ export class ArchitectureLibrary {
     const heliostatMirrors = mergeParts(THREE, helioMirParts);
     const heliostatPedestals = mergeParts(THREE, helioPedParts);
 
-    // 10. Port Container Gantry Crane Frame
-    const gcParts = [
+    const gantryCraneRed = mergeParts(THREE, [
       { geo: box, px: -0.11, py: 0.48, pz: -0.14, sx: 0.032, sy: 0.96, sz: 0.032 },
       { geo: box, px: 0.11, py: 0.48, pz: -0.14, sx: 0.032, sy: 0.96, sz: 0.032 },
       { geo: box, px: -0.11, py: 0.48, pz: 0.16, sx: 0.032, sy: 0.96, sz: 0.032 },
@@ -973,10 +1223,8 @@ export class ArchitectureLibrary {
       { geo: box, px: 0, py: 1.39, pz: 0.02, sx: 0.15, sy: 0.028, sz: 0.03 },
       { geo: box, px: 0, py: 1.17, pz: 0.38, rx: 0.50, sx: 0.016, sy: 0.016, sz: 0.82 },
       { geo: box, px: 0, py: 1.17, pz: -0.18, rx: -0.78, sx: 0.016, sy: 0.016, sz: 0.56 }
-    ];
-    const gantryCraneRed = mergeParts(THREE, gcParts);
+    ]);
 
-    // 11. Gull-Wing Terminal Roof & CopenHill Sloped Eco-Incinerator Wedge
     const gullShape = new THREE.Shape();
     gullShape.moveTo(-0.56, 0.0);
     gullShape.quadraticCurveTo(-0.28, 0.19, 0.0, 0.05);
@@ -997,7 +1245,7 @@ export class ArchitectureLibrary {
     const copenhillWedge = new THREE.ExtrudeGeometry(wedgeShape, { depth: 0.58, bevelEnabled: true, bevelThickness: 0.015, bevelSize: 0.015, bevelSegments: 2 });
     copenhillWedge.translate(0, 0, -0.29);
 
-    // 12. Widebody Airliner & Ocean Container Ship Hulls
+    // 7. Widebody Airliner & Ocean Container Ship Hulls
     const wingShape = new THREE.Shape();
     wingShape.moveTo(0, -0.24);
     wingShape.lineTo(0.68, 0.15);
@@ -1052,8 +1300,7 @@ export class ArchitectureLibrary {
     const windNacelle = new THREE.CapsuleGeometry(0.058, 0.15, 8, 12);
     windNacelle.rotateX(Math.PI * 0.5);
 
-    // 13. CR400 "Fuxing" High-Speed Train Shared Aerodynamic Coach & Nose Geometries
-    // Cross-section: width = 0.208 (-0.104..+0.104), height = 0.218 (y = 0.022..0.240 above rail-head y=0)
+    // 8. CR400 "Fuxing" High-Speed Train Shared Geometries
     const crShape = new THREE.Shape();
     crShape.moveTo(-0.086, 0.022);
     crShape.lineTo(0.086, 0.022);
@@ -1067,37 +1314,26 @@ export class ArchitectureLibrary {
     fuxingMidBody.translate(0, 0, -0.325);
 
     const fuxingHeadAft = new THREE.ExtrudeGeometry(crShape, { depth: 0.38, bevelEnabled: false });
-    fuxingHeadAft.translate(0, 0, -0.340); // spans [-0.340, +0.040], meeting lofted nose at z = +0.040!
+    fuxingHeadAft.translate(0, 0, -0.340);
     const fuxingNose = buildCR400NoseGeometry(THREE);
-    const fuxingHeadBody = mergeParts(THREE, [
-      { geo: fuxingHeadAft },
-      { geo: fuxingNose }
-    ]);
+    const fuxingHeadBody = mergeParts(THREE, [{ geo: fuxingHeadAft }, { geo: fuxingNose }]);
     fuxingHeadAft.dispose();
     fuxingNose.dispose();
 
-    // Pre-merged bogies + underframe skirts + inter-car gangway bellows + dark window ribbon
     const fuxingMidDark = mergeParts(THREE, [
-      // Bogies at z = -0.20 & +0.20 (sitting right above y=0 rail-head)
       { geo: box, px: 0, py: 0.017, pz: -0.20, sx: 0.165, sy: 0.026, sz: 0.11 },
       { geo: box, px: 0, py: 0.017, pz: 0.20, sx: 0.165, sy: 0.026, sz: 0.11 },
-      // Inter-car dark rubber gangway diaphragms (extending total length to 0.68)
       { geo: box, px: 0, py: 0.125, pz: -0.333, sx: 0.176, sy: 0.185, sz: 0.016 },
       { geo: box, px: 0, py: 0.125, pz: 0.333, sx: 0.176, sy: 0.185, sz: 0.016 },
-      // Continuous flush dark tinted passenger window strip on both sides
       { geo: box, px: 0, py: 0.150, pz: 0, sx: 0.206, sy: 0.042, sz: 0.58 }
     ]);
 
     const fuxingHeadDark = mergeParts(THREE, [
-      // Rear & front bogies + nose cowling snowplow
       { geo: box, px: 0, py: 0.017, pz: -0.21, sx: 0.165, sy: 0.026, sz: 0.11 },
       { geo: box, px: 0, py: 0.017, pz: 0.15, sx: 0.155, sy: 0.026, sz: 0.10 },
       { geo: box, px: 0, py: 0.036, pz: 0.28, rx: 0.28, sx: 0.11, sy: 0.024, sz: 0.10 },
-      // Rear inter-car gangway at z = -0.34
       { geo: box, px: 0, py: 0.125, pz: -0.344, sx: 0.176, sy: 0.185, sz: 0.014 },
-      // Aft side passenger window strip
       { geo: box, px: 0, py: 0.150, pz: -0.14, sx: 0.206, sy: 0.042, sz: 0.35 },
-      // Wrap-around dark aerodynamic cab windscreen at +Z nose
       { geo: sphere16, px: 0, py: 0.168, pz: 0.165, rx: -0.34, sx: 0.148, sy: 0.062, sz: 0.145 }
     ]);
 
@@ -1107,7 +1343,6 @@ export class ArchitectureLibrary {
     ]);
 
     const fuxingHeadStripe = mergeParts(THREE, [
-      // Aft horizontal crimson cheatline + sweeping angled nose stripe converging toward nose tip
       { geo: box, px: 0, py: 0.106, pz: -0.14, sx: 0.211, sy: 0.018, sz: 0.39 },
       { geo: box, px: 0.082, py: 0.088, pz: 0.165, rx: 0.13, ry: -0.14, sx: 0.018, sy: 0.016, sz: 0.25 },
       { geo: box, px: -0.082, py: 0.088, pz: 0.165, rx: 0.13, ry: 0.14, sx: 0.018, sy: 0.016, sz: 0.25 }
@@ -1118,14 +1353,144 @@ export class ArchitectureLibrary {
       { geo: sphere16, px: 0.045, py: 0.076, pz: 0.308, sx: 0.026, sy: 0.018, sz: 0.032 }
     ]);
 
+    // 9. True-Proportion Realistic Modern 3D Road Vehicles (facing +Z, tire bottoms at exact y = 0.000!)
+    const makeWheelsAndChassis = (zf, zr, halfTrack, r, w, chassisL, chassisW) => {
+      const wParts = [
+        { geo: cyl16, px: -halfTrack, py: r, pz: zf, rz: Math.PI * 0.5, sx: r * 2, sy: w, sz: r * 2 },
+        { geo: cyl16, px: halfTrack, py: r, pz: zf, rz: Math.PI * 0.5, sx: r * 2, sy: w, sz: r * 2 },
+        { geo: cyl16, px: -halfTrack, py: r, pz: zr, rz: Math.PI * 0.5, sx: r * 2, sy: w, sz: r * 2 },
+        { geo: cyl16, px: halfTrack, py: r, pz: zr, rz: Math.PI * 0.5, sx: r * 2, sy: w, sz: r * 2 },
+        { geo: box, px: 0, py: r * 0.95, pz: (zf + zr) * 0.5, sx: chassisW, sy: r * 0.7, sz: chassisL }
+      ];
+      return mergeParts(THREE, wParts);
+    };
+
+    const makeLampPair = (halfX, py, pz, sx, sy, sz) => mergeParts(THREE, [
+      { geo: box, px: -halfX, py, pz, sx, sy, sz },
+      { geo: box, px: halfX, py, pz, sx, sy, sz }
+    ]);
+
+    // Sedan / Taxi (L ≈ 0.30, W ≈ 0.145, H ≈ 0.114)
+    const vehSedanBody = buildSideProfileGeo(THREE, [
+      [-0.144, 0.024],
+      [0.145, 0.022],
+      [0.148, 0.045],
+      [0.135, 0.056, 0.072, 0.066],
+      [-0.138, 0.070],
+      [-0.146, 0.052]
+    ], 0.144, 0.008);
+
+    const vehSedanCabin = buildSideProfileGeo(THREE, [
+      [-0.108, 0.064],
+      [0.068, 0.062],
+      [0.020, 0.111],
+      [-0.068, 0.112]
+    ], 0.122, 0.006);
+
+    const vehSedanWheels = makeWheelsAndChassis(0.092, -0.092, 0.064, 0.022, 0.022, 0.23, 0.115);
+    const vehSedanHL = makeLampPair(0.048, 0.046, 0.147, 0.028, 0.012, 0.010);
+    const vehSedanTL = makeLampPair(0.046, 0.058, -0.145, 0.034, 0.011, 0.010);
+
+    // Compact Urban SUV (L ≈ 0.31, W ≈ 0.150, H ≈ 0.126)
+    const vehSuvBody = buildSideProfileGeo(THREE, [
+      [-0.148, 0.026],
+      [0.148, 0.026],
+      [0.152, 0.054],
+      [0.140, 0.068, 0.076, 0.075],
+      [-0.146, 0.078],
+      [-0.150, 0.055]
+    ], 0.148, 0.008);
+
+    const vehSuvCabin = buildSideProfileGeo(THREE, [
+      [-0.136, 0.073],
+      [0.068, 0.071],
+      [0.022, 0.124],
+      [-0.118, 0.125]
+    ], 0.128, 0.006);
+
+    const vehSuvWheels = makeWheelsAndChassis(0.096, -0.096, 0.067, 0.024, 0.024, 0.24, 0.120);
+    const vehSuvHL = makeLampPair(0.050, 0.054, 0.151, 0.030, 0.013, 0.010);
+    const vehSuvTL = makeLampPair(0.050, 0.066, -0.149, 0.032, 0.013, 0.010);
+
+    // Low-Floor EV City Transit Bus (L ≈ 0.50, W ≈ 0.162, H ≈ 0.186)
+    const vehBusBody = buildSideProfileGeo(THREE, [
+      [-0.244, 0.024],
+      [0.244, 0.024],
+      [0.250, 0.085],
+      [0.248, 0.168, 0.228, 0.174],
+      [-0.238, 0.174],
+      [-0.246, 0.160]
+    ], 0.160, 0.007);
+
+    const vehBusDark = mergeParts(THREE, [
+      // Panoramic dark side & front/rear transit windows
+      { geo: box, px: 0, py: 0.122, pz: 0.005, sx: 0.163, sy: 0.058, sz: 0.45 },
+      { geo: box, px: 0, py: 0.118, pz: 0.246, sx: 0.144, sy: 0.068, sz: 0.014 },
+      { geo: box, px: 0, py: 0.124, pz: -0.243, sx: 0.140, sy: 0.048, sz: 0.012 }
+    ]);
+    const vehBusStripe = mergeParts(THREE, [
+      { geo: box, px: 0, py: 0.058, pz: 0, sx: 0.163, sy: 0.036, sz: 0.486 },
+      { geo: box, px: 0, py: 0.180, pz: -0.02, sx: 0.115, sy: 0.014, sz: 0.28 }
+    ]);
+    const vehBusWheels = makeWheelsAndChassis(0.145, -0.145, 0.070, 0.027, 0.026, 0.40, 0.13);
+    const vehBusHL = makeLampPair(0.056, 0.048, 0.249, 0.026, 0.014, 0.010);
+    const vehBusTL = makeLampPair(0.058, 0.062, -0.245, 0.022, 0.026, 0.010);
+
+    // Cab-Over Cargo / Container Truck & Municipal Trucks (L ≈ 0.44, W ≈ 0.160, H ≈ 0.190)
+    const vehTruckCab = buildSideProfileGeo(THREE, [
+      [0.088, 0.028],
+      [0.214, 0.028],
+      [0.218, 0.092],
+      [0.204, 0.164],
+      [0.155, 0.182],
+      [0.088, 0.182]
+    ], 0.154, 0.006);
+
+    const vehTruckGlass = mergeParts(THREE, [
+      { geo: box, px: 0, py: 0.128, pz: 0.211, rx: 0.12, sx: 0.138, sy: 0.048, sz: 0.014 },
+      { geo: box, px: 0, py: 0.128, pz: 0.155, sx: 0.156, sy: 0.044, sz: 0.075 }
+    ]);
+    const vehTruckWheels = makeWheelsAndChassis(0.148, -0.132, 0.068, 0.027, 0.026, 0.39, 0.125);
+    const vehTruckHL = makeLampPair(0.054, 0.048, 0.217, 0.026, 0.014, 0.010);
+    const vehTruckTL = makeLampPair(0.056, 0.046, -0.218, 0.026, 0.014, 0.010);
+
+    // Firetruck Crew-Cab + Equipment Body + Silver Aerial Ladder Rack
+    const vehFireBody = mergeParts(THREE, [
+      { geo: vehTruckCab },
+      { geo: box, px: 0, py: 0.104, pz: -0.075, sx: 0.158, sy: 0.132, sz: 0.305 }
+    ]);
+    const vehFireSilver = mergeParts(THREE, [
+      // White/silver rescue stripe + roll-up equipment shutters + aerial extension ladder on roof!
+      { geo: box, px: 0, py: 0.098, pz: -0.075, sx: 0.161, sy: 0.076, sz: 0.24 },
+      { geo: box, px: 0, py: 0.072, pz: 0.152, sx: 0.157, sy: 0.018, sz: 0.125 },
+      { geo: box, px: -0.036, py: 0.180, pz: -0.03, sx: 0.016, sy: 0.016, sz: 0.36 },
+      { geo: box, px: 0.036, py: 0.180, pz: -0.03, sx: 0.016, sy: 0.016, sz: 0.36 },
+      { geo: box, px: 0, py: 0.180, pz: -0.16, sx: 0.082, sy: 0.012, sz: 0.018 },
+      { geo: box, px: 0, py: 0.180, pz: -0.03, sx: 0.082, sy: 0.012, sz: 0.018 },
+      { geo: box, px: 0, py: 0.180, pz: 0.10, sx: 0.082, sy: 0.012, sz: 0.018 }
+    ]);
+
+    // Garbage Compactor Angled Hopper Body (z ∈ [-0.215, +0.080])
+    const vehGarbageHopper = buildSideProfileGeo(THREE, [
+      [-0.185, 0.048],
+      [0.080, 0.048],
+      [0.080, 0.178],
+      [-0.135, 0.182],
+      [-0.216, 0.125],
+      [-0.212, 0.068]
+    ], 0.156, 0.006);
+
     this.geos = {
       box,
+      aoQuad,
       cyl16,
       cyl24,
       oct,
       taperOct,
       taperPyr,
       taperSquare,
+      damGravityBody,
+      damButtresses,
       parapetFrame,
       rectCornerFins,
       planters4,
@@ -1158,6 +1523,30 @@ export class ArchitectureLibrary {
       fuxingMidStripe,
       fuxingHeadStripe,
       fuxingHeadlights,
+      vehSedanBody,
+      vehSedanCabin,
+      vehSedanWheels,
+      vehSedanHL,
+      vehSedanTL,
+      vehSuvBody,
+      vehSuvCabin,
+      vehSuvWheels,
+      vehSuvHL,
+      vehSuvTL,
+      vehBusBody,
+      vehBusDark,
+      vehBusStripe,
+      vehBusWheels,
+      vehBusHL,
+      vehBusTL,
+      vehTruckCab,
+      vehTruckGlass,
+      vehTruckWheels,
+      vehTruckHL,
+      vehTruckTL,
+      vehFireBody,
+      vehFireSilver,
+      vehGarbageHopper,
       windMast: new THREE.CylinderGeometry(0.030, 0.068, 1.58, 14),
       windNacelle,
       windBlade: new THREE.ConeGeometry(0.036, 0.44, 7),
@@ -1168,9 +1557,22 @@ export class ArchitectureLibrary {
   }
 
   setNightFactor(night) {
-    const emi = Math.max(0, Math.min(1, night)) * 1.28;
+    const n = Math.max(0, Math.min(1, night));
+    const emi = n * 1.28;
     for (let i = 0; i < this.emissiveMaterials.length; i++) {
       this.emissiveMaterials[i].emissiveIntensity = emi;
+    }
+
+    // Scale vehicle headlights & ruby taillights brightly whenever night > 0.18
+    if (this.m.vehHeadlight && this.m.vehTaillight) {
+      if (n > 0.18) {
+        const ramp = Math.min(1, (n - 0.18) / 0.52);
+        this.m.vehHeadlight.emissiveIntensity = 0.45 + ramp * 2.45;
+        this.m.vehTaillight.emissiveIntensity = 0.42 + ramp * 2.18;
+      } else {
+        this.m.vehHeadlight.emissiveIntensity = 0.16;
+        this.m.vehTaillight.emissiveIntensity = 0.20;
+      }
     }
   }
 
@@ -1187,7 +1589,18 @@ export class ArchitectureLibrary {
     return m;
   }
 
-  // Granite plaza plot pad (~0.92 footprint) + 2 or 4 manicured street trees/planters at parcel edges
+  // Grounded soft Contact AO shadow skirt under buildings (marked skipGhost = true)
+  _addContactAO(grp, sx = 1.04, sz = 1.04, py = 0.008) {
+    const ao = new this.THREE.Mesh(this.geos.aoQuad, this.m.contactAO);
+    ao.position.set(0, py, 0);
+    ao.scale.set(sx, 1, sz);
+    ao.castShadow = false;
+    ao.receiveShadow = false;
+    ao.userData.skipGhost = true;
+    grp.add(ao);
+    return ao;
+  }
+
   _addZonedPlotPad(grp, ab = false, fourCorners = true) {
     this._addMesh(grp, this.geos.box, ab ? this.m.pavingPlazaDusty : this.m.pavingPlaza, 0, 0.012, 0, 0.92, 0.024, 0.92, false);
     const pSet = fourCorners ? this.geos.planters4 : this.geos.planters2;
@@ -1275,6 +1688,19 @@ export class ArchitectureLibrary {
     const ab = Boolean(b.abandoned);
     const type = b.type || 'RL';
 
+    // Grounded Contact AO Shadow Skirt under every building
+    if (type === 'stadium') {
+      this._addContactAO(grp, 1.34, 1.14, 0.008);
+    } else if (type === 'landmark' || type === 'amusement_park' || type === 'nuclear_plant' || type === 'solar_plant' || type === 'seaport') {
+      this._addContactAO(grp, 1.16, 1.16, 0.008);
+    } else if (type === 'airport') {
+      this._addContactAO(grp, 1.16, 1.44, 0.008);
+    } else if (type === 'power_wind') {
+      this._addContactAO(grp, 0.48, 0.48, 0.008);
+    } else {
+      this._addContactAO(grp, 1.04, 1.04, 0.008);
+    }
+
     switch (type) {
       case 'RL':
         this._buildVillaRL(grp, lv, v, ab);
@@ -1357,9 +1783,8 @@ export class ArchitectureLibrary {
     return grp;
   }
 
-  // ==================== 1. Photorealistic Zoned Buildings ====================
+  // ==================== 1. Photorealistic PBR Zoned Buildings ====================
 
-  // RL: Contemporary Villas & Townhouses (villa_plaster 2-floor = 0.34 world H, pitched hip OR flat parapet roofs)
   _buildVillaRL(grp, lv, v, ab) {
     this._addZonedPlotPad(grp, ab, false);
 
@@ -1369,21 +1794,18 @@ export class ArchitectureLibrary {
     const wallMat = ab ? this.m.dustyVilla : villaMats[v % villaMats.length];
     const trimMat = ab ? this.m.abandoned : this.m.parapetStone;
 
-    // Rear private lawn + low perimeter garden hedges
     this._addMesh(grp, this.geos.box, lawnMat, 0, 0.022, -0.14, 0.80, 0.012, 0.54, false);
     this._addMesh(grp, this.geos.box, hedgeMat, 0, 0.052, -0.42, 0.84, 0.06, 0.04, true);
     this._addMesh(grp, this.geos.box, hedgeMat, -0.42, 0.052, -0.05, 0.04, 0.06, 0.72, true);
     this._addMesh(grp, this.geos.box, hedgeMat, 0.42, 0.052, -0.05, 0.04, 0.06, 0.72, true);
 
     const baseY = 0.024;
-    // Exact floor-aligned heights: 2 floors = 0.34 (Lv.1-2), 3 floors = 0.51 (Lv.3)
     const mainH = lv >= 3 ? 0.51 : 0.34;
     const wingH = 0.34;
     const houseZ = lv >= 3 ? 0.11 : 0.04;
     const houseX = (v & 1) === 0 ? -0.08 : 0.08;
     const wingX = (v & 1) === 0 ? 0.19 : -0.19;
 
-    // Main 2/3-storey plaster villa volume + side garage/townhouse wing + entrance porch canopy
     this._addMesh(grp, this.geos.box, wallMat, houseX, baseY + mainH * 0.5, houseZ, 0.46, mainH, 0.42, true);
     this._addMesh(grp, this.geos.box, wallMat, wingX, baseY + wingH * 0.5, houseZ + 0.04, 0.26, wingH * 0.65, 0.34, true);
     this._addMesh(grp, this.geos.box, this.m.charcoalFrame, houseX, baseY + 0.15, houseZ + 0.24, 0.20, 0.020, 0.09, true);
@@ -1392,25 +1814,21 @@ export class ArchitectureLibrary {
     let roofTopY = baseY + mainH;
 
     if (isFlatModern) {
-      // Crisp contemporary flat parapet villa roof
       this._addMesh(grp, this.geos.parapetFrame, trimMat, houseX, baseY + mainH + 0.024, houseZ, 0.47, 0.048, 0.43, true);
       this._addMesh(grp, this.geos.parapetFrame, trimMat, wingX, baseY + wingH * 0.65 + 0.02, houseZ + 0.04, 0.27, 0.04, 0.35, true);
       roofTopY = baseY + mainH + 0.03;
     } else {
-      // Sculpted hipped terracotta or dark-slate roof
       const pitchMat = ab ? this.m.abandonedRust : ((v % 4 === 0) ? this.m.terracottaRoof : this.m.slateRoof);
       this._addMesh(grp, this.geos.taperPyr, pitchMat, houseX, baseY + mainH + 0.085, houseZ, 0.54, 0.17, 0.50, true, Math.PI * 0.25);
       this._addMesh(grp, this.geos.box, trimMat, wingX, baseY + wingH * 0.65 + 0.015, houseZ + 0.04, 0.28, 0.03, 0.36, true);
       roofTopY = baseY + mainH + 0.11;
     }
 
-    // Lv.2+: Rooftop solar array
     if (lv >= 2 && !ab) {
       const sol = this._addMesh(grp, this.geos.box, this.m.solarPanel, wingX, baseY + wingH * 0.65 + 0.04, houseZ + 0.04, 0.20, 0.014, 0.18, false);
       sol.rotation.x = 0.22;
     }
 
-    // Lv.3: Backyard azure swimming pool + teak sun deck + colorful patio umbrella
     if (lv >= 3) {
       this._addMesh(grp, this.geos.box, ab ? this.m.abandonedRust : this.m.teakDeck, -0.19, 0.032, -0.24, 0.32, 0.020, 0.22, false);
       this._addMesh(grp, this.geos.box, trimMat, 0.15, 0.032, -0.24, 0.36, 0.024, 0.23, false);
@@ -1424,7 +1842,6 @@ export class ArchitectureLibrary {
     }
   }
 
-  // CL: 2-4 Storey Contemporary Street Retail Blocks (ground floor = retail_podium 0.36H, upper floors = 0.17H * lv)
   _buildShopCL(grp, lv, v, ab) {
     this._addZonedPlotPad(grp, ab, false);
 
@@ -1434,14 +1851,12 @@ export class ArchitectureLibrary {
     const trimMat = ab ? this.m.abandoned : this.m.parapetStone;
 
     const baseY = 0.024;
-    const podH = 0.36; // 1 full retail_podium storey!
-    const upperFloors = Math.min(3, lv); // 1..3 upper storeys -> 2..4 storey retail block
+    const podH = 0.36;
+    const upperFloors = Math.min(3, lv);
     const upperH = upperFloors * 0.17;
 
-    // Ground-floor luxury boutique storefront podium
     this._addMesh(grp, this.geos.box, podMat, 0, baseY + podH * 0.5, -0.05, 0.76, podH, 0.62, true);
 
-    // Upper commercial storeys (stepped or L-shaped corner retail massing)
     const uBase = baseY + podH;
     if ((v & 1) === 0) {
       this._addMesh(grp, this.geos.box, upperMat, 0, uBase + upperH * 0.5, -0.07, 0.72, upperH, 0.56, true);
@@ -1452,12 +1867,10 @@ export class ArchitectureLibrary {
       this._addMesh(grp, this.geos.parapetFrame, trimMat, -0.08, uBase + upperH + 0.025, -0.07, 0.57, 0.05, 0.57, true);
     }
 
-    // Subtle illuminated fascia accent & vertical blade sign
     const neonMat = ab ? this.m.abandonedRust : this.neonMats[(v + lv) % this.neonMats.length];
     this._addMesh(grp, this.geos.box, neonMat, 0, baseY + 0.27, 0.265, 0.54, 0.032, 0.018, false);
     this._addMesh(grp, this.geos.box, neonMat, 0.35, uBase + 0.16, 0.18, 0.020, 0.20, 0.065, false);
 
-    // Outdoor cafe bistro parasols on front granite plaza
     if (!ab) {
       for (const cx of [-0.22, 0.20]) {
         this._addMesh(grp, this.geos.cyl16, this.m.whiteComposite, cx, 0.052, 0.34, 0.055, 0.045, 0.055, false);
@@ -1469,7 +1882,6 @@ export class ArchitectureLibrary {
     this._addRooftopHVAC(grp, -0.14, uBase + upperH + 0.01, -0.10, ab);
   }
 
-  // RH: Contemporary Chinese Tier-1 Residential Towers (retail/lobby podium + slender multi-wing tower, floorH = 0.15)
   _buildCondoRH(grp, lv, v, ab) {
     this._addZonedPlotPad(grp, ab, true);
 
@@ -1479,13 +1891,11 @@ export class ArchitectureLibrary {
     const pilasterMat = ab ? this.m.abandoned : this.m.parapetStone;
     const frameMat = ab ? this.m.abandonedRust : this.m.charcoalFrame;
 
-    // Ground-floor Residential Lobby / Community Retail Podium (exact 0.36H, topped with roof_solar_green)
     const baseY = 0.024;
     const podH = 0.36;
     this._addMesh(grp, this.geos.box, podMat, 0, baseY + podH * 0.5, 0.02, 0.80, podH, 0.72, true);
     this._addMesh(grp, this.geos.box, frameMat, 0, baseY + 0.24, 0.41, 0.36, 0.022, 0.09, true);
 
-    // Exact integer floor counts (floorH = 0.15; 4 floors = 0.60 texture repeat -> zero cut windows!)
     const floorsByLv = [0, 8, 13, 19, 25, 31];
     const nFloors = floorsByLv[Math.min(5, lv)];
     const shaftH = nFloors * 0.15;
@@ -1493,7 +1903,6 @@ export class ArchitectureLibrary {
     const plan = v % 4;
 
     if (plan === 0) {
-      // Plan 0: 现代南北通透板式高层住宅 (Slender Slab Tower + Twin Recessed/Projected Bays)
       const sideH = (nFloors - 1) * 0.15;
       this._addMesh(grp, this.geos.box, wallMat, 0, tBase + shaftH * 0.5, -0.02, 0.72, shaftH, 0.32, true);
       this._addMesh(grp, this.geos.box, wallMat, -0.20, tBase + sideH * 0.5, -0.02, 0.24, sideH, 0.40, true);
@@ -1501,13 +1910,11 @@ export class ArchitectureLibrary {
 
       const topY = tBase + shaftH;
       this._addMesh(grp, this.geos.parapetFrame, pilasterMat, 0, topY + 0.038, -0.02, 0.73, 0.075, 0.33, true);
-      // Elevator machine room + cylindrical silver rooftop water tank + HVAC
       this._addMesh(grp, this.geos.box, pilasterMat, 0, topY + 0.085, -0.03, 0.20, 0.15, 0.15, true);
       this._addMesh(grp, this.geos.box, frameMat, 0, topY + 0.165, -0.03, 0.22, 0.018, 0.17, false);
       this._addMesh(grp, this.geos.cyl16, this.m.brushedSilver, 0.20, topY + 0.055, -0.04, 0.09, 0.10, 0.09, true);
       this._addRooftopHVAC(grp, -0.20, topY + 0.005, -0.02, ab);
     } else if (plan === 1) {
-      // Plan 1: 品字形 / T字蝶式高层住宅 (Butterfly T-Plan Point Tower)
       const northH = (nFloors - 2) * 0.15;
       this._addMesh(grp, this.geos.box, wallMat, 0, tBase + shaftH * 0.5, 0.06, 0.68, shaftH, 0.32, true);
       this._addMesh(grp, this.geos.box, wallMat, 0, tBase + northH * 0.5, -0.15, 0.32, northH, 0.42, true);
@@ -1519,7 +1926,6 @@ export class ArchitectureLibrary {
       this._addMesh(grp, this.geos.cyl16, this.m.brushedSilver, -0.20, topY + 0.055, 0.06, 0.09, 0.10, 0.09, true);
       this._addRooftopHVAC(grp, 0.20, topY + 0.005, 0.06, ab);
     } else if (plan === 2) {
-      // Plan 2: 90° L形转角高层住宅楼
       const wingH = (nFloors - 3) * 0.15;
       this._addMesh(grp, this.geos.box, wallMat, 0.02, tBase + shaftH * 0.5, -0.12, 0.68, shaftH, 0.32, true);
       this._addMesh(grp, this.geos.box, wallMat, -0.16, tBase + wingH * 0.5, 0.08, 0.32, wingH, 0.50, true);
@@ -1530,7 +1936,6 @@ export class ArchitectureLibrary {
       this._addMesh(grp, this.geos.box, pilasterMat, -0.12, topY + 0.085, -0.12, 0.19, 0.15, 0.15, true);
       this._addMesh(grp, this.geos.cyl16, this.m.brushedSilver, 0.18, topY + 0.055, -0.12, 0.09, 0.10, 0.09, true);
     } else {
-      // Plan 3: 现代错位双拼点式公寓塔楼 (Twin Offset Slender Residential Point Towers)
       const hB = Math.max(0.90, (nFloors - 4) * 0.15);
       this._addMesh(grp, this.geos.box, wallMat, -0.15, tBase + shaftH * 0.5, -0.06, 0.38, shaftH, 0.36, true);
       this._addMesh(grp, this.geos.box, wallMat, 0.16, tBase + hB * 0.5, 0.06, 0.36, hB, 0.36, true);
@@ -1544,7 +1949,6 @@ export class ArchitectureLibrary {
     }
   }
 
-  // CH & O: Contemporary Tier-1 CBD Glass & Limestone Curtain-Wall Towers on Retail Podium (floorH = 0.17)
   _buildSkyscraperCHO(grp, type, lv, v, ab, x, y0, z, rotRad, hooks) {
     this._addZonedPlotPad(grp, ab, true);
 
@@ -1554,13 +1958,11 @@ export class ArchitectureLibrary {
     const ledMat = ab ? this.m.abandoned : (isOffice ? this.m.ledLinearCyan : this.m.ledLinearWhite);
     const podMat = ab ? this.m.dustyRetail : this.m.retailPodium;
 
-    // Ground-Floor Commercial Shopfront & Lobby Podium (0.36H, green sky-garden roof)
     const baseY = 0.024;
     const podH = 0.36;
     this._addMesh(grp, this.geos.box, podMat, 0, baseY + podH * 0.5, 0, 0.80, podH, 0.76, true);
     this._addMesh(grp, this.geos.box, metalMat, 0, baseY + 0.24, 0.41, 0.40, 0.024, 0.09, true);
 
-    // Exact integer floor counts (floorH = 0.17; 4 floors = 0.68 texture repeat!)
     const floorsByLv = [0, 8, 14, 21, 28, 35];
     const nFloors = floorsByLv[Math.min(5, lv)];
     const shaftH = nFloors * 0.17;
@@ -1570,7 +1972,6 @@ export class ArchitectureLibrary {
     let helipadX = 0, helipadZ = -0.02;
 
     if (sil === 0) {
-      // Archetype 0: 现代单元式超白玻商务主塔 + 避难层腰线 + 竖向金属肋 + 挑冠
       const mat = ab ? this.m.dustyCBD : (isOffice ? this.m.cbdSlateSilver : this.m.cbdIceBlue);
       const w = 0.60, d = 0.56;
       this._addMesh(grp, this.geos.box, mat, 0, tBase + shaftH * 0.5, -0.02, w, shaftH, d, true);
@@ -1587,7 +1988,6 @@ export class ArchitectureLibrary {
       helipadY = topY + 0.005;
       helipadX = 0.06; helipadZ = 0.04;
     } else if (sil === 1) {
-      // Archetype 1: 现代高低双子玻璃幕墙写字楼 + 空中玻璃连廊
       const mat = ab ? this.m.dustyCBD : (isOffice ? this.m.cbdTealGlass : this.m.cbdDeepAzure);
       const hA = shaftH;
       const hB = Math.max(1.02, Math.floor(nFloors * 0.80) * 0.17);
@@ -1613,7 +2013,6 @@ export class ArchitectureLibrary {
       helipadY = topA + 0.005;
       helipadX = -0.17; helipadZ = -0.09;
     } else if (sil === 2) {
-      // Archetype 2: 竖向石材幕墙阶梯退台金融中心 (office_stone facade with 2 crisp setbacks)
       const mat = ab ? this.m.dustyStoneFin : (isOffice ? this.m.finStoneSilver : this.m.finStoneChampagne);
       const n1 = Math.max(4, Math.round(nFloors * 0.52));
       const n2 = Math.max(2, Math.round(nFloors * 0.28));
@@ -1635,7 +2034,6 @@ export class ArchitectureLibrary {
       helipadY = topY + 0.005;
       helipadX = 0; helipadZ = 0;
     } else {
-      // Archetype 3: 现代总部科技错动方塔 (Interlocking Shifted Glass Curtain-Wall Boxes + Sky-Lobby Waist)
       const mat = ab ? this.m.dustyCBD : (isOffice ? this.m.cbdSlateSilver : this.m.cbdTealGlass);
       const nLo = Math.max(4, Math.floor(nFloors * 0.52));
       const nHi = Math.max(3, nFloors - nLo);
@@ -1668,16 +2066,13 @@ export class ArchitectureLibrary {
     }
   }
 
-  // I: 4 Contemporary Industrial & Smart-Manufacturing Archetypes using photoreal industrial_panel + plot pad
   _buildIndustrialI(grp, lv, v, ab, x, y0, z, rotRad, hooks) {
     const flip = (Math.floor(v / 3) % 2 === 1) ? -1 : 1;
 
-    // Granite plot edge pad + front street planters + heavy truck asphalt yard
     this._addZonedPlotPad(grp, ab, false);
     this._addMesh(grp, this.geos.box, ab ? this.m.abandoned : this.m.asphalt, 0, 0.025, -0.02, 0.82, 0.008, 0.76, false);
     const baseY = 0.028;
 
-    // Lv.4+: High-Tech Clean Manufacturing Park (Semiconductor Fab / EV Gigafactory, ZERO smokestack)
     if (lv >= 4) {
       const fabMat = ab ? this.m.dustyInd : this.m.indPanelSilver;
       const officeMat = ab ? this.m.dustyCBD : ((v & 1) === 0 ? this.m.cbdDeepAzure : this.m.cbdSlateSilver);
@@ -1728,11 +2123,9 @@ export class ArchitectureLibrary {
       return;
     }
 
-    // Lv.1-3: 3 Distinct Industrial Archetypes
     const arch = v % 3;
 
     if (arch === 0) {
-      // Archetype 0: Modern Corrugated Steel Logistics & Cold-Chain Warehouse (industrial_panel, NO smokestack)
       const whMat = ab ? this.m.dustyInd : (((v >> 1) & 1) === 0 ? this.m.indPanelBlue : this.m.indPanelSilver);
       const fascia = ab ? this.m.abandonedRust : (((v >> 1) & 1) === 0 ? this.m.factoryFasciaBlue : this.m.factoryFasciaTeal);
       const whH = 0.36 + (lv - 1) * 0.05;
@@ -1753,7 +2146,6 @@ export class ArchitectureLibrary {
         this._addMesh(grp, this.geos.box, cMat, bayXs[i], baseY + 0.05, 0.24, 0.105, 0.09, 0.20, true);
       }
     } else if (arch === 1) {
-      // Archetype 1: Heavy Machinery / Foundry Works (industrial_panel warm + sawtooth roof + overhead yellow gantry + chimney)
       const hallMat = ab ? this.m.dustyInd : this.m.indPanelWarm;
       const darkRoof = ab ? this.m.abandoned : this.m.steelDark;
       const hallH = 0.38 + (lv - 1) * 0.06;
@@ -1779,7 +2171,6 @@ export class ArchitectureLibrary {
       this._addMesh(grp, this.geos.cyl16, this.m.charcoalFrame, sx, baseY + stackH - 0.025, sz, 0.09, 0.045, 0.09, false);
       if (!ab) this._pushSmoke(hooks, sx, baseY + stackH + 0.04, sz, x, y0, z, rotRad, false);
     } else {
-      // Archetype 2: Chemical & New-Materials Processing Plant (Control Bldg + Twin Horton Spheres + Pipe Rack + Column)
       const ctrlMat = ab ? this.m.dustyInd : this.m.indPanelBlue;
       const tankMat = ab ? this.m.abandoned : this.m.whiteComposite;
       const silver = ab ? this.m.abandoned : this.m.brushedSilver;
@@ -1816,7 +2207,52 @@ export class ArchitectureLibrary {
     }
   }
 
-  // ==================== 2. Landmark, Civic & Energy Monuments ====================
+  // ==================== 2. Landmark, Civic, Energy & Hydroelectric Dam ====================
+
+  // Sculpted Monumental Hydroelectric Gravity Dam Segment (local y=0 corresponds to world y=0)
+  createHydroDamSegment(crestY = 1.0, minH = -0.4, isGenerating = false, damHp = 100) {
+    const THREE = this.THREE;
+    const grp = new THREE.Group();
+
+    const cY = Number.isFinite(crestY) ? crestY : 1.0;
+    const mH = Number.isFinite(minH) ? minH : -0.4;
+    const baseY = Math.min(-0.65, mH - 0.22);
+    const wallH = Math.max(0.45, cY - baseY);
+    const midY = baseY + wallH * 0.5;
+
+    // 1. Tapered/Sloped Concrete Gravity Dam Wall (wide anchored toe tapering cleanly to crest)
+    this._addMesh(grp, this.geos.damGravityBody, this.m.damConcrete, 0, midY, 0, 1.02, wallH, 1.02, true);
+
+    // 2. Flanking Concrete Buttress Piers + Recessed Vertical Spillway Sluice Bay + Steel Gate Lintel
+    this._addMesh(grp, this.geos.damButtresses, this.m.damConcrete, 0, midY, 0, 1.0, wallH, 1.0, true);
+    const sluiceH = Math.max(0.24, wallH * 0.62);
+    const sluiceY = cY - sluiceH * 0.5 - 0.08;
+    this._addMesh(grp, this.geos.box, this.m.darkGranite, 0, sluiceY, 0, 0.48, sluiceH, 1.05, true);
+    this._addMesh(grp, this.geos.box, this.m.darkGranite, 0, sluiceY, 0, 1.05, sluiceH, 0.48, true);
+    // Steel Tainter-Gate Spillway Lintels near crest
+    this._addMesh(grp, this.geos.box, this.m.steelDark, 0, cY - 0.11, 0, 0.54, 0.055, 1.08, true);
+    this._addMesh(grp, this.geos.box, this.m.steelDark, 0, cY - 0.11, 0, 1.08, 0.055, 0.54, true);
+
+    // 3. Crest Roadway Deck + Dual Safety Parapet Curbs
+    this._addMesh(grp, this.geos.box, this.m.asphalt, 0, cY + 0.018, 0, 1.02, 0.036, 0.88, false);
+    this._addMesh(grp, this.geos.parapetFrame, this.m.parapetStone, 0, cY + 0.052, 0, 1.03, 0.055, 1.03, true);
+
+    // 4. Lower Turbine Powerhouse Intake Gallery + Cyan Generation Status / Red Low-HP Hazard Stripe
+    const phH = Math.min(0.32, wallH * 0.36);
+    const phY = baseY + wallH * 0.28;
+    this._addMesh(grp, this.geos.box, this.m.damConcrete, 0, phY, 0, 0.62, phH, 1.14, true);
+    this._addMesh(grp, this.geos.box, this.m.damConcrete, 0, phY, 0, 1.14, phH, 0.62, true);
+
+    const statusMat = isGenerating ? this.m.ledLinearCyan : this.m.charcoalFrame;
+    this._addMesh(grp, this.geos.box, statusMat, 0, phY + phH * 0.25, 0, 0.46, 0.042, 1.16, false);
+    this._addMesh(grp, this.geos.box, statusMat, 0, phY + phH * 0.25, 0, 1.16, 0.042, 0.46, false);
+
+    if (damHp !== undefined && damHp < 65) {
+      this._addMesh(grp, this.geos.box, this.m.beaconRed, 0, cY - 0.045, 0, 1.07, 0.035, 1.07, false);
+    }
+
+    return grp;
+  }
 
   _buildLandmarkObelisk(grp, ab, x, y0, z, rotRad, hooks) {
     const silver = ab ? this.m.abandoned : this.m.brushedSilver;
@@ -2012,7 +2448,7 @@ export class ArchitectureLibrary {
   }
 
   _buildNuclearPlant(grp, ab, x, y0, z, rotRad, hooks) {
-    const conc = ab ? this.m.abandoned : this.m.plazaStone;
+    const conc = ab ? this.m.abandoned : this.m.damConcrete;
     const white = ab ? this.m.abandoned : this.m.whiteComposite;
 
     this._addMesh(grp, this.geos.box, ab ? this.m.pavingPlazaDusty : this.m.roofConcrete, 0, 0.015, 0, 1.04, 0.03, 1.04, false);
@@ -2023,8 +2459,8 @@ export class ArchitectureLibrary {
     }
     this._addMesh(grp, this.geos.box, ab ? this.m.dustyInd : this.m.indPanelSilver, 0.20, 0.22, 0.24, 0.42, 0.42, 0.34, true);
 
-    this._addMesh(grp, this.geos.coolingTower, conc, -0.22, 0.02, -0.22, 0.96, 1.08, 0.96, true);
-    this._addMesh(grp, this.geos.coolingTower, conc, 0.24, 0.02, -0.20, 0.96, 1.08, 0.96, true);
+    this._addMesh(grp, this.geos.coolingTower, this.m.plazaStone, -0.22, 0.02, -0.22, 0.96, 1.08, 0.96, true);
+    this._addMesh(grp, this.geos.coolingTower, this.m.plazaStone, 0.24, 0.02, -0.20, 0.96, 1.08, 0.96, true);
 
     if (!ab) {
       this._pushSmoke(hooks, -0.22, 1.16, -0.22, x, y0, z, rotRad, true);
@@ -2173,7 +2609,7 @@ export class ArchitectureLibrary {
     this._addMesh(grp, this.geos.box, ab ? this.m.dustyRetail : this.m.retailPodium, 0.04, 0.20, 0.12, 0.76, 0.36, 0.48, true);
     this._addMesh(grp, this.geos.box, red, 0.04, 0.18, 0.39, 0.34, 0.030, 0.10, true);
 
-    const wardH = 1.70; // exact 10 storeys * 0.17
+    const wardH = 1.70;
     this._addMesh(grp, this.geos.box, glass, -0.04, 0.024 + wardH * 0.5, -0.08, 0.68, wardH, 0.42, true);
     this._addMesh(grp, this.geos.box, white, -0.36, 0.024 + wardH * 0.5, -0.08, 0.06, wardH + 0.02, 0.44, true);
     this._addMesh(grp, this.geos.box, white, 0.28, 0.024 + wardH * 0.5, -0.08, 0.06, wardH + 0.02, 0.44, true);
@@ -2190,8 +2626,8 @@ export class ArchitectureLibrary {
     this._addMesh(grp, this.geos.box, ab ? this.m.abandonedRust : this.m.lawn, 0, 0.028, 0.24, 0.54, 0.014, 0.26, false);
 
     const mat = ab ? this.m.dustyStoneFin : this.m.finStoneChampagne;
-    const hMain = 0.68; // 4 storeys * 0.17
-    const hWing = 0.51; // 3 storeys * 0.17
+    const hMain = 0.68;
+    const hWing = 0.51;
     this._addMesh(grp, this.geos.box, mat, 0, 0.024 + hMain * 0.5, -0.14, 0.74, hMain, 0.36, true);
     this._addMesh(grp, this.geos.box, mat, -0.24, 0.024 + hWing * 0.5, 0.08, 0.26, hWing, 0.36, true);
     this._addMesh(grp, this.geos.parapetFrame, this.m.parapetStone, 0, 0.024 + hMain + 0.025, -0.14, 0.75, 0.05, 0.37, true);
@@ -2236,9 +2672,93 @@ export class ArchitectureLibrary {
     }
   }
 
-  // ==================== 4. CR400 "Fuxing" Bullet Train, Airliner & Cargo Ship ====================
+  // ==================== 4. True-Proportion 3D Road Vehicles, CR400 Train, Airliner & Cargo Ship ====================
 
-  // CR400AF "Fuxing" High-Speed Train Car: rail-head at y=0, facing +Z, L≈0.68, W≈0.21, H≈0.22
+  // True-Proportion Modern 3D Road Vehicles (facing +Z, tire bottoms at y = 0.000, night headlights & ruby taillights!)
+  createRealisticVehicleObject(kind = 'car', variantIdx = 0) {
+    const THREE = this.THREE;
+    const grp = new THREE.Group();
+    grp.rotation.order = 'YXZ';
+
+    const v = Math.abs(variantIdx | 0);
+    const k = String(kind || 'car').toLowerCase();
+
+    if (k === 'bus') {
+      // Contemporary Low-Floor Chinese EV Transit Bus (L ≈ 0.50, W ≈ 0.162, H ≈ 0.186)
+      this._addMesh(grp, this.geos.vehBusBody, this.m.carPearlWhite, 0, 0, 0, 1, 1, 1, true);
+      this._addMesh(grp, this.geos.vehBusStripe, this.m.busTurquoise, 0, 0, 0, 1, 1, 1, false);
+      this._addMesh(grp, this.geos.vehBusDark, this.m.cockpitGlass, 0, 0, 0, 1, 1, 1, false);
+      this._addMesh(grp, this.geos.vehBusWheels, this.m.tireRubber, 0, 0, 0, 1, 1, 1, true);
+      this._addMesh(grp, this.geos.vehBusHL, this.m.vehHeadlight, 0, 0, 0, 1, 1, 1, false);
+      this._addMesh(grp, this.geos.vehBusTL, this.m.vehTaillight, 0, 0, 0, 1, 1, 1, false);
+      return grp;
+    }
+
+    if (k === 'firetruck') {
+      // Municipal Aerial-Ladder Fire Engine + named 'strobe' lightbar!
+      this._addMesh(grp, this.geos.vehFireBody, this.m.craneRed, 0, 0, 0, 1, 1, 1, true);
+      this._addMesh(grp, this.geos.vehFireSilver, this.m.brushedSilver, 0, 0, 0, 1, 1, 1, true);
+      this._addMesh(grp, this.geos.vehTruckGlass, this.m.cockpitGlass, 0, 0, 0, 1, 1, 1, false);
+      this._addMesh(grp, this.geos.vehTruckWheels, this.m.tireRubber, 0, 0, 0, 1, 1, 1, true);
+      this._addMesh(grp, this.geos.vehTruckHL, this.m.vehHeadlight, 0, 0, 0, 1, 1, 1, false);
+      this._addMesh(grp, this.geos.vehTruckTL, this.m.vehTaillight, 0, 0, 0, 1, 1, 1, false);
+
+      const strobe = this._addMesh(grp, this.geos.box, this.m.beaconRed, 0, 0.190, 0.165, 0.115, 0.018, 0.028, false);
+      strobe.name = 'strobe';
+      return grp;
+    }
+
+    if (k === 'garbagetruck') {
+      // Clean White Cab + Emerald-Green Rear-Loader Compactor Hopper Truck
+      this._addMesh(grp, this.geos.vehTruckCab, this.m.carPearlWhite, 0, 0, 0, 1, 1, 1, true);
+      this._addMesh(grp, this.geos.vehGarbageHopper, this.m.garbageGreen, 0, 0, 0, 1, 1, 1, true);
+      this._addMesh(grp, this.geos.vehTruckGlass, this.m.cockpitGlass, 0, 0, 0, 1, 1, 1, false);
+      this._addMesh(grp, this.geos.vehTruckWheels, this.m.tireRubber, 0, 0, 0, 1, 1, 1, true);
+      this._addMesh(grp, this.geos.vehTruckHL, this.m.vehHeadlight, 0, 0, 0, 1, 1, 1, false);
+      this._addMesh(grp, this.geos.vehTruckTL, this.m.vehTaillight, 0, 0, 0, 1, 1, 1, false);
+      return grp;
+    }
+
+    if (k === 'truck') {
+      // Modern Cab-Over Cargo / Container Rig (L ≈ 0.44, W ≈ 0.160, H ≈ 0.190)
+      const cabMat = (v & 1) === 0 ? this.m.carPearlWhite : this.m.airlineBlue;
+      const boxMat = this.containerMats[v % this.containerMats.length];
+      this._addMesh(grp, this.geos.vehTruckCab, cabMat, 0, 0, 0, 1, 1, 1, true);
+      this._addMesh(grp, this.geos.box, boxMat, 0, 0.118, -0.072, 0.158, 0.142, 0.296, true);
+      this._addMesh(grp, this.geos.vehTruckGlass, this.m.cockpitGlass, 0, 0, 0, 1, 1, 1, false);
+      this._addMesh(grp, this.geos.vehTruckWheels, this.m.tireRubber, 0, 0, 0, 1, 1, 1, true);
+      this._addMesh(grp, this.geos.vehTruckHL, this.m.vehHeadlight, 0, 0, 0, 1, 1, 1, false);
+      this._addMesh(grp, this.geos.vehTruckTL, this.m.vehTaillight, 0, 0, 0, 1, 1, 1, false);
+      return grp;
+    }
+
+    const isTaxi = k === 'taxi';
+    const isSuv = k === 'suv' || (!isTaxi && (v % 4 === 3));
+    const paint = isTaxi ? this.m.taxiYellow : this.carBodyPalette[v % this.carBodyPalette.length];
+
+    if (isSuv) {
+      // Compact Urban SUV (L ≈ 0.31, W ≈ 0.150, H ≈ 0.126)
+      this._addMesh(grp, this.geos.vehSuvBody, paint, 0, 0, 0, 1, 1, 1, true);
+      this._addMesh(grp, this.geos.vehSuvCabin, this.m.cockpitGlass, 0, 0, 0, 1, 1, 1, true);
+      this._addMesh(grp, this.geos.vehSuvWheels, this.m.tireRubber, 0, 0, 0, 1, 1, 1, true);
+      this._addMesh(grp, this.geos.vehSuvHL, this.m.vehHeadlight, 0, 0, 0, 1, 1, 1, false);
+      this._addMesh(grp, this.geos.vehSuvTL, this.m.vehTaillight, 0, 0, 0, 1, 1, 1, false);
+    } else {
+      // Sleek Modern Sedan / Taxi (L ≈ 0.30, W ≈ 0.145, H ≈ 0.114)
+      this._addMesh(grp, this.geos.vehSedanBody, paint, 0, 0, 0, 1, 1, 1, true);
+      this._addMesh(grp, this.geos.vehSedanCabin, this.m.cockpitGlass, 0, 0, 0, 1, 1, 1, true);
+      this._addMesh(grp, this.geos.vehSedanWheels, this.m.tireRubber, 0, 0, 0, 1, 1, 1, true);
+      this._addMesh(grp, this.geos.vehSedanHL, this.m.vehHeadlight, 0, 0, 0, 1, 1, 1, false);
+      this._addMesh(grp, this.geos.vehSedanTL, this.m.vehTaillight, 0, 0, 0, 1, 1, 1, false);
+
+      if (isTaxi) {
+        this._addMesh(grp, this.geos.box, this.m.taxiSignGlow, 0, 0.118, -0.012, 0.056, 0.016, 0.024, false);
+      }
+    }
+
+    return grp;
+  }
+
   createBulletTrainCarObject(isHead = false) {
     const THREE = this.THREE;
     const grp = new THREE.Group();
@@ -2253,7 +2773,6 @@ export class ArchitectureLibrary {
       this._addMesh(grp, this.geos.fuxingMidBody, this.m.fuxingBody, 0, 0, 0, 1, 1, 1, true);
       this._addMesh(grp, this.geos.fuxingMidStripe, this.m.fuxingRedStripe, 0, 0, 0, 1, 1, 1, false);
       this._addMesh(grp, this.geos.fuxingMidDark, this.m.cockpitGlass, 0, 0, 0, 1, 1, 1, true);
-      // Subtle rooftop AC / pantograph shroud
       this._addMesh(grp, this.geos.box, this.m.fuxingRoofSilver, 0, 0.242, 0, 0.11, 0.012, 0.36, false);
     }
 

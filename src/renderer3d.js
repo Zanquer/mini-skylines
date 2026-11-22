@@ -20,11 +20,56 @@ function b64ToArrayBuffer(b64) {
   return bytes.buffer;
 }
 
+// Lightweight dependency-free BufferGeometry merger (positions + normals + uvs)
+function mergeGeometriesSimple(geos) {
+  const nonIndexed = geos.map((g) => (g.index ? g.toNonIndexed() : g));
+  let totalVerts = 0;
+  for (const g of nonIndexed) totalVerts += g.attributes.position.count;
+
+  const positions = new Float32Array(totalVerts * 3);
+  const normals = new Float32Array(totalVerts * 3);
+  const uvs = new Float32Array(totalVerts * 2);
+
+  let vOff = 0;
+  for (const g of nonIndexed) {
+    const pos = g.attributes.position;
+    if (!g.attributes.normal) g.computeVertexNormals();
+    const norm = g.attributes.normal;
+    const uv = g.attributes.uv;
+    const count = pos.count;
+    for (let i = 0; i < count; i++) {
+      const i3 = (vOff + i) * 3;
+      positions[i3] = pos.getX(i);
+      positions[i3 + 1] = pos.getY(i);
+      positions[i3 + 2] = pos.getZ(i);
+      normals[i3] = norm.getX(i);
+      normals[i3 + 1] = norm.getY(i);
+      normals[i3 + 2] = norm.getZ(i);
+      const i2 = (vOff + i) * 2;
+      if (uv) {
+        uvs[i2] = uv.getX(i);
+        uvs[i2 + 1] = uv.getY(i);
+      }
+    }
+    vOff += count;
+    if (g !== geos[nonIndexed.indexOf(g)]) g.dispose();
+  }
+  for (const g of geos) g.dispose();
+
+  const merged = new THREE.BufferGeometry();
+  merged.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  merged.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
+  merged.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+  return merged;
+}
+
 function makeRoadTexture(lanes = 2, isHub = false) {
+  if (typeof document === 'undefined') return null;
   const c = document.createElement('canvas');
   c.width = 256;
   c.height = 256;
   const g = c.getContext('2d');
+  if (!g) return null;
 
   g.fillStyle = '#9aa2ad';
   g.fillRect(0, 0, 256, 256);
@@ -35,7 +80,7 @@ function makeRoadTexture(lanes = 2, isHub = false) {
     g.fillRect(0, 22, 256, 212);
 
     g.fillStyle = '#9aa2ad';
-    for (const [cx, cy] of [[0,0],[256,0],[0,256],[256,256]]) {
+    for (const [cx, cy] of [[0, 0], [256, 0], [0, 256], [256, 256]]) {
       g.beginPath();
       g.arc(cx, cy, 26, 0, Math.PI * 2);
       g.fill();
@@ -80,6 +125,25 @@ function makeRoadTexture(lanes = 2, isHub = false) {
   return tex;
 }
 
+function makeGlowHaloTexture() {
+  if (typeof document === 'undefined') return null;
+  const c = document.createElement('canvas');
+  c.width = 128;
+  c.height = 128;
+  const g = c.getContext('2d');
+  if (!g) return null;
+  const grad = g.createRadialGradient(64, 64, 2, 64, 64, 62);
+  grad.addColorStop(0.0, 'rgba(255,255,255,1.0)');
+  grad.addColorStop(0.22, 'rgba(255,248,225,0.72)');
+  grad.addColorStop(0.52, 'rgba(255,224,160,0.22)');
+  grad.addColorStop(1.0, 'rgba(255,200,120,0.0)');
+  g.fillStyle = grad;
+  g.fillRect(0, 0, 128, 128);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
 export class CityRenderer3D {
   constructor(canvas, sim, traffic, disasters, waterPhysics) {
     this.canvas = canvas;
@@ -87,6 +151,11 @@ export class CityRenderer3D {
     this.traffic = traffic;
     this.disasters = disasters;
     this.waterPhysics = waterPhysics;
+
+    this.qualityMode = 'high';
+    this._maxGlowSprites = 56;
+    this._maxRenderedVehicles = 160;
+    this._loadedPBRTexMap = null;
 
     this.renderer = new THREE.WebGLRenderer({
       canvas,
@@ -139,11 +208,20 @@ export class CityRenderer3D {
     this.selectedTile = null;
     this.selectedVehicle = null;
 
+    // 4-Layer Independent Static Groups inside staticGroup (zero unnecessary terrain/forest rebuilds!)
     this.staticGroup = new THREE.Group();
+    this.terrainGroup = new THREE.Group();
+    this.infraGroup = new THREE.Group();
+    this.forestGroup = new THREE.Group();
+    this.buildingGroup = new THREE.Group();
+    this.staticGroup.add(this.terrainGroup, this.infraGroup, this.forestGroup, this.buildingGroup);
+
     this.waterGroup = new THREE.Group();
     this.vehicleGroup = new THREE.Group();
     this.uiOverlayGroup = new THREE.Group();
     this.scene.add(this.staticGroup, this.waterGroup, this.vehicleGroup, this.uiOverlayGroup);
+
+    this.rebuildStats = { terrain: 0, infra: 0, forest: 0, building: 0 };
 
     this._initSharedAssets();
 
@@ -153,20 +231,45 @@ export class CityRenderer3D {
     this.skyDome = this.archLib.createSkyDome();
     this.scene.add(this.skyDome.mesh);
 
-    // X-ray occlusion fading (auto: buildings blocking the view to the focus point turn translucent)
+    // X-ray occlusion fading
     this.xrayMode = 'auto';
     this.buildingEntries = [];
     this._ghostMatCache = new Map();
     this._xrayAccum = 99;
     this._tmpBox = new THREE.Box3();
+    this._tmpMat4 = new THREE.Matrix4();
+    this._tmpPos = new THREE.Vector3();
+    this._tmpQuat = new THREE.Quaternion();
+    this._tmpScale = new THREE.Vector3();
+    this._tmpEuler = new THREE.Euler(0, 0, 0, 'YXZ');
+    this._tmpColor = new THREE.Color();
+
+    // Street furniture live instances
+    this._lampPositions = [];
+    this._signalEntries = [];
+    this._signalRedInst = null;
+    this._signalGreenInst = null;
+    this._signalSyncAccum = 99;
 
     // Image-based lighting so glass curtain walls & metal pick up sky reflections
     this._initEnvironmentLighting();
 
+    // Zero-Leak Reusable Object Pools (NEVER allocate materials/meshes inside render loop!)
     this.vehiclePool = [];
     this.trainCarPool = [];
     this.airlinerPool = [];
     this.shipPool = [];
+
+    this.smokePool = [];
+    this.firePool = [];
+    this.sprayPool = [];
+    this.glowPool = [];
+    this.previewMeshPool = [];
+    this.scaffoldPool = [];
+    this.meteorPool = [];
+    this.damWarnPool = [];
+    this.tornadoRings = [];
+    this._initPersistentOverlayMeshes();
 
     this._loadEmbeddedGLBs();
 
@@ -182,7 +285,9 @@ export class CityRenderer3D {
     this.waterRebuildAccum = 99;
     this.clock = 0;
 
-    window.addEventListener('resize', () => this.resize());
+    if (typeof window !== 'undefined' && window.addEventListener) {
+      window.addEventListener('resize', () => this.resize());
+    }
   }
 
   _initSharedAssets() {
@@ -191,6 +296,7 @@ export class CityRenderer3D {
     this.texRoadHub = makeRoadTexture(2, true);
     this.terrainDetailTex = createTerrainDetailTexture(THREE);
     this.physicalWaterMat = createPhysicalWaterMaterial(THREE);
+    this.glowTex = makeGlowHaloTexture();
 
     this.mats = {
       road2: new THREE.MeshStandardMaterial({ map: this.texRoad2, roughness: 0.84, metalness: 0.05, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 }),
@@ -213,41 +319,305 @@ export class CityRenderer3D {
       redCross: new THREE.MeshBasicMaterial({ color: 0xf43f5e }),
       goldGlow: new THREE.MeshBasicMaterial({ color: 0xfbbf24 }),
       cyanGlow: new THREE.MeshBasicMaterial({ color: 0x38bdf8 }),
+      meteorGlow: new THREE.MeshBasicMaterial({ color: 0xff7b1c }),
+      previewMat: new THREE.MeshBasicMaterial({ color: 0x38d9ff, transparent: true, opacity: 0.62 }),
       bulletBody: new THREE.MeshStandardMaterial({ color: 0xf8fafc, roughness: 0.20, metalness: 0.28 }),
       bulletStripe: new THREE.MeshStandardMaterial({ color: 0x1d6feb, roughness: 0.25, metalness: 0.4, emissive: 0x0b3b8c, emissiveIntensity: 0.32 }),
       garbageGreen: new THREE.MeshStandardMaterial({ color: 0x16a34a, roughness: 0.45 }),
+      // Cached Zone Pad materials (eliminates per-tile MeshStandardMaterial leaks!)
+      zonePads: {
+        RL: new THREE.MeshStandardMaterial({ color: 0x6ee7b7, roughness: 0.85, transparent: true, opacity: 0.55 }),
+        RH: new THREE.MeshStandardMaterial({ color: 0x16a34a, roughness: 0.85, transparent: true, opacity: 0.55 }),
+        CL: new THREE.MeshStandardMaterial({ color: 0x60a5fa, roughness: 0.85, transparent: true, opacity: 0.55 }),
+        CH: new THREE.MeshStandardMaterial({ color: 0x2563eb, roughness: 0.85, transparent: true, opacity: 0.55 }),
+        I:  new THREE.MeshStandardMaterial({ color: 0xf59e0b, roughness: 0.85, transparent: true, opacity: 0.55 }),
+        O:  new THREE.MeshStandardMaterial({ color: 0x22d3ee, roughness: 0.85, transparent: true, opacity: 0.55 }),
+        default: new THREE.MeshStandardMaterial({ color: 0x94a3b8, roughness: 0.85, transparent: true, opacity: 0.55 })
+      },
+      // Botanical Instanced Forest Materials (per-instance color via setColorAt)
       bark: new THREE.MeshStandardMaterial({ color: 0x5c4028, roughness: 0.90 }),
-      pineLeafA: new THREE.MeshStandardMaterial({ color: 0x235e34, roughness: 0.84 }),
-      pineLeafB: new THREE.MeshStandardMaterial({ color: 0x2b703d, roughness: 0.82 }),
-      oakLeafA: new THREE.MeshStandardMaterial({ color: 0x358240, roughness: 0.82 }),
-      oakLeafB: new THREE.MeshStandardMaterial({ color: 0x459448, roughness: 0.82 })
+      palmBark: new THREE.MeshStandardMaterial({ color: 0x7a6246, roughness: 0.88 }),
+      pineInst: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.84, metalness: 0.02 }),
+      leafInst: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.82, metalness: 0.02 }),
+      palmInst: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.76, metalness: 0.04 }),
+      // Street Furniture Materials
+      lampMetal: new THREE.MeshStandardMaterial({ color: 0x8f9aa8, roughness: 0.38, metalness: 0.65 }),
+      lampEmissive: new THREE.MeshStandardMaterial({
+        color: 0xe2e8f0,
+        roughness: 0.25,
+        emissive: 0xffd58a,
+        emissiveIntensity: 0.12
+      }),
+      signalBody: new THREE.MeshStandardMaterial({ color: 0x2b323c, roughness: 0.50, metalness: 0.55 }),
+      signalLens: new THREE.MeshBasicMaterial({ color: 0xffffff })
     };
 
-    const smokeImg = new Image();
-    smokeImg.src = SMOKE_PNG_URI;
-    this.smokeTex = new THREE.Texture(smokeImg);
-    this.smokeTex.colorSpace = THREE.SRGBColorSpace;
-    smokeImg.onload = () => { this.smokeTex.needsUpdate = true; };
+    if (typeof Image !== 'undefined' && SMOKE_PNG_URI) {
+      const smokeImg = new Image();
+      smokeImg.src = SMOKE_PNG_URI;
+      this.smokeTex = new THREE.Texture(smokeImg);
+      this.smokeTex.colorSpace = THREE.SRGBColorSpace;
+      smokeImg.onload = () => { this.smokeTex.needsUpdate = true; };
+    } else {
+      this.smokeTex = this.glowTex;
+    }
 
+    // Build reusable & pre-merged botanical/street-furniture BufferGeometries ONCE
     this.geos = {
       unitBox: new THREE.BoxGeometry(1, 1, 1),
       taperSpire: new THREE.CylinderGeometry(0.18, 0.42, 1, 8),
       pierCyl: new THREE.CylinderGeometry(0.08, 0.10, 1, 12),
       waterSphere: new THREE.SphereGeometry(0.28, 18, 14),
       cylTower: new THREE.CylinderGeometry(0.35, 0.36, 1, 18),
-      pineCone1: new THREE.ConeGeometry(0.15, 0.34, 8),
-      pineCone2: new THREE.ConeGeometry(0.115, 0.28, 8),
-      oakCrown: new THREE.DodecahedronGeometry(0.15, 1),
-      trunk: new THREE.CylinderGeometry(0.022, 0.036, 0.18, 7),
-      bulletCoach: new THREE.CapsuleGeometry(0.105, 0.44, 8, 14)
+      bulletCoach: new THREE.CapsuleGeometry(0.105, 0.44, 8, 14),
+      pineTrunk: this._makePineTrunkGeo(),
+      pineCrown: this._makePineCrownGeo(),
+      leafTrunk: this._makeLeafTrunkGeo(),
+      leafCrown: this._makeLeafCrownGeo(),
+      palmTrunk: this._makePalmTrunkGeo(),
+      palmCrown: this._makePalmCrownGeo(),
+      lampPole: this._makeLampPoleGeo(),
+      lampBulb: this._makeLampBulbGeo(),
+      signalPole: this._makeSignalPoleGeo(),
+      signalLens: new THREE.SphereGeometry(0.026, 6, 5)
     };
     this.geos.bulletCoach.rotateX(Math.PI * 0.5);
   }
 
+  _makePineTrunkGeo() {
+    const g = new THREE.CylinderGeometry(0.020, 0.040, 0.22, 6);
+    g.translate(0, 0.10, 0);
+    return g;
+  }
+
+  _makePineCrownGeo() {
+    const c1 = new THREE.ConeGeometry(0.175, 0.26, 7);
+    c1.translate(0, 0.22, 0);
+    const c2 = new THREE.ConeGeometry(0.135, 0.25, 7);
+    c2.rotateY(0.45);
+    c2.translate(0.008, 0.36, -0.006);
+    const c3 = new THREE.ConeGeometry(0.088, 0.22, 7);
+    c3.rotateY(0.92);
+    c3.translate(-0.005, 0.49, 0.005);
+    return mergeGeometriesSimple([c1, c2, c3]);
+  }
+
+  _makeLeafTrunkGeo() {
+    const g = new THREE.CylinderGeometry(0.024, 0.044, 0.23, 6);
+    g.translate(0, 0.11, 0);
+    return g;
+  }
+
+  _makeLeafCrownGeo() {
+    // 4-cluster asymmetric broadleaf canopy (Sycamore / Ginkgo / Camphor)
+    const a = new THREE.DodecahedronGeometry(0.132, 1);
+    a.scale(1.12, 0.88, 1.05);
+    a.translate(0, 0.32, 0);
+    const b = new THREE.DodecahedronGeometry(0.102, 1);
+    b.scale(1.06, 0.82, 0.94);
+    b.translate(-0.09, 0.26, 0.04);
+    const c = new THREE.DodecahedronGeometry(0.098, 1);
+    c.scale(0.95, 0.86, 1.08);
+    c.translate(0.088, 0.28, -0.045);
+    const d = new THREE.DodecahedronGeometry(0.085, 1);
+    d.scale(1.05, 0.84, 1.0);
+    d.translate(0.015, 0.38, 0.068);
+    return mergeGeometriesSimple([a, b, c, d]);
+  }
+
+  _makePalmTrunkGeo() {
+    const s1 = new THREE.CylinderGeometry(0.025, 0.036, 0.17, 6);
+    s1.rotateZ(-0.08);
+    s1.translate(0.008, 0.08, 0);
+    const s2 = new THREE.CylinderGeometry(0.021, 0.025, 0.17, 6);
+    s2.rotateZ(-0.15);
+    s2.translate(0.026, 0.24, 0);
+    const s3 = new THREE.CylinderGeometry(0.017, 0.021, 0.16, 6);
+    s3.rotateZ(-0.20);
+    s3.translate(0.052, 0.39, 0);
+    return mergeGeometriesSimple([s1, s2, s3]);
+  }
+
+  _makePalmCrownGeo() {
+    const fronds = [];
+    const count = 6;
+    for (let i = 0; i < count; i++) {
+      const ang = (i / count) * Math.PI * 2;
+      const f1 = new THREE.BoxGeometry(0.045, 0.014, 0.17);
+      f1.rotateX(0.22);
+      f1.translate(0, 0.01, 0.08);
+      f1.rotateY(ang);
+      f1.translate(0.065, 0.46, 0);
+      const f2 = new THREE.BoxGeometry(0.032, 0.012, 0.13);
+      f2.rotateX(0.58);
+      f2.translate(0, -0.028, 0.19);
+      f2.rotateY(ang);
+      f2.translate(0.065, 0.46, 0);
+      fronds.push(f1, f2);
+    }
+    return mergeGeometriesSimple(fronds);
+  }
+
+  _makeLampPoleGeo() {
+    const post = new THREE.CylinderGeometry(0.011, 0.017, 0.52, 6);
+    post.translate(0, 0.26, 0);
+    const arm = new THREE.BoxGeometry(0.018, 0.018, 0.19);
+    arm.rotateX(-0.14);
+    arm.translate(0, 0.525, 0.09);
+    const head = new THREE.BoxGeometry(0.052, 0.016, 0.085);
+    head.translate(0, 0.535, 0.175);
+    return mergeGeometriesSimple([post, arm, head]);
+  }
+
+  _makeLampBulbGeo() {
+    const g = new THREE.BoxGeometry(0.046, 0.012, 0.072);
+    g.translate(0, 0.523, 0.175);
+    return g;
+  }
+
+  _makeSignalPoleGeo() {
+    const post = new THREE.CylinderGeometry(0.015, 0.021, 0.50, 6);
+    post.translate(0, 0.25, 0);
+    // Cantilever mast arm extends along -X so yaw=0 (NE corner) spans across NS lane and yaw=-PI/2 (SW corner) spans across EW lane!
+    const arm = new THREE.BoxGeometry(0.30, 0.020, 0.020);
+    arm.translate(-0.15, 0.48, 0);
+    const box = new THREE.BoxGeometry(0.052, 0.125, 0.056);
+    box.translate(-0.24, 0.47, 0);
+    return mergeGeometriesSimple([post, arm, box]);
+  }
+
+  _initPersistentOverlayMeshes() {
+    this.selectedTileMesh = new THREE.Mesh(this.geos.unitBox, this.mats.cyanGlow);
+    this.selectedTileMesh.scale.set(0.98, 0.04, 0.98);
+    this.selectedTileMesh.visible = false;
+    this.uiOverlayGroup.add(this.selectedTileMesh);
+
+    this.selectedVehicleHalo = new THREE.Mesh(this.geos.cylTower, this.mats.goldGlow);
+    this.selectedVehicleHalo.visible = false;
+    this.uiOverlayGroup.add(this.selectedVehicleHalo);
+
+    for (let r = 0; r < 12; r++) {
+      const ring = new THREE.Mesh(this.geos.cylTower, this.mats.darkConcrete);
+      ring.visible = false;
+      this.uiOverlayGroup.add(ring);
+      this.tornadoRings.push(ring);
+    }
+  }
+
+  _acquirePoolSprite(pool, index, { map, additive = false } = {}) {
+    while (pool.length <= index) {
+      const mat = new THREE.SpriteMaterial({
+        map: map || this.smokeTex,
+        color: 0xffffff,
+        transparent: true,
+        opacity: 0.7,
+        depthWrite: false,
+        blending: additive ? THREE.AdditiveBlending : THREE.NormalBlending
+      });
+      const sp = new THREE.Sprite(mat);
+      sp.visible = false;
+      this.uiOverlayGroup.add(sp);
+      pool.push(sp);
+    }
+    return pool[index];
+  }
+
+  _acquirePoolMesh(pool, index, geo, mat) {
+    while (pool.length <= index) {
+      const m = new THREE.Mesh(geo, mat);
+      m.visible = false;
+      this.uiOverlayGroup.add(m);
+      pool.push(m);
+    }
+    return pool[index];
+  }
+
+  _hidePoolFrom(pool, startIdx) {
+    for (let i = startIdx; i < pool.length; i++) {
+      pool[i].visible = false;
+    }
+  }
+
+  // ==================== Graphics Tier & External PBR Textures ====================
+  setQualityMode(mode = 'high') {
+    const valid = mode === 'high' || mode === 'medium' || mode === 'eco' ? mode : 'high';
+    this.qualityMode = valid;
+    const dpr = (typeof window !== 'undefined' && window.devicePixelRatio) || 1;
+
+    if (valid === 'high') {
+      this.renderer.setPixelRatio(Math.min(dpr, 2));
+      this.renderer.shadowMap.enabled = true;
+      this.sunLight.castShadow = true;
+      this.sunLight.shadow.mapSize.set(2048, 2048);
+      this._maxGlowSprites = 56;
+      this._maxRenderedVehicles = 160;
+    } else if (valid === 'medium') {
+      this.renderer.setPixelRatio(Math.min(dpr, 1.5));
+      this.renderer.shadowMap.enabled = true;
+      this.sunLight.castShadow = true;
+      this.sunLight.shadow.mapSize.set(1024, 1024);
+      this._maxGlowSprites = 24;
+      this._maxRenderedVehicles = 80;
+    } else {
+      this.renderer.setPixelRatio(1);
+      this.renderer.shadowMap.enabled = false;
+      this.sunLight.castShadow = false;
+      this._maxGlowSprites = 0;
+      this._maxRenderedVehicles = 45;
+    }
+
+    if (this.sunLight.shadow && this.sunLight.shadow.map) {
+      this.sunLight.shadow.map.dispose();
+      this.sunLight.shadow.map = null;
+    }
+    if (this.renderer.shadowMap) {
+      this.renderer.shadowMap.needsUpdate = true;
+    }
+
+    // Re-apply PBR maps if loaded (eco skips normal/roughness to slash fragment bandwidth)
+    if (this._loadedPBRTexMap) {
+      this.applyExternalPBRTextures(this._loadedPBRTexMap);
+    }
+    this.resize();
+  }
+
+  applyExternalPBRTextures(texMap) {
+    if (!texMap || typeof texMap !== 'object') return;
+    this._loadedPBRTexMap = texMap;
+    const usePbrMaps = this.qualityMode !== 'eco';
+
+    const bindRoadMat = (mat, entry) => {
+      if (!mat || !entry) return;
+      if (entry.map) mat.map = entry.map;
+      mat.normalMap = usePbrMaps && entry.normalMap ? entry.normalMap : null;
+      if (mat.normalScale) mat.normalScale.set(0.85, 0.85);
+      mat.roughnessMap = usePbrMaps && entry.roughnessMap ? entry.roughnessMap : null;
+      mat.roughness = mat.roughnessMap ? 1.0 : 0.82;
+      mat.needsUpdate = true;
+    };
+
+    bindRoadMat(this.mats.road2, texMap.road_2lane);
+    bindRoadMat(this.mats.road4, texMap.road_4lane);
+    bindRoadMat(this.mats.roadHub, texMap.road_hub);
+
+    if (this.archLib && typeof this.archLib.applyLoadedPBRTextures === 'function') {
+      const filtered = {};
+      for (const [k, v] of Object.entries(texMap)) {
+        const packed = usePbrMaps ? v : { map: v.map };
+        filtered[k] = packed;
+        if (k.startsWith('facade_')) {
+          filtered[k.slice('facade_'.length)] = packed;
+        }
+      }
+      this.archLib.applyLoadedPBRTextures(filtered);
+    }
+  }
+
   _loadEmbeddedGLBs() {
-    if (!THREE.GLTFLoader) return;
-    const loader = new THREE.GLTFLoader();
+    if (!THREE.GLTFLoader || !GLB_ASSETS) return;
     const keys = Object.keys(GLB_ASSETS);
+    if (keys.length === 0) return;
+    const loader = new THREE.GLTFLoader();
     let loaded = 0;
 
     keys.forEach((key) => {
@@ -274,9 +644,8 @@ export class CityRenderer3D {
             });
             this.glbProtos[key] = root;
             loaded++;
-            if (loaded === keys.length || loaded % 4 === 0) {
-              this.sim.meshDirty = true;
-              this._clearVehiclePool();
+            if (loaded === keys.length) {
+              this.sim.buildingDirty = true;
             }
           },
           () => {}
@@ -291,9 +660,11 @@ export class CityRenderer3D {
   }
 
   resize() {
-    const w = Math.max(1, window.innerWidth);
-    const h = Math.max(1, window.innerHeight);
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    const w = Math.max(1, (typeof window !== 'undefined' && window.innerWidth) || 800);
+    const h = Math.max(1, (typeof window !== 'undefined' && window.innerHeight) || 600);
+    const dpr = (typeof window !== 'undefined' && window.devicePixelRatio) || 1;
+    const cap = this.qualityMode === 'eco' ? 1 : (this.qualityMode === 'medium' ? 1.5 : 2);
+    this.renderer.setPixelRatio(Math.min(dpr, cap));
     this.renderer.setSize(w, h, false);
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
@@ -390,43 +761,63 @@ export class CityRenderer3D {
     while (grp.children.length > 0) {
       const ch = grp.children.pop();
       ch.traverse((node) => {
+        if (node.isInstancedMesh && typeof node.dispose === 'function') {
+          node.dispose();
+        }
         if (node.userData && node.userData.ownGeo && node.geometry) {
           node.geometry.dispose();
+        }
+        if (node.userData && node.userData.ownMat && node.material) {
+          if (Array.isArray(node.material)) node.material.forEach((m) => m && m.dispose && m.dispose());
+          else if (node.material.dispose) node.material.dispose();
         }
       });
     }
   }
 
-  // ==================== Rebuild Terrain + Continuous Sloped Roads + Real Contemporary City ====================
-  rebuildStaticCityMesh() {
-    this._disposeGroup(this.staticGroup);
-    this.buildingEntries = [];
-    this.animHooks.windRotors.length = 0;
-    this.animHooks.ferrisWheels.length = 0;
-    this.animHooks.radarDishes.length = 0;
-    this.animHooks.smokeSources.length = 0;
-    this.animHooks.beacons.length = 0;
+  // ==================== 4-Layer Independent Static Mesh Rebuilders ====================
+  _addBoxTo(targetGroup, x, cy, z, sx, sy, sz, mat, shadow = true) {
+    const m = new THREE.Mesh(this.geos.unitBox, mat);
+    m.scale.set(sx, sy, sz);
+    m.position.set(x, cy, z);
+    m.castShadow = shadow && this.qualityMode !== 'eco';
+    m.receiveShadow = true;
+    targetGroup.add(m);
+    return m;
+  }
 
-    const isUnder = this.overlayMode === 'underground';
-
-    // 1. 168x168 Subdivided Catmull-Rom Geological Terrain Mesh!
+  rebuildTerrainGroup() {
+    this._disposeGroup(this.terrainGroup);
     const terMesh = buildHighResTerrainMesh(THREE, this.sim, this.overlayMode, this.terrainDetailTex);
-    this.staticGroup.add(terMesh);
+    this.terrainGroup.add(terMesh);
 
-    // Bedrock Island Base Skirt
     const baseSkirt = new THREE.Mesh(this.geos.unitBox, this.mats.darkConcrete);
     baseSkirt.scale.set(GRID_SIZE + 0.25, 1.85, GRID_SIZE + 0.25);
     baseSkirt.position.set(0, -1.75, 0);
     baseSkirt.receiveShadow = true;
-    this.staticGroup.add(baseSkirt);
+    this.terrainGroup.add(baseSkirt);
 
-    // 2. Continuous Corner-Welded Sloped Roads, Bridges, Elevated Viaducts, Ramps, Tunnels & HSR!
-    const infraGroup = buildContinuousRoadAndViaductGroup(THREE, this.sim, this.overlayMode, this.mats);
-    this.staticGroup.add(infraGroup);
+    this.sim.terrainDirty = false;
+    this.rebuildStats.terrain++;
+  }
 
-    // 3. Populate Buildings, Root-Planted Forest Trees (Zero Square Base Plates!), Dams & Pylons
+  rebuildInfraGroup() {
+    this._disposeGroup(this.infraGroup);
+    this._lampPositions = [];
+    this._signalEntries = [];
+    this._signalRedInst = null;
+    this._signalGreenInst = null;
+
+    const isUnder = this.overlayMode === 'underground';
+    const roadGroup = buildContinuousRoadAndViaductGroup(THREE, this.sim, this.overlayMode, this.mats);
+    this.infraGroup.add(roadGroup);
+
+    // Build Instanced Streetlamps & Live-Synced Traffic Signal Poles from roadGroup.userData.streetProps
+    if (!isUnder && roadGroup && roadGroup.userData && roadGroup.userData.streetProps) {
+      this._buildStreetFurnitureInstances(roadGroup.userData.streetProps);
+    }
+
     const pylonPts = [];
-
     for (let z = 0; z < GRID_SIZE; z++) {
       for (let x = 0; x < GRID_SIZE; x++) {
         const t = this.sim.grid[idx(x, z)];
@@ -437,52 +828,45 @@ export class CityRenderer3D {
         if (isUnder) {
           if (t.pipe) {
             const pm = t.pipeBroken ? this.mats.pipeBroken : this.mats.pipeOk;
-            this._addBoxMesh(wx, avgH + 0.12, wz, 0.22, 0.10, 0.22, pm, false);
-            if (this.sim.getTile(x + 1, z)?.pipe) this._addBoxMesh(wx + 0.5, avgH + 0.12, wz, 0.80, 0.08, 0.12, pm, false);
-            if (this.sim.getTile(x, z + 1)?.pipe) this._addBoxMesh(wx, avgH + 0.12, wz + 0.5, 0.12, 0.08, 0.80, pm, false);
+            this._addBoxTo(this.infraGroup, wx, avgH + 0.12, wz, 0.22, 0.10, 0.22, pm, false);
+            if (this.sim.getTile(x + 1, z)?.pipe) this._addBoxTo(this.infraGroup, wx + 0.5, avgH + 0.12, wz, 0.80, 0.08, 0.12, pm, false);
+            if (this.sim.getTile(x, z + 1)?.pipe) this._addBoxTo(this.infraGroup, wx, avgH + 0.12, wz + 0.5, 0.12, 0.08, 0.80, pm, false);
           }
           if (t.metro) {
-            this._addBoxMesh(wx, avgH + 0.22, wz, 0.30, 0.10, 0.30, this.mats.metroGlow, false);
-            if (this.sim.getTile(x + 1, z)?.metro) this._addBoxMesh(wx + 0.5, avgH + 0.22, wz, 0.78, 0.09, 0.22, this.mats.metroGlow, false);
-            if (this.sim.getTile(x, z + 1)?.metro) this._addBoxMesh(wx, avgH + 0.22, wz + 0.5, 0.22, 0.09, 0.78, this.mats.metroGlow, false);
+            this._addBoxTo(this.infraGroup, wx, avgH + 0.22, wz, 0.30, 0.10, 0.30, this.mats.metroGlow, false);
+            if (this.sim.getTile(x + 1, z)?.metro) this._addBoxTo(this.infraGroup, wx + 0.5, avgH + 0.22, wz, 0.78, 0.09, 0.22, this.mats.metroGlow, false);
+            if (this.sim.getTile(x, z + 1)?.metro) this._addBoxTo(this.infraGroup, wx, avgH + 0.22, wz + 0.5, 0.22, 0.09, 0.78, this.mats.metroGlow, false);
           }
         }
 
-        // Sloped-terrain-following Zone Pad
-        if (t.zone && !t.building && !isUnder) {
-          const zColors = { RL: 0x6ee7b7, RH: 0x16a34a, CL: 0x60a5fa, CH: 0x2563eb, I: 0xf59e0b, O: 0x22d3ee };
-          const zm = new THREE.MeshStandardMaterial({ color: zColors[t.zone] || 0x94a3b8, roughness: 0.85, transparent: true, opacity: 0.55 });
-          this._addBoxMesh(wx, avgH + 0.02, wz, 0.84, 0.02, 0.84, zm, false);
-        }
-
-        // Natural Root-Planted Forest Trees directly on sloped terrain (ZERO square LEGO plates!)
-        if (!isUnder && t.trees > 0 && !t.zone && !t.building && t.roadGround === 0 && t.roadElevated === 0 && t.rail === 0 && !t.dam && this.sim.waterDepth[idx(x, z)] < 0.04) {
-          const count = Math.min(3, t.trees);
-          for (let k = 0; k < count; k++) {
-            const ox = (hash2D(x * 7 + k, z * 13, 101) - 0.5) * 0.62;
-            const oz = (hash2D(x * 11 + k, z * 17, 202) - 0.5) * 0.62;
-            const txW = wx + ox;
-            const tzW = wz + oz;
-            const groundY = this._sampleExactSlopeHeight(txW, tzW) - 0.03;
-            const scale = 0.78 + hash2D(x + k, z, 303) * 0.46;
-            const isPine = avgH > 0.85 || ((x + z + k) % 3 !== 0);
-            this._addSmoothTree(txW, groundY, tzW, scale, isPine, (x + k) & 1);
-          }
-        }
-
-        // Monumental Hydroelectric Dam (with Structural Health & Stress Feedback)
+        // Sculpted Monumental Hydroelectric Gravity Dam
         if (t.dam) {
-          const baseH = Math.min(-0.7, minH - 0.2);
-          const h = t.damCrest - baseH;
           const damHp = t.damHealth !== undefined ? t.damHealth : 100;
-          const bodyMat = damHp < 65 ? this.mats.darkConcrete : this.mats.concrete;
-          this._addBoxMesh(wx, baseH + h * 0.5, wz, 1.03, h, 1.03, bodyMat, true);
-          this._addBoxMesh(wx, t.damCrest + 0.02, wz, 1.02, 0.04, 0.86, this.mats.viaductDeck, false);
-          if (damHp < 65) {
-            this._addBoxMesh(wx, t.damCrest + 0.045, wz, 0.96, 0.025, 0.14, this.mats.redCross, false);
-          }
-          if (t.damOutputMW > 0) {
-            this._addBoxMesh(wx, t.damCrest - 0.16, wz, 0.36, 0.12, 0.36, this.mats.cyanGlow, false);
+          const isGenerating = (t.damOutputMW || 0) > 0;
+          if (this.archLib && typeof this.archLib.createHydroDamSegment === 'function') {
+            const seg = this.archLib.createHydroDamSegment(t.damCrest, minH, isGenerating, damHp);
+            seg.position.set(wx, 0, wz);
+            // Align dam wall along span axis and point downstream powerhouse toward lower water
+            const hasEW = Boolean(this.sim.getTile(x - 1, z)?.dam || this.sim.getTile(x + 1, z)?.dam);
+            const hasNS = Boolean(this.sim.getTile(x, z - 1)?.dam || this.sim.getTile(x, z + 1)?.dam);
+            let yaw = 0;
+            if (hasNS && !hasEW) {
+              const wE = inBounds(x + 1, z) ? this.sim.waterDepth[idx(x + 1, z)] : 0;
+              const wW = inBounds(x - 1, z) ? this.sim.waterDepth[idx(x - 1, z)] : 0;
+              yaw = wW > wE ? Math.PI * 0.5 : -Math.PI * 0.5;
+            } else {
+              const wN = inBounds(x, z - 1) ? this.sim.waterDepth[idx(x, z - 1)] : 0;
+              const wS = inBounds(x, z + 1) ? this.sim.waterDepth[idx(x, z + 1)] : 0;
+              yaw = wS > wN ? Math.PI : 0;
+            }
+            seg.rotation.y = yaw;
+            this.infraGroup.add(seg);
+          } else {
+            const baseH = Math.min(-0.7, minH - 0.2);
+            const h = t.damCrest - baseH;
+            const bodyMat = damHp < 65 ? this.mats.darkConcrete : this.mats.concrete;
+            this._addBoxTo(this.infraGroup, wx, baseH + h * 0.5, wz, 1.03, h, 1.03, bodyMat, true);
+            this._addBoxTo(this.infraGroup, wx, t.damCrest + 0.02, wz, 1.02, 0.04, 0.86, this.mats.viaductDeck, false);
           }
         }
 
@@ -492,29 +876,10 @@ export class CityRenderer3D {
           const tower = new THREE.Mesh(this.geos.taperSpire, this.mats.steelLattice);
           tower.scale.set(0.36, 1.22, 0.36);
           tower.position.set(wx, avgH + 0.61, wz);
-          tower.castShadow = true;
-          this.staticGroup.add(tower);
-          this._addBoxMesh(wx, avgH + 0.96, wz, 0.58, 0.04, 0.05, this.mats.steelLattice);
-          this._addBoxMesh(wx, avgH + 1.15, wz, 0.42, 0.04, 0.05, this.mats.steelLattice);
-        }
-
-        // Contemporary Realistic City Buildings!
-        if (t.building && !t.building.underConstruction) {
-          if (isUnder) {
-            const fm = (t.building.type === 'water_pump' || t.building.type === 'sewage_out' || t.building.type === 'water_treat')
-              ? this.mats.pipeOk
-              : (t.building.type === 'metro_station' ? this.mats.metroGlow : this.mats.darkConcrete);
-            this._addBoxMesh(wx, avgH + 0.06, wz, 0.80, 0.10, 0.80, fm, false);
-          } else {
-            const fH = Math.max(0.06, avgH - minH + 0.08);
-            this._addBoxMesh(wx, avgH - fH * 0.5 + 0.02, wz, 0.92, fH, 0.92, this.mats.concrete, true);
-            const rotRad = (t.building.rot || 0) * (Math.PI * 0.5);
-            const bGrp = this.archLib.buildBuilding(t.building, wx, wz, avgH + 0.02, rotRad, this.animHooks);
-            this.staticGroup.add(bGrp);
-            this._registerBuildingEntry(bGrp, x, z);
-          }
-        } else if (t.building && t.building.underConstruction && !isUnder) {
-          this._addBoxMesh(wx, avgH + 0.03, wz, 0.84, 0.06, 0.84, this.mats.concrete, true);
+          tower.castShadow = this.qualityMode !== 'eco';
+          this.infraGroup.add(tower);
+          this._addBoxTo(this.infraGroup, wx, avgH + 0.96, wz, 0.58, 0.04, 0.05, this.mats.steelLattice);
+          this._addBoxTo(this.infraGroup, wx, avgH + 1.15, wz, 0.42, 0.04, 0.05, this.mats.steelLattice);
         }
       }
     }
@@ -530,14 +895,259 @@ export class CityRenderer3D {
           const tubeGeo = new THREE.TubeGeometry(curve, 8, 0.014, 5, false);
           const m = new THREE.Mesh(tubeGeo, this.overlayMode === 'power' ? this.mats.powerGlow : this.mats.cable);
           m.userData.ownGeo = true;
-          this.staticGroup.add(m);
+          this.infraGroup.add(m);
         }
       }
     }
 
-    this.sim.meshDirty = false;
+    this.sim.infraDirty = false;
+    this.rebuildStats.infra++;
+  }
+
+  _buildStreetFurnitureInstances(props) {
+    const lamps = Array.isArray(props.lamps) ? props.lamps : [];
+    const signals = Array.isArray(props.signals) ? props.signals : [];
+
+    // 1. Curved LED Streetlamps (2 InstancedMeshes for the entire city!)
+    if (lamps.length > 0) {
+      const poleInst = new THREE.InstancedMesh(this.geos.lampPole, this.mats.lampMetal, lamps.length);
+      const bulbInst = new THREE.InstancedMesh(this.geos.lampBulb, this.mats.lampEmissive, lamps.length);
+      poleInst.castShadow = false;
+      poleInst.receiveShadow = false;
+      bulbInst.castShadow = false;
+      this._tmpScale.set(1, 1, 1);
+
+      for (let i = 0; i < lamps.length; i++) {
+        const lp = lamps[i];
+        this._tmpEuler.set(0, lp.yaw || 0, 0);
+        this._tmpQuat.setFromEuler(this._tmpEuler);
+        this._tmpPos.set(lp.x, lp.y, lp.z);
+        this._tmpMat4.compose(this._tmpPos, this._tmpQuat, this._tmpScale);
+        poleInst.setMatrixAt(i, this._tmpMat4);
+        bulbInst.setMatrixAt(i, this._tmpMat4);
+
+        // Store bulb world position for nighttime selective glow halo sprites
+        const sinY = Math.sin(lp.yaw || 0);
+        const cosY = Math.cos(lp.yaw || 0);
+        this._lampPositions.push({
+          x: lp.x + sinY * 0.175,
+          y: lp.y + 0.515,
+          z: lp.z + cosY * 0.175
+        });
+      }
+      poleInst.instanceMatrix.needsUpdate = true;
+      bulbInst.instanceMatrix.needsUpdate = true;
+      this.infraGroup.add(poleInst, bulbInst);
+    }
+
+    // 2. Live-Synced 3-Lamp Traffic Signal Poles (3 InstancedMeshes total!)
+    if (signals.length > 0) {
+      const poleInst = new THREE.InstancedMesh(this.geos.signalPole, this.mats.signalBody, signals.length);
+      const redInst = new THREE.InstancedMesh(this.geos.signalLens, this.mats.signalLens, signals.length);
+      const greenInst = new THREE.InstancedMesh(this.geos.signalLens, this.mats.signalLens, signals.length);
+      poleInst.castShadow = false;
+      redInst.castShadow = false;
+      greenInst.castShadow = false;
+
+      const redInit = new THREE.Color(0xff3333);
+      const greenInit = new THREE.Color(0x164e32);
+
+      for (let i = 0; i < signals.length; i++) {
+        const s = signals[i];
+        const yaw = s.yaw || 0;
+        this._tmpEuler.set(0, yaw, 0);
+        this._tmpQuat.setFromEuler(this._tmpEuler);
+        this._tmpScale.set(1, 1, 1);
+        this._tmpPos.set(s.x, s.y, s.z);
+        this._tmpMat4.compose(this._tmpPos, this._tmpQuat, this._tmpScale);
+        poleInst.setMatrixAt(i, this._tmpMat4);
+
+        const sinY = Math.sin(yaw);
+        const cosY = Math.cos(yaw);
+        // Rotate local (-0.24, 0) by Y rotation `yaw`: (x*cos + z*sin, -x*sin + z*cos)
+        const lx = s.x - 0.24 * cosY;
+        const lz = s.z + 0.24 * sinY;
+
+        this._tmpPos.set(lx, s.y + 0.502, lz);
+        this._tmpMat4.compose(this._tmpPos, this._tmpQuat, this._tmpScale);
+        redInst.setMatrixAt(i, this._tmpMat4);
+        redInst.setColorAt(i, redInit);
+
+        this._tmpPos.set(lx, s.y + 0.440, lz);
+        this._tmpMat4.compose(this._tmpPos, this._tmpQuat, this._tmpScale);
+        greenInst.setMatrixAt(i, this._tmpMat4);
+        greenInst.setColorAt(i, greenInit);
+      }
+
+      poleInst.instanceMatrix.needsUpdate = true;
+      redInst.instanceMatrix.needsUpdate = true;
+      greenInst.instanceMatrix.needsUpdate = true;
+      if (redInst.instanceColor) redInst.instanceColor.needsUpdate = true;
+      if (greenInst.instanceColor) greenInst.instanceColor.needsUpdate = true;
+
+      this.infraGroup.add(poleInst, redInst, greenInst);
+      this._signalEntries = signals;
+      this._signalRedInst = redInst;
+      this._signalGreenInst = greenInst;
+      this._signalSyncAccum = 99;
+    }
+  }
+
+  // 6-Batch Botanical InstancedMesh Forest (<= 6 draw calls for 1,500+ trees!)
+  rebuildForestGroup() {
+    this._disposeGroup(this.forestGroup);
+    if (this.overlayMode === 'underground') {
+      this.sim.forestDirty = false;
+      this.rebuildStats.forest++;
+      return;
+    }
+
+    const pines = [];
+    const leaves = [];
+    const palms = [];
+
+    for (let z = 0; z < GRID_SIZE; z++) {
+      for (let x = 0; x < GRID_SIZE; x++) {
+        const t = this.sim.grid[idx(x, z)];
+        if (t.trees <= 0 || t.zone || t.building || t.roadGround > 0 || t.roadElevated > 0 || t.rail > 0 || t.dam) continue;
+        if (this.sim.waterDepth[idx(x, z)] >= 0.04) continue;
+
+        const { wx, wz } = tileToWorld(x, z);
+        const avgH = this.sim.getTileElev(x, z);
+        const isCoastPalmZone = avgH <= 0.28 && (x >= GRID_SIZE - 16 || z >= GRID_SIZE - 14);
+        const count = Math.min(3, t.trees);
+
+        for (let k = 0; k < count; k++) {
+          const ox = (hash2D(x * 7 + k, z * 13, 101) - 0.5) * 0.64;
+          const oz = (hash2D(x * 11 + k, z * 17, 202) - 0.5) * 0.64;
+          const txW = wx + ox;
+          const tzW = wz + oz;
+          const groundY = this._sampleExactSlopeHeight(txW, tzW) - 0.025;
+          const scale = 0.78 + hash2D(x + k, z, 303) * 0.48;
+          const yaw = hash2D(x * 5 + k, z * 9, 404) * Math.PI * 2;
+          const tint = hash2D(x * 19 + k, z * 23, 505);
+
+          if (isCoastPalmZone && tint > 0.30) {
+            palms.push({ x: txW, y: groundY, z: tzW, s: scale * 1.05, yaw, tint });
+          } else if (avgH > 0.78 || ((x + z + k) % 3 !== 0 && avgH > 0.36)) {
+            pines.push({ x: txW, y: groundY, z: tzW, s: scale, yaw, tint });
+          } else {
+            leaves.push({ x: txW, y: groundY, z: tzW, s: scale, yaw, tint });
+          }
+        }
+      }
+    }
+
+    const castSh = this.qualityMode !== 'eco';
+    const pinePalette = [0x1e5631, 0x266639, 0x2f753e, 0x1b4d2c, 0x357a42];
+    const leafPalette = [0x388542, 0x459648, 0x2f753a, 0x569a4a, 0x4b8f42, 0xc49a35]; // ~16% golden ginkgo accent!
+    const palmPalette = [0x3c8f3b, 0x4ca344, 0x347f35, 0x5aad4a];
+
+    const addSpecies = (list, trunkGeo, trunkMat, crownGeo, crownMat, palette) => {
+      if (list.length === 0) return;
+      const trInst = new THREE.InstancedMesh(trunkGeo, trunkMat, list.length);
+      const crInst = new THREE.InstancedMesh(crownGeo, crownMat, list.length);
+      trInst.castShadow = castSh;
+      trInst.receiveShadow = true;
+      crInst.castShadow = castSh;
+      crInst.receiveShadow = true;
+
+      for (let i = 0; i < list.length; i++) {
+        const it = list[i];
+        this._tmpEuler.set(0, it.yaw, 0);
+        this._tmpQuat.setFromEuler(this._tmpEuler);
+        const sy = it.s * (0.92 + it.tint * 0.18);
+        this._tmpScale.set(it.s, sy, it.s);
+        this._tmpPos.set(it.x, it.y, it.z);
+        this._tmpMat4.compose(this._tmpPos, this._tmpQuat, this._tmpScale);
+        trInst.setMatrixAt(i, this._tmpMat4);
+        crInst.setMatrixAt(i, this._tmpMat4);
+
+        const hex = palette[Math.floor(it.tint * palette.length) % palette.length];
+        this._tmpColor.setHex(hex);
+        crInst.setColorAt(i, this._tmpColor);
+      }
+      trInst.instanceMatrix.needsUpdate = true;
+      crInst.instanceMatrix.needsUpdate = true;
+      if (crInst.instanceColor) crInst.instanceColor.needsUpdate = true;
+      this.forestGroup.add(trInst, crInst);
+    };
+
+    addSpecies(pines, this.geos.pineTrunk, this.mats.bark, this.geos.pineCrown, this.mats.pineInst, pinePalette);
+    addSpecies(leaves, this.geos.leafTrunk, this.mats.bark, this.geos.leafCrown, this.mats.leafInst, leafPalette);
+    addSpecies(palms, this.geos.palmTrunk, this.mats.palmBark, this.geos.palmCrown, this.mats.palmInst, palmPalette);
+
+    this.sim.forestDirty = false;
+    this.rebuildStats.forest++;
+  }
+
+  rebuildBuildingGroup() {
+    this._disposeGroup(this.buildingGroup);
+    this.buildingEntries = [];
+    this.animHooks.windRotors.length = 0;
+    this.animHooks.ferrisWheels.length = 0;
+    this.animHooks.radarDishes.length = 0;
+    this.animHooks.smokeSources.length = 0;
+    this.animHooks.beacons.length = 0;
+
+    const isUnder = this.overlayMode === 'underground';
+
+    for (let z = 0; z < GRID_SIZE; z++) {
+      for (let x = 0; x < GRID_SIZE; x++) {
+        const t = this.sim.grid[idx(x, z)];
+        const { wx, wz } = tileToWorld(x, z);
+        const avgH = this.sim.getTileElev(x, z);
+        const { min: minH } = this.sim.getTileMinMaxElev(x, z);
+
+        // Cached Zone Pad (ZERO material allocations!)
+        if (t.zone && !t.building && !isUnder) {
+          const zm = this.mats.zonePads[t.zone] || this.mats.zonePads.default;
+          this._addBoxTo(this.buildingGroup, wx, avgH + 0.02, wz, 0.84, 0.02, 0.84, zm, false);
+        }
+
+        // Contemporary PBR City Buildings!
+        if (t.building && !t.building.underConstruction) {
+          if (isUnder) {
+            const fm = (t.building.type === 'water_pump' || t.building.type === 'sewage_out' || t.building.type === 'water_treat')
+              ? this.mats.pipeOk
+              : (t.building.type === 'metro_station' ? this.mats.metroGlow : this.mats.darkConcrete);
+            this._addBoxTo(this.buildingGroup, wx, avgH + 0.06, wz, 0.80, 0.10, 0.80, fm, false);
+          } else {
+            const fH = Math.max(0.06, avgH - minH + 0.08);
+            this._addBoxTo(this.buildingGroup, wx, avgH - fH * 0.5 + 0.02, wz, 0.92, fH, 0.92, this.mats.concrete, true);
+            const rotRad = (t.building.rot || 0) * (Math.PI * 0.5);
+            const bGrp = this.archLib.buildBuilding(t.building, wx, wz, avgH + 0.02, rotRad, this.animHooks);
+            this.buildingGroup.add(bGrp);
+            this._registerBuildingEntry(bGrp, x, z);
+          }
+        } else if (t.building && t.building.underConstruction && !isUnder) {
+          this._addBoxTo(this.buildingGroup, wx, avgH + 0.03, wz, 0.84, 0.06, 0.84, this.mats.concrete, true);
+        }
+      }
+    }
+
+    this.sim.buildingDirty = false;
+    this.rebuildStats.building++;
+  }
+
+  // Backward-compatible full or granular static rebuild dispatcher
+  rebuildStaticCityMesh() {
+    const overlayChanged = this.lastOverlayMode !== this.overlayMode;
+    if (overlayChanged) {
+      this.sim.terrainDirty = true;
+      this.sim.infraDirty = true;
+      this.sim.forestDirty = true;
+      this.sim.buildingDirty = true;
+    }
+
+    const needWater = this.sim.terrainDirty || overlayChanged;
+    if (this.sim.terrainDirty) this.rebuildTerrainGroup();
+    if (this.sim.infraDirty) this.rebuildInfraGroup();
+    if (this.sim.forestDirty) this.rebuildForestGroup();
+    if (this.sim.buildingDirty) this.rebuildBuildingGroup();
+
     this.lastOverlayMode = this.overlayMode;
-    this.rebuildWaterMesh();
+    if (needWater) this.rebuildWaterMesh();
   }
 
   // ==================== Environment IBL ====================
@@ -559,18 +1169,22 @@ export class CityRenderer3D {
       geo.setAttribute('color', new THREE.Float32BufferAttribute(cols, 3));
       const mat = new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.BackSide });
       envScene.add(new THREE.Mesh(geo, mat));
-      const sun = new THREE.Mesh(new THREE.SphereGeometry(0.8, 12, 8), new THREE.MeshBasicMaterial({ color: 0xfff4dc }));
+      const sunGeo = new THREE.SphereGeometry(0.8, 12, 8);
+      const sunMat = new THREE.MeshBasicMaterial({ color: 0xfff4dc });
+      const sun = new THREE.Mesh(sunGeo, sunMat);
       sun.material.color.multiplyScalar(6);
       sun.position.set(6, 6, 3);
       envScene.add(sun);
       const pmrem = new THREE.PMREMGenerator(this.renderer);
       const rt = pmrem.fromScene(envScene, 0.02);
       this.scene.environment = rt.texture;
-      this.scene.environmentIntensity = 0.5;
+      this.scene.environmentIntensity = 0.55;
       this.hemiBase = 0.70;
       pmrem.dispose();
       geo.dispose();
       mat.dispose();
+      sunGeo.dispose();
+      sunMat.dispose();
     } catch {
       this.scene.environment = null;
     }
@@ -580,7 +1194,11 @@ export class CityRenderer3D {
   _registerBuildingEntry(grp, x, z) {
     const meshes = [];
     grp.traverse((n) => {
-      if (n.isMesh && n.material) meshes.push({ mesh: n, orig: n.material, shadow: n.castShadow });
+      if (!n.isMesh || !n.material) return;
+      if (n.userData && n.userData.skipGhost) return;
+      // Keep Contact AO skirts untouched during X-ray ghosting
+      if (!Array.isArray(n.material) && n.material.transparent && n.material.depthWrite === false) return;
+      meshes.push({ mesh: n, orig: n.material, shadow: n.castShadow });
     });
     if (meshes.length === 0) return;
     const box = new THREE.Box3();
@@ -621,7 +1239,7 @@ export class CityRenderer3D {
     for (const m of entry.meshes) {
       if (level === 0) {
         m.mesh.material = m.orig;
-        m.mesh.castShadow = m.shadow;
+        m.mesh.castShadow = m.shadow && this.qualityMode !== 'eco';
       } else {
         m.mesh.material = this._getGhostMaterial(m.orig, level);
         m.mesh.castShadow = false;
@@ -654,7 +1272,6 @@ export class CityRenderer3D {
     if (this._xrayAccum < 0.08) return;
     this._xrayAccum = 0;
 
-    // Keep ghost emissive (night windows) in sync with their source materials
     for (const g of this._ghostMatCache.values()) {
       const src = g.userData.ghostOf;
       if (src && src.emissiveIntensity !== undefined) g.emissiveIntensity = src.emissiveIntensity;
@@ -672,7 +1289,6 @@ export class CityRenderer3D {
     }
     const dx = tx - cam.x, dy = ty - cam.y, dz = tz - cam.z;
     const segLen = Math.hypot(dx, dy, dz) || 1;
-    // Stop the sight line just short of the focus so the focused building itself stays solid
     const stopT = Math.max(0, 1 - 0.55 / segLen);
 
     for (const e of this.buildingEntries) {
@@ -686,7 +1302,6 @@ export class CityRenderer3D {
         if (!containsTarget && this._segmentHitsBox(cam.x, cam.y, cam.z, dx * stopT, dy * stopT, dz * stopT, e.box, 0.18)) {
           level = 2;
         } else {
-          // Buildings right in front of the lens (street-level / close zoom) fade too
           const cx = Math.max(e.box.min.x, Math.min(cam.x, e.box.max.x));
           const cy = Math.max(e.box.min.y, Math.min(cam.y, e.box.max.y));
           const cz = Math.max(e.box.min.z, Math.min(cam.z, e.box.max.z));
@@ -694,44 +1309,6 @@ export class CityRenderer3D {
         }
       }
       this._setEntryGhost(e, level);
-    }
-  }
-
-  _addBoxMesh(x, cy, z, sx, sy, sz, mat, shadow = true) {
-    const m = new THREE.Mesh(this.geos.unitBox, mat);
-    m.scale.set(sx, sy, sz);
-    m.position.set(x, cy, z);
-    m.castShadow = shadow;
-    m.receiveShadow = true;
-    this.staticGroup.add(m);
-    return m;
-  }
-
-  _addSmoothTree(x, y, z, s = 1.0, isPine = false, altShade = 0) {
-    const trk = new THREE.Mesh(this.geos.trunk, this.mats.bark);
-    trk.scale.setScalar(s);
-    trk.position.set(x, y + 0.08 * s, z);
-    trk.castShadow = true;
-    this.staticGroup.add(trk);
-
-    if (isPine) {
-      const m = altShade ? this.mats.pineLeafB : this.mats.pineLeafA;
-      const c1 = new THREE.Mesh(this.geos.pineCone1, m);
-      c1.scale.setScalar(s);
-      c1.position.set(x, y + 0.24 * s, z);
-      c1.castShadow = true;
-      const c2 = new THREE.Mesh(this.geos.pineCone2, m);
-      c2.scale.setScalar(s);
-      c2.position.set(x, y + 0.41 * s, z);
-      c2.castShadow = true;
-      this.staticGroup.add(c1, c2);
-    } else {
-      const m = altShade ? this.mats.oakLeafB : this.mats.oakLeafA;
-      const cr = new THREE.Mesh(this.geos.oakCrown, m);
-      cr.scale.setScalar(s);
-      cr.position.set(x, y + 0.25 * s, z);
-      cr.castShadow = true;
-      this.staticGroup.add(cr);
     }
   }
 
@@ -750,44 +1327,28 @@ export class CityRenderer3D {
     }
   }
 
+  // True-Proportion Modern 3D Vehicles (Sedan, SUV, Taxi, Bus, Container Truck, Fire Engine, Garbage Truck)
   _createVehicleObject(kind, variantIdx) {
+    if (this.archLib && typeof this.archLib.createRealisticVehicleObject === 'function') {
+      try {
+        const obj = this.archLib.createRealisticVehicleObject(kind, variantIdx);
+        if (obj) {
+          obj.rotation.order = 'YXZ';
+          return obj;
+        }
+      } catch {}
+    }
+
     const grp = new THREE.Group();
     grp.rotation.order = 'YXZ';
-
-    const carKeys = ['car_green', 'car_purple', 'car_yellow', 'car_red'];
-    const protoKey = kind === 'firetruck'
-      ? 'car_red'
-      : (kind === 'garbagetruck' ? 'car_green' : (kind === 'taxi' ? 'car_yellow' : carKeys[variantIdx % carKeys.length]));
-
-    if (this.glbProtos[protoKey] && kind !== 'bus') {
-      const model = this.glbProtos[protoKey].clone();
-      const s = (kind === 'truck' || kind === 'firetruck' || kind === 'garbagetruck') ? 0.122 : 0.105;
-      model.scale.setScalar(s);
-      grp.add(model);
-
-      if (kind === 'firetruck') {
-        const bar = new THREE.Mesh(this.geos.unitBox, this.mats.redCross);
-        bar.scale.set(0.11, 0.035, 0.04);
-        bar.position.set(0, 0.15, 0.04);
-        bar.name = 'strobe';
-        grp.add(bar);
-      } else if (kind === 'garbagetruck') {
-        const hopper = new THREE.Mesh(this.geos.unitBox, this.mats.garbageGreen);
-        hopper.scale.set(0.14, 0.09, 0.18);
-        hopper.position.set(0, 0.10, -0.05);
-        grp.add(hopper);
-      }
-    } else {
-      const coach = new THREE.Mesh(this.geos.bulletCoach, kind === 'firetruck' ? this.mats.redCross : this.mats.bulletStripe);
-      coach.scale.set(0.65, 0.65, 0.55);
-      coach.position.y = 0.08;
-      coach.castShadow = true;
-      grp.add(coach);
-    }
+    const coach = new THREE.Mesh(this.geos.bulletCoach, kind === 'firetruck' ? this.mats.redCross : this.mats.bulletStripe);
+    coach.scale.set(0.65, 0.65, 0.55);
+    coach.position.y = 0.08;
+    coach.castShadow = this.qualityMode !== 'eco';
+    grp.add(coach);
     return grp;
   }
 
-  // Bilinear sample of a 57x57 corner height field (roadCornerY / elevCornerY / railCornerY) at world XZ
   _sampleInfraHeight(field, wx, wz) {
     const gx = Math.max(0, Math.min(GRID_SIZE - 0.0001, wx + HALF_GRID));
     const gz = Math.max(0, Math.min(GRID_SIZE - 0.0001, wz + HALF_GRID));
@@ -807,8 +1368,6 @@ export class CityRenderer3D {
     return n;
   }
 
-  // Point on the rendered track centreline inside tile path[k] at local parameter s in [0..1]
-  // (s=0: entry edge midpoint, s=0.5: tile middle / arc midpoint, s=1: exit edge midpoint)
   _trackTilePoint(path, k, s, isMetro) {
     const p = path[k];
     const prev = path[k - 1];
@@ -825,7 +1384,6 @@ export class CityRenderer3D {
       return { x: eInX + (eOutX - eInX) * s, z: eInZ + (eOutZ - eInZ) * s };
     }
     if (this._countRailNeighbors(p.x, p.z, isMetro) !== 2) {
-      // Junction tile: track is drawn as straight crossing lines through the tile centre
       if (s < 0.5) {
         const f = s / 0.5;
         return { x: eInX + (c.wx - eInX) * f, z: eInZ + (c.wz - eInZ) * f };
@@ -833,7 +1391,6 @@ export class CityRenderer3D {
       const f = (s - 0.5) / 0.5;
       return { x: c.wx + (eOutX - c.wx) * f, z: c.wz + (eOutZ - c.wz) * f };
     }
-    // Quarter-circle arc (radius 0.5) around the tile corner shared by entry & exit edges
     const pivX = c.wx - inX * 0.5 + outX * 0.5;
     const pivZ = c.wz - inZ * 0.5 + outZ * 0.5;
     const th = s * Math.PI * 0.5;
@@ -844,7 +1401,6 @@ export class CityRenderer3D {
     };
   }
 
-  // World position {x, y, z} at path distance d (d in [0, path.length-1], integer d = tile middle)
   _sampleTrackPoint(path, d, isMetro) {
     const maxD = path.length - 1;
     const dd = Math.max(0, Math.min(maxD - 1e-4, d));
@@ -859,7 +1415,6 @@ export class CityRenderer3D {
       const node = path[f < 0.5 ? seg : seg + 1];
       y = this.sim.getTileElev(node.x, node.z) + 0.25;
     } else if (this.sim.infraHeights && this.sim.infraHeights.railCornerY) {
-      // Ride exactly on the welded steel rail heads of the rendered slab track
       y = this._sampleInfraHeight(this.sim.infraHeights.railCornerY, pt.x, pt.z) + 0.028;
     } else {
       const p0 = path[seg], p1 = path[Math.min(maxD, seg + 1)];
@@ -879,7 +1434,7 @@ export class CityRenderer3D {
       g = new THREE.Group();
       const body = new THREE.Mesh(this.geos.bulletCoach, this.mats.bulletBody);
       body.position.y = 0.11;
-      body.castShadow = true;
+      body.castShadow = this.qualityMode !== 'eco';
       const stripe = new THREE.Mesh(this.geos.unitBox, this.mats.bulletStripe);
       stripe.scale.set(0.215, 0.035, 0.56);
       stripe.position.y = 0.11;
@@ -890,7 +1445,6 @@ export class CityRenderer3D {
     return g;
   }
 
-  // Exact rendered deck height under a road vehicle (null => keep traffic-computed height)
   _vehicleDeckHeight(v, wx, wz) {
     const ih = this.sim.infraHeights;
     if (!ih || !v.path) return null;
@@ -909,6 +1463,32 @@ export class CityRenderer3D {
     return this._sampleInfraHeight(ih.roadCornerY, wx, wz);
   }
 
+  _syncTrafficSignals(dt) {
+    if (!this._signalRedInst || !this._signalGreenInst || this._signalEntries.length === 0) return;
+    this._signalSyncAccum += dt;
+    if (this._signalSyncAccum < 0.12) return;
+    this._signalSyncAccum = 0;
+
+    const brightRed = 0xff2b3a;
+    const dimRed = 0x3b1216;
+    const brightGreen = 0x22f57a;
+    const dimGreen = 0x103321;
+
+    for (let i = 0; i < this._signalEntries.length; i++) {
+      const s = this._signalEntries[i];
+      const isNS = s.axis === 'NS';
+      const isRed = this.traffic && typeof this.traffic.isSignalRed === 'function'
+        ? this.traffic.isSignalRed(s.tx, s.tz, isNS)
+        : false;
+      this._tmpColor.setHex(isRed ? brightRed : dimRed);
+      this._signalRedInst.setColorAt(i, this._tmpColor);
+      this._tmpColor.setHex(isRed ? dimGreen : brightGreen);
+      this._signalGreenInst.setColorAt(i, this._tmpColor);
+    }
+    if (this._signalRedInst.instanceColor) this._signalRedInst.instanceColor.needsUpdate = true;
+    if (this._signalGreenInst.instanceColor) this._signalGreenInst.instanceColor.needsUpdate = true;
+  }
+
   _syncDynamicScene(dt, night) {
     const isUnder = this.overlayMode === 'underground';
     const strobeRed = Math.sin(this.clock * 18) > 0;
@@ -924,11 +1504,19 @@ export class CityRenderer3D {
     for (const radar of this.animHooks.radarDishes) radar.rotation.y += dt * 2.2;
     for (const bc of this.animHooks.beacons) bc.visible = night > 0.22 ? beaconBlink : false;
 
-    // Road Vehicles
-    const activeCars = isUnder ? [] : this.traffic.vehicles;
-    while (this.vehiclePool.length < activeCars.length) {
+    // Streetlamp dusk/night emissive glow & live traffic signals
+    if (this.mats.lampEmissive) {
+      const lampGlow = Math.max(0.08, night * 2.2);
+      this.mats.lampEmissive.emissiveIntensity = lampGlow;
+    }
+    if (!isUnder) this._syncTrafficSignals(dt);
+
+    // Road Vehicles (zero per-frame material leaks!)
+    const rawCars = isUnder ? [] : this.traffic.vehicles;
+    const activeCount = Math.min(rawCars.length, this._maxRenderedVehicles);
+    while (this.vehiclePool.length < activeCount) {
       const idxV = this.vehiclePool.length;
-      const v = activeCars[idxV];
+      const v = rawCars[idxV];
       const obj = this._createVehicleObject(v.kind, idxV);
       this.vehicleGroup.add(obj);
       this.vehiclePool.push({ kind: v.kind, obj });
@@ -936,11 +1524,11 @@ export class CityRenderer3D {
 
     for (let i = 0; i < this.vehiclePool.length; i++) {
       const slot = this.vehiclePool[i];
-      if (i >= activeCars.length || activeCars[i].inTunnel) {
+      if (i >= activeCount || rawCars[i].inTunnel) {
         slot.obj.visible = false;
         continue;
       }
-      const v = activeCars[i];
+      const v = rawCars[i];
       if (slot.kind !== v.kind) {
         this.vehicleGroup.remove(slot.obj);
         slot.obj = this._createVehicleObject(v.kind, i);
@@ -966,7 +1554,7 @@ export class CityRenderer3D {
       }
     }
 
-    // Bullet Trains & Metro Trains (follow exact rendered track curves & deck heights)
+    // Bullet Trains & Metro Trains
     let neededTrainCars = 0;
     for (const tr of this.traffic.trains) {
       if ((tr.isMetro && isUnder) || (!tr.isMetro && !isUnder)) neededTrainCars += tr.cars;
@@ -1002,7 +1590,7 @@ export class CityRenderer3D {
         const hLen = Math.hypot(dx, dz) || 1;
         const pitch = Math.atan2(pB.y - pA.y, hLen);
         let yaw = Math.atan2(dx, dz);
-        if (c === tr.cars - 1 && tr.cars > 1) yaw += Math.PI; // tail cab faces backward
+        if (c === tr.cars - 1 && tr.cars > 1) yaw += Math.PI;
 
         carObj.visible = true;
         carObj.position.set(pC.x, pC.y, pC.z);
@@ -1043,35 +1631,58 @@ export class CityRenderer3D {
       sh.rotation.set(-(s.pitch || 0), s.yaw || 0, s.roll || 0);
     }
 
-    // Lightweight VFX & Previews
-    this._disposeGroup(this.uiOverlayGroup);
+    // ==================== Zero-Leak Pooled VFX, Night Glow & Selection Overlays ====================
+    let scafCount = 0;
+    let fireCount = 0;
+    let smokeCount = 0;
+    let sprayCount = 0;
+    let damWarnCount = 0;
+    let glowCount = 0;
 
     if (!isUnder) {
       for (let i = 0; i < this.sim.grid.length; i++) {
         const t = this.sim.grid[i];
         const b = t.building;
-        if (!b) continue;
-        const { wx, wz } = tileToWorld(t.x, t.z);
-        const y0 = this.sim.getTileElev(t.x, t.z);
+        if (b) {
+          const { wx, wz } = tileToWorld(t.x, t.z);
+          const y0 = this.sim.getTileElev(t.x, t.z);
 
-        if (b.underConstruction) {
-          const h = 0.25 + (b.buildProgress || 0.2) * 0.9;
-          const scaf = new THREE.Mesh(this.geos.unitBox, this.mats.goldGlow);
-          scaf.scale.set(0.62, h, 0.62);
-          scaf.position.set(wx, y0 + h * 0.5, wz);
-          this.uiOverlayGroup.add(scaf);
-        } else if (b.fire > 0.05) {
-          for (let f = 0; f < 2; f++) {
-            const ph = (this.clock * 2.4 + f * 0.5 + i * 0.17) % 1.0;
-            const fl = new THREE.Sprite(new THREE.SpriteMaterial({
-              map: this.smokeTex,
-              color: ph < 0.5 ? 0xff6b1a : 0x333333,
-              transparent: true,
-              opacity: 0.85 * (1 - ph * 0.6)
-            }));
-            fl.position.set(wx, y0 + 0.4 + ph * 1.1, wz);
-            fl.scale.setScalar(0.45 + ph * 0.4);
-            this.uiOverlayGroup.add(fl);
+          if (b.underConstruction) {
+            const h = 0.25 + (b.buildProgress || 0.2) * 0.9;
+            const scaf = this._acquirePoolMesh(this.scaffoldPool, scafCount++, this.geos.unitBox, this.mats.goldGlow);
+            scaf.scale.set(0.62, h, 0.62);
+            scaf.position.set(wx, y0 + h * 0.5, wz);
+            scaf.visible = true;
+          } else if (b.fire > 0.05) {
+            for (let f = 0; f < 2; f++) {
+              const ph = (this.clock * 2.4 + f * 0.5 + i * 0.17) % 1.0;
+              const fl = this._acquirePoolSprite(this.firePool, fireCount++, { map: this.smokeTex });
+              fl.material.color.setHex(ph < 0.5 ? 0xff6b1a : 0x333333);
+              fl.material.opacity = 0.85 * (1 - ph * 0.6);
+              fl.position.set(wx, y0 + 0.4 + ph * 1.1, wz);
+              fl.scale.setScalar(0.45 + ph * 0.4);
+              fl.visible = true;
+            }
+          }
+        }
+
+        if (t.dam) {
+          const damHp = t.damHealth !== undefined ? t.damHealth : 100;
+          if ((t.damStress || 0) >= 0.75 || damHp < 65) {
+            const { wx, wz } = tileToWorld(t.x, t.z);
+            if (strobeRed) {
+              const warn = this._acquirePoolMesh(this.damWarnPool, damWarnCount++, this.geos.waterSphere, this.mats.redCross);
+              warn.scale.setScalar(0.32);
+              warn.position.set(wx, t.damCrest + 0.16, wz);
+              warn.visible = true;
+            }
+            const ph = (this.clock * 3.0 + i * 0.23) % 1.0;
+            const spray = this._acquirePoolSprite(this.sprayPool, sprayCount++, { map: this.smokeTex });
+            spray.material.color.setHex(0xe0f2fe);
+            spray.material.opacity = 0.72 * (1 - ph);
+            spray.position.set(wx, t.damCrest + 0.06 - ph * 0.28, wz + 0.35 * ph);
+            spray.scale.setScalar(0.32 + ph * 0.48);
+            spray.visible = true;
           }
         }
       }
@@ -1079,98 +1690,117 @@ export class CityRenderer3D {
       for (let i = 0; i < this.animHooks.smokeSources.length; i++) {
         const s = this.animHooks.smokeSources[i];
         const ph = (this.clock * 0.42 + i * 0.29) % 1.0;
-        const sp = new THREE.Sprite(new THREE.SpriteMaterial({
-          map: this.smokeTex,
-          color: s.isSteam ? 0xf8fafc : 0xdbe2ec,
-          transparent: true,
-          opacity: (s.isSteam ? 0.52 : 0.40) * (1 - ph)
-        }));
+        const sp = this._acquirePoolSprite(this.smokePool, smokeCount++, { map: this.smokeTex });
+        sp.material.color.setHex(s.isSteam ? 0xf8fafc : 0xdbe2ec);
+        sp.material.opacity = (s.isSteam ? 0.52 : 0.40) * (1 - ph);
         sp.position.set(s.x + ph * 0.22, s.y + ph * 0.65, s.z - ph * 0.12);
         sp.scale.setScalar(0.24 + ph * 0.45);
-        this.uiOverlayGroup.add(sp);
+        sp.visible = true;
+      }
+
+      // Selective Nighttime Glow / Bloom Halos (tower beacons + nearest curved LED streetlamps)
+      if (night > 0.20 && this._maxGlowSprites > 0 && this.glowTex) {
+        const glowAlpha = Math.min(1, (night - 0.20) / 0.55);
+        // 1. Tower crown aviation beacons
+        for (let i = 0; i < this.animHooks.beacons.length && glowCount < this._maxGlowSprites; i++) {
+          const bc = this.animHooks.beacons[i];
+          if (!bc.visible) continue;
+          bc.getWorldPosition(this._tmpPos);
+          const gl = this._acquirePoolSprite(this.glowPool, glowCount++, { map: this.glowTex, additive: true });
+          gl.material.color.setHex(0xff3b4e);
+          gl.material.opacity = 0.75 * glowAlpha;
+          gl.position.copy(this._tmpPos);
+          gl.scale.setScalar(0.42);
+          gl.visible = true;
+        }
+        // 2. Nearest streetlamp warm halos around camera target
+        const txC = this.camTarget[0], tzC = this.camTarget[2];
+        const maxRadiusSq = 18 * 18;
+        for (let i = 0; i < this._lampPositions.length && glowCount < this._maxGlowSprites; i++) {
+          const lp = this._lampPositions[i];
+          const dSq = (lp.x - txC) * (lp.x - txC) + (lp.z - tzC) * (lp.z - tzC);
+          if (dSq > maxRadiusSq) continue;
+          const gl = this._acquirePoolSprite(this.glowPool, glowCount++, { map: this.glowTex, additive: true });
+          gl.material.color.setHex(0xffd27d);
+          gl.material.opacity = 0.48 * glowAlpha;
+          gl.position.set(lp.x, lp.y, lp.z);
+          gl.scale.setScalar(0.55);
+          gl.visible = true;
+        }
       }
     }
 
+    this._hidePoolFrom(this.scaffoldPool, scafCount);
+    this._hidePoolFrom(this.firePool, fireCount);
+    this._hidePoolFrom(this.smokePool, smokeCount);
+    this._hidePoolFrom(this.sprayPool, sprayCount);
+    this._hidePoolFrom(this.damWarnPool, damWarnCount);
+    this._hidePoolFrom(this.glowPool, glowCount);
+
+    // Disasters (pooled meteors & tornado funnel)
+    let meteorCount = 0;
     if (this.disasters) {
       for (const m of this.disasters.meteors) {
         const mx = m.start[0] + (m.end[0] - m.start[0]) * m.t;
         const my = m.start[1] + (m.end[1] - m.start[1]) * m.t;
         const mz = m.start[2] + (m.end[2] - m.start[2]) * m.t;
-        const ball = new THREE.Mesh(this.geos.waterSphere, new THREE.MeshBasicMaterial({ color: 0xff7b1c }));
+        const ball = this._acquirePoolMesh(this.meteorPool, meteorCount++, this.geos.waterSphere, this.mats.meteorGlow);
         ball.scale.setScalar(2.4);
         ball.position.set(mx, my, mz);
-        this.uiOverlayGroup.add(ball);
+        ball.visible = true;
       }
-      if (this.disasters.tornado) {
-        const tor = this.disasters.tornado;
-        for (let r = 0; r < 12; r++) {
-          const ring = new THREE.Mesh(this.geos.cylTower, this.mats.darkConcrete);
+      const tor = this.disasters.tornado;
+      for (let r = 0; r < this.tornadoRings.length; r++) {
+        const ring = this.tornadoRings[r];
+        if (!tor) {
+          ring.visible = false;
+        } else {
           const sc = 0.4 + r * 0.25;
           ring.scale.set(sc, 0.42, sc);
           ring.position.set(tor.wx + Math.sin(this.clock * 10 + r) * 0.16, 0.3 + r * 0.42, tor.wz + Math.cos(this.clock * 10 + r) * 0.16);
-          this.uiOverlayGroup.add(ring);
+          ring.visible = true;
         }
       }
+    } else {
+      for (let r = 0; r < this.tornadoRings.length; r++) this.tornadoRings[r].visible = false;
     }
+    this._hidePoolFrom(this.meteorPool, meteorCount);
 
-    const prevMat = new THREE.MeshBasicMaterial({
-      color: new THREE.Color(this.previewColor[0], this.previewColor[1], this.previewColor[2]),
-      transparent: true,
-      opacity: 0.62
-    });
-    for (const pos of this.previewTiles) {
-      if (!inBounds(pos.x, pos.z)) continue;
-      const { wx, wz } = tileToWorld(pos.x, pos.z);
-      const py = Math.max(this.sim.getTileElev(pos.x, pos.z), this.sim.getTileElev(pos.x, pos.z) + this.sim.waterDepth[idx(pos.x, pos.z)]) + 0.06;
-      const hl = new THREE.Mesh(this.geos.unitBox, prevMat);
-      hl.scale.set(0.92, 0.06, 0.92);
-      hl.position.set(wx, py, wz);
-      this.uiOverlayGroup.add(hl);
+    // Build / Drag Preview Tiles (single reusable previewMat mutated in place!)
+    let prevCount = 0;
+    if (this.previewTiles.length > 0) {
+      this.mats.previewMat.color.setRGB(this.previewColor[0], this.previewColor[1], this.previewColor[2]);
+      for (const pos of this.previewTiles) {
+        if (!inBounds(pos.x, pos.z)) continue;
+        const { wx, wz } = tileToWorld(pos.x, pos.z);
+        const py = Math.max(this.sim.getTileElev(pos.x, pos.z), this.sim.getTileElev(pos.x, pos.z) + this.sim.waterDepth[idx(pos.x, pos.z)]) + 0.06;
+        const hl = this._acquirePoolMesh(this.previewMeshPool, prevCount++, this.geos.unitBox, this.mats.previewMat);
+        hl.scale.set(0.92, 0.06, 0.92);
+        hl.position.set(wx, py, wz);
+        hl.visible = true;
+      }
     }
+    this._hidePoolFrom(this.previewMeshPool, prevCount);
 
+    // Selected Tile Highlight
     if (this.selectedTile && inBounds(this.selectedTile.x, this.selectedTile.z)) {
       const { wx, wz } = tileToWorld(this.selectedTile.x, this.selectedTile.z);
       const sy = this.sim.getTileElev(this.selectedTile.x, this.selectedTile.z) + 0.08;
-      const sel = new THREE.Mesh(this.geos.unitBox, this.mats.cyanGlow);
-      sel.scale.set(0.98, 0.04, 0.98);
-      sel.position.set(wx, sy, wz);
-      this.uiOverlayGroup.add(sel);
+      this.selectedTileMesh.position.set(wx, sy, wz);
+      this.selectedTileMesh.visible = true;
+    } else {
+      this.selectedTileMesh.visible = false;
     }
 
+    // Selected Vehicle Golden Halo
     if (!isUnder && this.selectedVehicle && this.traffic.vehicles.includes(this.selectedVehicle) && !this.selectedVehicle.inTunnel) {
       const v = this.selectedVehicle;
       const pulse = 1.0 + Math.sin(this.clock * 7.5) * 0.14;
-      const halo = new THREE.Mesh(this.geos.cylTower, this.mats.goldGlow);
-      halo.scale.set(0.68 * pulse, 0.035, 0.68 * pulse);
-      halo.position.set(v.wx, (v.wy || 0) + 0.24, v.wz);
-      this.uiOverlayGroup.add(halo);
-    }
-
-    if (!isUnder) {
-      for (let i = 0; i < this.sim.grid.length; i++) {
-        const t = this.sim.grid[i];
-        if (!t.dam) continue;
-        const damHp = t.damHealth !== undefined ? t.damHealth : 100;
-        if ((t.damStress || 0) >= 0.75 || damHp < 65) {
-          const { wx, wz } = tileToWorld(t.x, t.z);
-          if (strobeRed) {
-            const warn = new THREE.Mesh(this.geos.waterSphere, this.mats.redCross);
-            warn.scale.setScalar(0.32);
-            warn.position.set(wx, t.damCrest + 0.16, wz);
-            this.uiOverlayGroup.add(warn);
-          }
-          const ph = (this.clock * 3.0 + i * 0.23) % 1.0;
-          const spray = new THREE.Sprite(new THREE.SpriteMaterial({
-            map: this.smokeTex,
-            color: 0xe0f2fe,
-            transparent: true,
-            opacity: 0.72 * (1 - ph)
-          }));
-          spray.position.set(wx, t.damCrest + 0.06 - ph * 0.28, wz + 0.35 * ph);
-          spray.scale.setScalar(0.32 + ph * 0.48);
-          this.uiOverlayGroup.add(spray);
-        }
-      }
+      this.selectedVehicleHalo.scale.set(0.68 * pulse, 0.035, 0.68 * pulse);
+      this.selectedVehicleHalo.position.set(v.wx, (v.wy || 0) + 0.24, v.wz);
+      this.selectedVehicleHalo.visible = true;
+    } else {
+      this.selectedVehicleHalo.visible = false;
     }
   }
 
@@ -1219,7 +1849,7 @@ export class CityRenderer3D {
     this.sunLight.color.copy(daySun).lerp(moonCol, night).lerp(sunsetSun, sunset * 0.75);
     this.sunLight.intensity = 1.92 * (1 - night * 0.72);
     this.hemiLight.intensity = (this.hemiBase || 0.88) * (1 - night * 0.62);
-    if (this.scene.environment) this.scene.environmentIntensity = 0.5 * (1 - night * 0.85);
+    if (this.scene.environment) this.scene.environmentIntensity = 0.55 * (1 - night * 0.82);
 
     this.archLib.setNightFactor(night);
 

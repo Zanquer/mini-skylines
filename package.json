@@ -1,8 +1,13 @@
 {
   "name": "mini-skylines-pro-3d",
-  "version": "3.0.0",
+  "version": "7.0.0",
   "private": true,
-  "description": "Offline 3D City Builder powered by Three.js + Kenney CC0 3D GLB Assets",
+  "description": "山河天际线 Pro 3D · 旗舰 PBR 离线立体城市模拟 (iOS Full-Screen Offline PWA)",
+  "scripts": {
+    "bake-assets": "node scripts/bake_pbr_assets.js",
+    "build": "node build.js",
+    "build:all": "node scripts/bake_pbr_assets.js && node build.js"
+  },
   "dependencies": {
     "three": "^0.170.0"
   },

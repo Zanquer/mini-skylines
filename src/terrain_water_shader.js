@@ -1924,6 +1924,329 @@ export function buildContinuousRoadAndViaductGroup(THREE, sim, overlayMode, mats
     return { p0x: x1, p0z: z0, y0: y10, p1x: x1, p1z: z1, y1: y11 };              // E: N->S, right=East
   }
 
+  // Exact-height streetlamp & live traffic signal placement registries for InstancedMesh rendering
+  const lamps = [];
+  const signals = [];
+  const pylonFootprints = [];
+  const cPylon = [toCol(0.89), toCol(0.90), toCol(0.92)];
+
+  // Tapered 3D concrete pylon shaft segment where sVec = (fz, -fx) guarantees (f x sVec)_y = +1
+  function addPylonSegment(
+    x0, y0, z0, wF0, wS0,
+    x1, y1, z1, wF1, wS1,
+    fx, fz, sx, sz,
+    cr, cg, cb, capTop = false
+  ) {
+    if (y1 - y0 < 1e-4) return;
+    const b0x = x0 - fx * wF0 - sx * wS0, b0z = z0 - fz * wF0 - sz * wS0;
+    const b1x = x0 + fx * wF0 - sx * wS0, b1z = z0 + fz * wF0 - sz * wS0;
+    const b2x = x0 + fx * wF0 + sx * wS0, b2z = z0 + fz * wF0 + sz * wS0;
+    const b3x = x0 - fx * wF0 + sx * wS0, b3z = z0 - fz * wF0 + sz * wS0;
+
+    const t0x = x1 - fx * wF1 - sx * wS1, t0z = z1 - fz * wF1 - sz * wS1;
+    const t1x = x1 + fx * wF1 - sx * wS1, t1z = z1 + fz * wF1 - sz * wS1;
+    const t2x = x1 + fx * wF1 + sx * wS1, t2z = z1 + fz * wF1 + sz * wS1;
+    const t3x = x1 - fx * wF1 + sx * wS1, t3z = z1 - fz * wF1 + sz * wS1;
+
+    bConcrete.addQuad(t0x, y1, t0z, b0x, y0, b0z, b1x, y0, b1z, t1x, y1, t1z, 0, 0, 0, 1, 1, 1, 1, 0, cr * 0.94, cg * 0.94, cb * 0.95);
+    bConcrete.addQuad(t1x, y1, t1z, b1x, y0, b1z, b2x, y0, b2z, t2x, y1, t2z, 0, 0, 0, 1, 1, 1, 1, 0, cr * 0.98, cg * 0.98, cb * 0.99);
+    bConcrete.addQuad(t2x, y1, t2z, b2x, y0, b2z, b3x, y0, b3z, t3x, y1, t3z, 0, 0, 0, 1, 1, 1, 1, 0, cr * 0.92, cg * 0.92, cb * 0.94);
+    bConcrete.addQuad(t3x, y1, t3z, b3x, y0, b3z, b0x, y0, b0z, t0x, y1, t0z, 0, 0, 0, 1, 1, 1, 1, 0, cr * 0.96, cg * 0.96, cb * 0.97);
+    if (capTop) {
+      bConcrete.addQuad(t0x, y1, t0z, t1x, y1, t1z, t2x, y1, t2z, t3x, y1, t3z, 0, 0, 1, 0, 1, 1, 0, 1, cr, cg, cb);
+    }
+  }
+
+  // Variable-depth curved concrete box-girder haunch / arch rib web under bridge spans
+  function addHaunchWeb(
+    x0, z0, yTop0, yBot0,
+    x1, z1, yTop1, yBot1,
+    halfW, sx, sz,
+    cr, cg, cb
+  ) {
+    const p0Lx = x0 - sx * halfW, p0Lz = z0 - sz * halfW;
+    const p0Rx = x0 + sx * halfW, p0Rz = z0 + sz * halfW;
+    const p1Lx = x1 - sx * halfW, p1Lz = z1 - sz * halfW;
+    const p1Rx = x1 + sx * halfW, p1Rz = z1 + sz * halfW;
+
+    bConcrete.addQuad(p0Lx, yTop0, p0Lz, p0Lx, yBot0, p0Lz, p1Lx, yBot1, p1Lz, p1Lx, yTop1, p1Lz, 0, 0, 0, 1, 1, 1, 1, 0, cr * 0.93, cg * 0.93, cb * 0.95);
+    bConcrete.addQuad(p1Rx, yTop1, p1Rz, p1Rx, yBot1, p1Rz, p0Rx, yBot0, p0Rz, p0Rx, yTop0, p0Rz, 0, 0, 0, 1, 1, 1, 1, 0, cr * 0.90, cg * 0.90, cb * 0.92);
+    bConcrete.addQuad(p0Lx, yBot0, p0Lz, p0Rx, yBot0, p0Rz, p1Rx, yBot1, p1Rz, p1Lx, yBot1, p1Lz, 0, 0, 1, 0, 1, 1, 0, 1, cr * 0.82, cg * 0.82, cb * 0.85);
+  }
+
+  // --- Pre-Scan & Emit Modern Twin-Tower Cable-Stayed Bridges (斜拉桥, L >= 3 water spans) ---
+  const N_CELLS = GRID_SIZE * GRID_SIZE;
+  const groundCableSpanMask = new Uint8Array(N_CELLS);
+  const elevCableSpanMask = new Uint8Array(N_CELLS);
+
+  const evalGroundConnFlags = (x, z) => {
+    let ns = false, ew = false;
+    const t = grid[idx(x, z)];
+    for (let d = 0; d < 4; d++) {
+      const nx = x + DIRS[d].dx;
+      const nz = z + DIRS[d].dz;
+      let c = false;
+      if (!inBounds(nx, nz)) {
+        if (d === 1 && z === GRID_SIZE - 1 && t.roadGround === 3) c = true;
+      } else {
+        const ni = idx(nx, nz);
+        const nt = grid[ni];
+        if (nt.roadGround >= 1 && nt.roadGround <= 4 && !nt.dam && !nt.ramp) {
+          c = true;
+        } else if (nt.ramp) {
+          const nrm = rampMeta.get(ni);
+          if (nrm) {
+            if (hasRampGroundDeck(nt, nrm)) {
+              if (d === nrm.highDir || d === nrm.lowDir || nrm.lowDir === DIRS[d].opp || nrm.highDir === DIRS[d].opp) c = true;
+            } else if (nrm.lowDir === DIRS[d].opp && nrm.lowFrac < 0.001) {
+              c = true;
+            }
+          }
+        }
+      }
+      if (c) {
+        if (d < 2) ns = true;
+        else ew = true;
+      }
+    }
+    return { ns, ew };
+  };
+
+  const evalElevConnFlags = (x, z) => {
+    let ns = false, ew = false;
+    for (let d = 0; d < 4; d++) {
+      const nx = x + DIRS[d].dx;
+      const nz = z + DIRS[d].dz;
+      if (!inBounds(nx, nz)) continue;
+      const ni = idx(nx, nz);
+      const nt = grid[ni];
+      let c = false;
+      if (nt.roadElevated > 0 && !nt.ramp) {
+        c = true;
+      } else if (nt.ramp) {
+        const nrm = rampMeta.get(ni);
+        if (nrm) {
+          if (nrm.throughElev && (d === nrm.highDir || d === nrm.lowDir)) c = true;
+          else if (nrm.highDir === DIRS[d].opp && nrm.highFrac > 0.999) c = true;
+        }
+      }
+      if (c) {
+        if (d < 2) ns = true;
+        else ew = true;
+      }
+    }
+    return { ns, ew };
+  };
+
+  const isGroundCableCand = (x, z, wantEW) => {
+    if (!isSurfRoadTile(x, z)) return false;
+    const i = idx(x, z);
+    const t = grid[i];
+    if (t.roadGround < 2 || !t.roadBridge || waterDepth[i] <= 0.08 || t.ramp || t.dam || t.roadElevated > 0) return false;
+    const { ns, ew } = evalGroundConnFlags(x, z);
+    return wantEW ? (ew && !ns) : (ns && !ew);
+  };
+
+  const isElevCableCand = (x, z, wantEW) => {
+    const i = idx(x, z);
+    const t = grid[i];
+    if (!(t.roadElevated > 0) || t.ramp || t.dam || waterDepth[i] <= 0.12) return false;
+    const { ns, ew } = evalElevConnFlags(x, z);
+    return wantEW ? (ew && !ns) : (ns && !ew);
+  };
+
+  const emitCableStayedSpan = (orgX, orgZ, fx, fz, L, heightGrid, soffThick, isElev) => {
+    const sx = fz;
+    const sz = -fx;
+    const towerH = 2.05;
+    const sTowers = L <= 4 ? [L * 0.5] : [L * 0.25, L * 0.75];
+
+    // 1. Continuous variable-depth concrete box-girder haunch spine ribs & transverse diaphragms under span
+    const HSEG = L * 2;
+    const evalHaunchDepth = (sVal) => {
+      let minDist = L;
+      for (let k = 0; k < sTowers.length; k++) {
+        const d = Math.abs(sVal - sTowers[k]);
+        if (d < minDist) minDist = d;
+      }
+      return 0.085 + 0.135 * Math.exp(-minDist * 1.15);
+    };
+
+    for (let m = 0; m < HSEG; m++) {
+      const sA = (m / HSEG) * L;
+      const sB = ((m + 1) / HSEG) * L;
+      const ax = orgX + fx * sA, az = orgZ + fz * sA;
+      const bx = orgX + fx * sB, bz = orgZ + fz * sB;
+      const ySoffA = sampleCornerGrid(heightGrid, ax, az) - soffThick + 0.008;
+      const ySoffB = sampleCornerGrid(heightGrid, bx, bz) - soffThick + 0.008;
+      const dA = evalHaunchDepth(sA);
+      const dB = evalHaunchDepth(sB);
+
+      for (const ribSign of [-1, 1]) {
+        const uOff = 0.27 * ribSign;
+        addHaunchWeb(
+          ax + sx * uOff, az + sz * uOff, ySoffA, ySoffA - dA,
+          bx + sx * uOff, bz + sz * uOff, ySoffB, ySoffB - dB,
+          0.044, sx, sz,
+          cGirder[0], cGirder[1], cGirder[2]
+        );
+      }
+
+      // Transverse floor-beam diaphragm rib every 1.0m along the span
+      if (m % 2 === 1 && m < HSEG - 1) {
+        const dRib = dB * 0.85;
+        bConcrete.addBeam(
+          bx - sx * 0.43, bz - sz * 0.43, ySoffB, ySoffB,
+          bx + sx * 0.43, bz + sz * 0.43, ySoffB, ySoffB,
+          0.034, 0.0, dRib, true, true, true,
+          cGirder[0], cGirder[1], cGirder[2]
+        );
+      }
+    }
+
+    // 2. Sleek A-Frame / Diamond White-Concrete Pylon Towers + Fan Stay Cables
+    const hAnchors = [1.05, 1.33, 1.62, 1.90];
+    for (let tIdx = 0; tIdx < sTowers.length; tIdx++) {
+      const sT = sTowers[tIdx];
+      const tx = orgX + fx * sT;
+      const tz = orgZ + fz * sT;
+      const deckY = sampleCornerGrid(heightGrid, tx, tz);
+      const bedY = sampleCornerGrid(corners, tx, tz) - 0.22;
+      const soffY = deckY - soffThick;
+
+      // Record footprint on both flanks so streetlamps never collide with tower legs
+      pylonFootprints.push(
+        { x: tx - sx * 0.49, z: tz - sz * 0.49, isElev },
+        { x: tx + sx * 0.49, z: tz + sz * 0.49, isElev }
+      );
+
+      // Underwater / sub-deck tapered pylon foundation legs (±0.52m at riverbed -> ±0.49m at deck)
+      for (const sideSign of [-1, 1]) {
+        addPylonSegment(
+          tx + sx * (0.52 * sideSign), bedY, tz + sz * (0.52 * sideSign), 0.105, 0.082,
+          tx + sx * (0.49 * sideSign), deckY + 0.01, tz + sz * (0.49 * sideSign), 0.068, 0.052,
+          fx, fz, sx, sz,
+          cPier[0], cPier[1], cPier[2], false
+        );
+      }
+
+      // Sub-deck pier-table crosshead girder cradling the box-girder soffit
+      bConcrete.addBeam(
+        tx - sx * 0.56, tz - sz * 0.56, soffY + 0.01, soffY + 0.01,
+        tx + sx * 0.56, tz + sz * 0.56, soffY + 0.01, soffY + 0.01,
+        0.082, 0.0, 0.18, true, true, true,
+        cGirder[0], cGirder[1], cGirder[2]
+      );
+
+      // Above-deck A-Frame white-concrete legs (±0.49m at deck angling inward to ±0.26m at deckY + 2.05m!)
+      for (const sideSign of [-1, 1]) {
+        addPylonSegment(
+          tx + sx * (0.49 * sideSign), deckY, tz + sz * (0.49 * sideSign), 0.064, 0.048,
+          tx + sx * (0.26 * sideSign), deckY + towerH, tz + sz * (0.26 * sideSign), 0.044, 0.036,
+          fx, fz, sx, sz,
+          cPylon[0], cPylon[1], cPylon[2], true
+        );
+        // Subtle architectural pinnacle spire cap above towerH
+        addPylonSegment(
+          tx + sx * (0.26 * sideSign), deckY + towerH, tz + sz * (0.26 * sideSign), 0.038, 0.032,
+          tx + sx * (0.245 * sideSign), deckY + towerH + 0.15, tz + sz * (0.245 * sideSign), 0.020, 0.018,
+          fx, fz, sx, sz,
+          cPylon[0], cPylon[1], cPylon[2], true
+        );
+      }
+
+      // Mid-upper & upper architectural concrete portal cross-beams + crown coping
+      const uMid = 0.49 + (0.26 - 0.49) * (1.22 / towerH);
+      bConcrete.addBeam(
+        tx - sx * uMid, tz - sz * uMid, deckY + 1.22, deckY + 1.22,
+        tx + sx * uMid, tz + sz * uMid, deckY + 1.22, deckY + 1.22,
+        0.036, 0.040, 0.040, false, false, true,
+        cPylon[0], cPylon[1], cPylon[2]
+      );
+      const uTop = 0.49 + (0.26 - 0.49) * (1.92 / towerH);
+      bConcrete.addBeam(
+        tx - sx * (uTop + 0.03), tz - sz * (uTop + 0.03), deckY + 1.92, deckY + 1.92,
+        tx + sx * (uTop + 0.03), tz + sz * (uTop + 0.03), deckY + 1.92, deckY + 1.92,
+        0.042, 0.052, 0.048, true, true, true,
+        cPylon[0], cPylon[1], cPylon[2]
+      );
+
+      // 3. Taut Diagonal Harp/Fan Stay Cables (4 pairs per side, clamped strictly inside [0.12, L - 0.12])
+      for (const dirSign of [-1, 1]) {
+        const distToEnd = dirSign < 0 ? (sT - 0.12) : ((L - 0.12) - sT);
+        const isInnerSpan = (sTowers.length === 2) && ((tIdx === 0 && dirSign > 0) || (tIdx === 1 && dirSign < 0));
+        const maxReach = Math.min(2.20, distToEnd, isInnerSpan ? (L * 0.235) : 2.20);
+        if (maxReach < 0.35) continue;
+
+        for (let c = 0; c < 4; c++) {
+          const hA = hAnchors[c];
+          const uLeg = 0.49 + (0.26 - 0.49) * (hA / towerH);
+          const reach = maxReach * ((c + 1) / 4);
+          const sDeck = Math.min(L - 0.12, Math.max(0.12, sT + dirSign * reach));
+          if (Math.abs(sDeck - sT) < 0.20) continue;
+
+          const dCx = orgX + fx * sDeck;
+          const dCz = orgZ + fz * sDeck;
+
+          for (const flankSign of [-1, 1]) {
+            const ax = tx + sx * (uLeg * flankSign);
+            const az = tz + sz * (uLeg * flankSign);
+            const ay = deckY + hA;
+
+            const bx = dCx + sx * (0.475 * flankSign);
+            const bz = dCz + sz * (0.475 * flankSign);
+            const by = sampleCornerGrid(heightGrid, bx, bz) + 0.056;
+
+            bSteel.addBeam(
+              ax, az, ay, ay,
+              bx, bz, by, by,
+              0.011, 0.010, 0.010, false, false, true
+            );
+          }
+        }
+      }
+    }
+  };
+
+  // Scan N-S & E-W qualifying spans (L >= 3) for Ground 4-Lane Bridges & Elevated Water Viaducts
+  for (let passElev = 0; passElev <= 1; passElev++) {
+    const isElev = passElev === 1;
+    const candFn = isElev ? isElevCableCand : isGroundCableCand;
+    const spanMask = isElev ? elevCableSpanMask : groundCableSpanMask;
+    const hGrid = isElev ? elevCornerY : roadCornerY;
+    const soffT = isElev ? 0.082 : 0.085;
+
+    // N-S straight spans along columns x
+    for (let x = 0; x < GRID_SIZE; x++) {
+      let z = 0;
+      while (z < GRID_SIZE) {
+        if (!candFn(x, z, false)) { z++; continue; }
+        const zStart = z;
+        while (z < GRID_SIZE && candFn(x, z, false)) z++;
+        const L = z - zStart;
+        if (L >= 3) {
+          for (let kz = zStart; kz < z; kz++) spanMask[idx(x, kz)] = 1;
+          emitCableStayedSpan(x - HALF_GRID + 0.5, zStart - HALF_GRID, 0, 1, L, hGrid, soffT, isElev);
+        }
+      }
+    }
+
+    // E-W straight spans along rows z
+    for (let z = 0; z < GRID_SIZE; z++) {
+      let x = 0;
+      while (x < GRID_SIZE) {
+        if (!candFn(x, z, true)) { x++; continue; }
+        const xStart = x;
+        while (x < GRID_SIZE && candFn(x, z, true)) x++;
+        const L = x - xStart;
+        if (L >= 3) {
+          for (let kx = xStart; kx < x; kx++) spanMask[idx(kx, z)] = 1;
+          emitCableStayedSpan(xStart - HALF_GRID, z - HALF_GRID + 0.5, 1, 0, L, hGrid, soffT, isElev);
+        }
+      }
+    }
+  }
+
   // --- LAYER A: Ground Roads & River Bridges (t.roadGround === 1, 2, 3 + throughGround / mid_slip ramps) ---
   for (let z = 0; z < GRID_SIZE; z++) {
     for (let x = 0; x < GRID_SIZE; x++) {
@@ -2216,6 +2539,55 @@ export function buildContinuousRoadAndViaductGroup(THREE, sim, overlayMode, mats
               );
             }
           }
+        } else if (jMode === 'signal') {
+          // 2 diagonally opposite cantilever traffic light poles on ±0.44m sidewalk corners (NS & EW)
+          const sx1 = wx + 0.44, sz1 = wz - 0.44;
+          const sx2 = wx - 0.44, sz2 = wz + 0.44;
+          signals.push(
+            { x: sx1, y: sampleCornerGrid(roadCornerY, sx1, sz1), z: sz1, tx: x, tz: z, axis: 'NS', yaw: 0 },
+            { x: sx2, y: sampleCornerGrid(roadCornerY, sx2, sz2), z: sz2, tx: x, tz: z, axis: 'EW', yaw: -Math.PI * 0.5 }
+          );
+        }
+      }
+
+      // Exact-height LED streetlamps along non-junction straight 4-lane avenues & river bridges (every 2 tiles)
+      if (!rmSelf && !isJunctionOrTurn && (t.roadGround >= 2 || isWaterBridge) && ((x + z) % 2 === 0)) {
+        const cx = x0 + 0.5;
+        const cz = z0 + 0.5;
+        const lampSides = isWaterBridge ? [-1, 1] : [(((x + z) >> 1) & 1) ? 1 : -1];
+        const runEW = hasEW && !hasNS;
+
+        for (let sIdx = 0; sIdx < lampSides.length; sIdx++) {
+          const side = lampSides[sIdx];
+          if (runEW) {
+            const sideDir = side < 0 ? 0 : 1;
+            if (conn[sideDir]) continue;
+            if (hasGroundFlareTaperInto(x - 1, z, 3, sideDir) || hasGroundFlareTaperInto(x + 1, z, 2, sideDir)) continue;
+            const lx = cx;
+            const lz = cz + side * 0.46;
+            if (pylonFootprints.some((p) => !p.isElev && Math.hypot(p.x - lx, p.z - lz) < 0.42)) continue;
+            lamps.push({
+              x: lx,
+              y: sampleCornerGrid(roadCornerY, lx, lz),
+              z: lz,
+              yaw: side > 0 ? Math.PI : 0,
+              isElev: false
+            });
+          } else {
+            const sideDir = side < 0 ? 2 : 3;
+            if (conn[sideDir]) continue;
+            if (hasGroundFlareTaperInto(x, z - 1, 1, sideDir) || hasGroundFlareTaperInto(x, z + 1, 0, sideDir)) continue;
+            const lx = cx + side * 0.46;
+            const lz = cz;
+            if (pylonFootprints.some((p) => !p.isElev && Math.hypot(p.x - lx, p.z - lz) < 0.42)) continue;
+            lamps.push({
+              x: lx,
+              y: sampleCornerGrid(roadCornerY, lx, lz),
+              z: lz,
+              yaw: side > 0 ? -Math.PI * 0.5 : Math.PI * 0.5,
+              isElev: false
+            });
+          }
         }
       }
 
@@ -2265,7 +2637,7 @@ export function buildContinuousRoadAndViaductGroup(THREE, sim, overlayMode, mats
         }
       }
 
-      // Bridge soffit slab & cylindrical underwater piers
+      // Bridge soffit slab, underside box-girder haunch ribs & cylindrical underwater piers
       if (isWaterBridge) {
         bConcrete.addQuad(
           x0 + 0.03, y00 - 0.085, z0 + 0.03,
@@ -2275,17 +2647,44 @@ export function buildContinuousRoadAndViaductGroup(THREE, sim, overlayMode, mats
           0, 0, 1, 0, 1, 1, 0, 1,
           cGirder[0], cGirder[1], cGirder[2]
         );
-        const cx = x0 + 0.5;
-        const cz = z0 + 0.5;
-        const bedY = cellElev[i] - 0.18;
-        const topY = avgDeckY - 0.07;
-        if (t.roadGround >= 2) {
-          const offX = hasEW ? 0 : 0.26;
-          const offZ = hasEW ? 0.26 : 0;
-          bConcrete.addCylinder(cx - offX, cz - offZ, bedY, topY, 0.072, 0.065, 10, cPier[0], cPier[1], cPier[2]);
-          bConcrete.addCylinder(cx + offX, cz + offZ, bedY, topY, 0.072, 0.065, 10, cPier[0], cPier[1], cPier[2]);
-        } else {
-          bConcrete.addCylinder(cx, cz, bedY, topY, 0.082, 0.072, 10, cPier[0], cPier[1], cPier[2]);
+        if (!groundCableSpanMask[i]) {
+          const cx = x0 + 0.5;
+          const cz = z0 + 0.5;
+          const bedY = cellElev[i] - 0.18;
+          const topY = avgDeckY - 0.07;
+
+          // Subtle twin longitudinal arched haunch ribs under 1-2 tile bridges
+          if (!isJunctionOrTurn) {
+            const runEW = hasEW && !hasNS;
+            const fx = runEW ? 1 : 0, fz = runEW ? 0 : 1;
+            const sx = fz, sz = -fx;
+            const orgX = runEW ? x0 : cx;
+            const orgZ = runEW ? cz : z0;
+            for (const [sA, sB, dA, dB] of [[0.0, 0.5, 0.095, 0.145], [0.5, 1.0, 0.145, 0.095]]) {
+              const ax = orgX + fx * sA, az = orgZ + fz * sA;
+              const bx = orgX + fx * sB, bz = orgZ + fz * sB;
+              const yA = sampleCornerGrid(roadCornerY, ax, az) - 0.078;
+              const yB = sampleCornerGrid(roadCornerY, bx, bz) - 0.078;
+              for (const ribSign of [-1, 1]) {
+                const uOff = 0.25 * ribSign;
+                addHaunchWeb(
+                  ax + sx * uOff, az + sz * uOff, yA, yA - dA,
+                  bx + sx * uOff, bz + sz * uOff, yB, yB - dB,
+                  0.038, sx, sz,
+                  cGirder[0], cGirder[1], cGirder[2]
+                );
+              }
+            }
+          }
+
+          if (t.roadGround >= 2) {
+            const offX = hasEW ? 0 : 0.26;
+            const offZ = hasEW ? 0.26 : 0;
+            bConcrete.addCylinder(cx - offX, cz - offZ, bedY, topY, 0.072, 0.065, 10, cPier[0], cPier[1], cPier[2]);
+            bConcrete.addCylinder(cx + offX, cz + offZ, bedY, topY, 0.072, 0.065, 10, cPier[0], cPier[1], cPier[2]);
+          } else {
+            bConcrete.addCylinder(cx, cz, bedY, topY, 0.082, 0.072, 10, cPier[0], cPier[1], cPier[2]);
+          }
         }
       }
     }
@@ -2510,11 +2909,53 @@ export function buildContinuousRoadAndViaductGroup(THREE, sim, overlayMode, mats
           );
         }
 
+        // Exact-height LED streetlamps along straight non-ramp elevated viaduct parapets (every 2 tiles)
+        if (!rmSelf && !isJunctionOrTurn && ((x + z) % 2 === 0)) {
+          const cx = x0 + 0.5;
+          const cz = z0 + 0.5;
+          const side = (((x + z) >> 1) & 1) ? 1 : -1;
+          const runEW = hasEW && !hasNS;
+          if (runEW) {
+            const sideDir = side < 0 ? 0 : 1;
+            if (!eConn[sideDir] && !hasElevSlipGoreInto(x - 1, z, 3, sideDir) && !hasElevSlipGoreInto(x + 1, z, 2, sideDir)) {
+              const lx = cx;
+              const lz = cz + side * 0.46;
+              if (!pylonFootprints.some((p) => p.isElev && Math.hypot(p.x - lx, p.z - lz) < 0.42)) {
+                lamps.push({
+                  x: lx,
+                  y: sampleCornerGrid(elevCornerY, lx, lz),
+                  z: lz,
+                  yaw: side > 0 ? Math.PI : 0,
+                  isElev: true
+                });
+              }
+            }
+          } else {
+            const sideDir = side < 0 ? 2 : 3;
+            if (!eConn[sideDir] && !hasElevSlipGoreInto(x, z - 1, 1, sideDir) && !hasElevSlipGoreInto(x, z + 1, 0, sideDir)) {
+              const lx = cx + side * 0.46;
+              const lz = cz;
+              if (!pylonFootprints.some((p) => p.isElev && Math.hypot(p.x - lx, p.z - lz) < 0.42)) {
+                lamps.push({
+                  x: lx,
+                  y: sampleCornerGrid(elevCornerY, lx, lz),
+                  z: lz,
+                  yaw: side > 0 ? -Math.PI * 0.5 : Math.PI * 0.5,
+                  isElev: true
+                });
+              }
+            }
+          }
+        }
+
         // Cylindrical support piers (portal straddle twin columns when ground road/rail/throughGround is underneath!)
         const isMidSlipSelf = Boolean(rmSelf && rmSelf.mode === 'mid_slip');
-        const placePier = isMidSlipSelf
-          ? (rmSelf.chainLen >= 2 && ((x + z) % 2 === 0))
-          : (((x + z) % 2 === 0) || connCount <= 1 || isJunctionOrTurn);
+        const skipCableWaterPier = Boolean(elevCableSpanMask[i] && t.roadGround === 0 && t.rail === 0);
+        const placePier = skipCableWaterPier
+          ? false
+          : (isMidSlipSelf
+            ? (rmSelf.chainLen >= 2 && ((x + z) % 2 === 0))
+            : (((x + z) % 2 === 0) || connCount <= 1 || isJunctionOrTurn));
         if (placePier) {
           const cx = x0 + 0.5;
           const cz = z0 + 0.5;
@@ -2993,6 +3434,8 @@ export function buildContinuousRoadAndViaductGroup(THREE, sim, overlayMode, mats
   for (let i = 0; i < meshes.length; i++) {
     if (meshes[i]) group.add(meshes[i]);
   }
+
+  group.userData.streetProps = { lamps, signals };
 
   return group;
 }
