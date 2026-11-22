@@ -205,8 +205,10 @@ export class CityRenderer3D {
     this.lastOverlayMode = 'none';
     this.previewTiles = [];
     this.previewColor = [0.22, 0.85, 1.0];
+    this.servicePreviewTiles = [];
     this.selectedTile = null;
     this.selectedVehicle = null;
+    this._maxPedestrians = 240;
 
     // 4-Layer Independent Static Groups inside staticGroup (zero unnecessary terrain/forest rebuilds!)
     this.staticGroup = new THREE.Group();
@@ -322,6 +324,9 @@ export class CityRenderer3D {
       cyanGlow: new THREE.MeshBasicMaterial({ color: 0x38bdf8 }),
       meteorGlow: new THREE.MeshBasicMaterial({ color: 0xff7b1c }),
       previewMat: new THREE.MeshBasicMaterial({ color: 0x38d9ff, transparent: true, opacity: 0.62 }),
+      servicePreviewMat: new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.46, depthWrite: false }),
+      pedBodyMat: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.72, metalness: 0.05 }),
+      pedHeadMat: new THREE.MeshStandardMaterial({ color: 0xf1c29b, roughness: 0.78 }),
       bulletBody: new THREE.MeshStandardMaterial({ color: 0xf8fafc, roughness: 0.20, metalness: 0.28 }),
       bulletStripe: new THREE.MeshStandardMaterial({ color: 0x1d6feb, roughness: 0.25, metalness: 0.4, emissive: 0x0b3b8c, emissiveIntensity: 0.32 }),
       garbageGreen: new THREE.MeshStandardMaterial({ color: 0x16a34a, roughness: 0.45 }),
@@ -380,7 +385,9 @@ export class CityRenderer3D {
       lampPole: this._makeLampPoleGeo(),
       lampBulb: this._makeLampBulbGeo(),
       signalPole: this._makeSignalPoleGeo(),
-      signalLens: new THREE.SphereGeometry(0.026, 6, 5)
+      signalLens: new THREE.SphereGeometry(0.026, 6, 5),
+      pedBody: new THREE.CylinderGeometry(0.017, 0.020, 0.068, 6),
+      pedHead: new THREE.SphereGeometry(0.016, 6, 5)
     };
     this.geos.bulletCoach.rotateX(Math.PI * 0.5);
   }
@@ -514,6 +521,33 @@ export class CityRenderer3D {
     for (let i = 0; i < this._poolCaps.preview; i++) this._acquirePoolMesh(this.previewMeshPool, i, this.geos.unitBox, this.mats.previewMat);
     for (let i = 0; i < this._poolCaps.scaffold; i++) this._acquirePoolMesh(this.scaffoldPool, i, this.geos.unitBox, this.mats.goldGlow);
     for (let i = 0; i < this._poolCaps.meteor; i++) this._acquirePoolMesh(this.meteorPool, i, this.geos.waterSphere, this.mats.meteorGlow);
+
+    // 1-Draw-Call Instanced Pre-Build Road-Connected Service Coverage Preview (up to 320 tiles, ZERO per-frame allocs!)
+    this._servicePreviewCap = 320;
+    this.servicePreviewInst = new THREE.InstancedMesh(this.geos.unitBox, this.mats.servicePreviewMat, this._servicePreviewCap);
+    this.servicePreviewInst.count = 0;
+    this.servicePreviewInst.visible = false;
+    this.servicePreviewInst.frustumCulled = false;
+    this.uiOverlayGroup.add(this.servicePreviewInst);
+
+    // 2-Draw-Call Instanced Sidewalk Pedestrians (up to 240 citizens strolling sidewalks, ZERO per-frame allocs!)
+    this._pedCap = 240;
+    this.pedBodyInst = new THREE.InstancedMesh(this.geos.pedBody, this.mats.pedBodyMat, this._pedCap);
+    this.pedHeadInst = new THREE.InstancedMesh(this.geos.pedHead, this.mats.pedHeadMat, this._pedCap);
+    this.pedBodyInst.count = 0;
+    this.pedHeadInst.count = 0;
+    this.pedBodyInst.visible = false;
+    this.pedHeadInst.visible = false;
+    this.pedBodyInst.frustumCulled = false;
+    this.pedHeadInst.frustumCulled = false;
+    const pedOutfitPalette = [0x1d4ed8, 0xe11d48, 0x0f766e, 0xd97706, 0xf8fafc, 0x334155, 0x7c3aed, 0x0284c7];
+    const tmpC = new THREE.Color();
+    for (let i = 0; i < this._pedCap; i++) {
+      tmpC.setHex(pedOutfitPalette[i % pedOutfitPalette.length]);
+      this.pedBodyInst.setColorAt(i, tmpC);
+    }
+    if (this.pedBodyInst.instanceColor) this.pedBodyInst.instanceColor.needsUpdate = true;
+    this.vehicleGroup.add(this.pedBodyInst, this.pedHeadInst);
   }
 
   _acquirePoolSprite(pool, index, { map, additive = false } = {}) {
@@ -563,6 +597,7 @@ export class CityRenderer3D {
       this.sunLight.shadow.mapSize.set(2048, 2048);
       this._maxGlowSprites = 56;
       this._maxRenderedVehicles = 160;
+      this._maxPedestrians = 240;
     } else if (valid === 'medium') {
       this.renderer.setPixelRatio(Math.min(dpr, 1.5));
       this.renderer.shadowMap.enabled = true;
@@ -570,12 +605,14 @@ export class CityRenderer3D {
       this.sunLight.shadow.mapSize.set(1024, 1024);
       this._maxGlowSprites = 24;
       this._maxRenderedVehicles = 80;
+      this._maxPedestrians = 120;
     } else {
       this.renderer.setPixelRatio(1);
       this.renderer.shadowMap.enabled = false;
       this.sunLight.castShadow = false;
       this._maxGlowSprites = 0;
       this._maxRenderedVehicles = 45;
+      this._maxPedestrians = 0;
     }
 
     if (this.sunLight.shadow && this.sunLight.shadow.map) {
@@ -1003,6 +1040,18 @@ export class CityRenderer3D {
       this._signalGreenInst = greenInst;
       this._signalSyncAccum = 99;
     }
+
+    // 3. Roadside Modern EV Bus Stop Shelters (exact curb height from roadCornerY)
+    const busStops = Array.isArray(props.busStops) ? props.busStops : [];
+    if (busStops.length > 0 && this.archLib && typeof this.archLib.createBusStopShelter === 'function') {
+      for (let i = 0; i < busStops.length; i++) {
+        const bs = busStops[i];
+        const shelter = this.archLib.createBusStopShelter();
+        shelter.position.set(bs.x, bs.y, bs.z);
+        shelter.rotation.y = bs.yaw || 0;
+        this.infraGroup.add(shelter);
+      }
+    }
   }
 
   // 6-Batch Botanical InstancedMesh Forest (<= 6 draw calls for 1,500+ trees!)
@@ -1170,27 +1219,28 @@ export class CityRenderer3D {
       const geo = new THREE.SphereGeometry(10, 32, 16);
       const cols = [];
       const pos = geo.attributes.position;
-      const top = new THREE.Color(0x6fa8e8), hor = new THREE.Color(0xdfe9f2), gnd = new THREE.Color(0x4a5246);
+      const top = new THREE.Color(0x4b8fe8), cloud = new THREE.Color(0xf4f8ff), hor = new THREE.Color(0xffe9d2), gnd = new THREE.Color(0x4f564b);
       const c = new THREE.Color();
       for (let i = 0; i < pos.count; i++) {
         const y = pos.getY(i) / 10;
-        if (y >= 0) c.copy(hor).lerp(top, Math.pow(y, 0.6));
-        else c.copy(hor).lerp(gnd, Math.min(1, -y * 3));
+        if (y >= 0.14) c.copy(cloud).lerp(top, Math.pow((y - 0.14) / 0.86, 0.58));
+        else if (y >= 0) c.copy(hor).lerp(cloud, y / 0.14);
+        else c.copy(hor).lerp(gnd, Math.min(1, -y * 2.8));
         cols.push(c.r, c.g, c.b);
       }
       geo.setAttribute('color', new THREE.Float32BufferAttribute(cols, 3));
       const mat = new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.BackSide });
       envScene.add(new THREE.Mesh(geo, mat));
-      const sunGeo = new THREE.SphereGeometry(0.8, 12, 8);
-      const sunMat = new THREE.MeshBasicMaterial({ color: 0xfff4dc });
+      const sunGeo = new THREE.SphereGeometry(0.95, 12, 8);
+      const sunMat = new THREE.MeshBasicMaterial({ color: 0xfff3d4 });
       const sun = new THREE.Mesh(sunGeo, sunMat);
-      sun.material.color.multiplyScalar(6);
-      sun.position.set(6, 6, 3);
+      sun.material.color.multiplyScalar(7.5);
+      sun.position.set(6, 5.5, 3.2);
       envScene.add(sun);
       const pmrem = new THREE.PMREMGenerator(this.renderer);
-      const rt = pmrem.fromScene(envScene, 0.02);
+      const rt = pmrem.fromScene(envScene, 0.018);
       this.scene.environment = rt.texture;
-      this.scene.environmentIntensity = 0.55;
+      this.scene.environmentIntensity = 0.68;
       this.hemiBase = 0.70;
       pmrem.dispose();
       geo.dispose();
@@ -1643,6 +1693,37 @@ export class CityRenderer3D {
       sh.rotation.set(-(s.pitch || 0), s.yaw || 0, s.roll || 0);
     }
 
+    // Sidewalk Pedestrians (2 InstancedMeshes total, <= 240 citizens, ZERO per-frame allocations!)
+    const peds = (!isUnder && this._maxPedestrians > 0 && Array.isArray(this.traffic.pedestrians))
+      ? this.traffic.pedestrians
+      : [];
+    const pedCount = Math.min(peds.length, this._maxPedestrians, this._pedCap);
+    if (pedCount > 0) {
+      this._tmpScale.set(1, 1, 1);
+      this._tmpQuat.identity();
+      for (let i = 0; i < pedCount; i++) {
+        const p = peds[i];
+        const bob = Math.abs(Math.sin(p.walkPhase || 0)) * 0.014;
+        const baseY = (p.wy || 0) + 0.036 + bob;
+        this._tmpPos.set(p.wx, baseY, p.wz);
+        this._tmpMat4.compose(this._tmpPos, this._tmpQuat, this._tmpScale);
+        this.pedBodyInst.setMatrixAt(i, this._tmpMat4);
+
+        this._tmpPos.set(p.wx, baseY + 0.048, p.wz);
+        this._tmpMat4.compose(this._tmpPos, this._tmpQuat, this._tmpScale);
+        this.pedHeadInst.setMatrixAt(i, this._tmpMat4);
+      }
+      this.pedBodyInst.count = pedCount;
+      this.pedHeadInst.count = pedCount;
+      this.pedBodyInst.instanceMatrix.needsUpdate = true;
+      this.pedHeadInst.instanceMatrix.needsUpdate = true;
+      this.pedBodyInst.visible = true;
+      this.pedHeadInst.visible = true;
+    } else {
+      this.pedBodyInst.visible = false;
+      this.pedHeadInst.visible = false;
+    }
+
     // ==================== Zero-Leak Pooled VFX, Night Glow & Selection Overlays ====================
     let scafCount = 0;
     let fireCount = 0;
@@ -1798,6 +1879,32 @@ export class CityRenderer3D {
     }
     this._hidePoolFrom(this.previewMeshPool, prevCount);
 
+    // Pre-Build Green Road-Connected Service Coverage Overlay (1 InstancedMesh, ZERO allocs!)
+    const svcList = Array.isArray(this.servicePreviewTiles) ? this.servicePreviewTiles : [];
+    const svcCount = Math.min(svcList.length, this._servicePreviewCap);
+    if (svcCount > 0 && !isUnder) {
+      this._tmpQuat.identity();
+      this._tmpScale.set(0.90, 0.035, 0.90);
+      for (let i = 0; i < svcCount; i++) {
+        const st = svcList[i];
+        if (!inBounds(st.x, st.z)) continue;
+        const { wx, wz } = tileToWorld(st.x, st.z);
+        const py = Math.max(this.sim.getTileElev(st.x, st.z), this.sim.getTileElev(st.x, st.z) + this.sim.waterDepth[idx(st.x, st.z)]) + 0.045;
+        this._tmpPos.set(wx, py, wz);
+        this._tmpMat4.compose(this._tmpPos, this._tmpQuat, this._tmpScale);
+        this.servicePreviewInst.setMatrixAt(i, this._tmpMat4);
+        const str = Math.max(0.15, Math.min(1.0, st.strength ?? 0.8));
+        this._tmpColor.setRGB(0.10 + (1 - str) * 0.25, 0.55 + str * 0.42, 0.22 + (1 - str) * 0.22);
+        this.servicePreviewInst.setColorAt(i, this._tmpColor);
+      }
+      this.servicePreviewInst.count = svcCount;
+      this.servicePreviewInst.instanceMatrix.needsUpdate = true;
+      if (this.servicePreviewInst.instanceColor) this.servicePreviewInst.instanceColor.needsUpdate = true;
+      this.servicePreviewInst.visible = true;
+    } else {
+      this.servicePreviewInst.visible = false;
+    }
+
     // Selected Tile Highlight
     if (this.selectedTile && inBounds(this.selectedTile.x, this.selectedTile.z)) {
       const { wx, wz } = tileToWorld(this.selectedTile.x, this.selectedTile.z);
@@ -1865,7 +1972,7 @@ export class CityRenderer3D {
     this.sunLight.color.copy(daySun).lerp(moonCol, night).lerp(sunsetSun, sunset * 0.75);
     this.sunLight.intensity = 1.92 * (1 - night * 0.72);
     this.hemiLight.intensity = (this.hemiBase || 0.88) * (1 - night * 0.62);
-    if (this.scene.environment) this.scene.environmentIntensity = 0.55 * (1 - night * 0.82);
+    if (this.scene.environment) this.scene.environmentIntensity = 0.68 * (1 - night * 0.78);
 
     this.archLib.setNightFactor(night);
 

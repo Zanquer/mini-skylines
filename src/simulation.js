@@ -7,18 +7,22 @@ export const CATALOG = {
   ter_flatten: { id: 'ter_flatten', name: '平整山城台地', cost: 30, unlockPop: 0, unlockLevel: 1, icon: '📐', desc: '按起点海拔推平坡地，打造半山台地街区' },
   ter_spring:  { id: 'ter_spring',  name: '高山水源泉眼', cost: 1200, unlockPop: 450, unlockLevel: 4, icon: '⛲', desc: '在山顶引出天然活水源头，顺山谷奔流成河' },
 
-  // Multi-layer Roads, Viaducts, Ramps & Tunnels (Real upkeep pressure!)
-  road_1:      { id: 'road_1',      name: '双车道街道', cost: 35, bridgeCost: 110, upkeep: 1.1, unlockPop: 0, unlockLevel: 1, icon: '🛣️', desc: '基础地面街道（维护 ¥1.1/格，前期切勿盲目铺太长！）' },
-  road_2:      { id: 'road_2',      name: '四车道主干道', cost: 85, bridgeCost: 220, upkeep: 2.8, unlockPop: 350, unlockLevel: 3, icon: '🛤️', desc: '大容量主干道，跨水架斜拉桥（维护较高，需人口支撑）' },
-  road_elev:   { id: 'road_elev',   name: '高架快速路(+1层)', cost: 160, upkeep: 4.5, unlockPop: 450, unlockLevel: 5, icon: '🌉', desc: '二层立体高架桥！跨越地面拥堵路口、铁路与河流' },
-  road_ramp:   { id: 'road_ramp',   name: '高架上下匝道', cost: 110, upkeep: 2.2, unlockPop: 450, unlockLevel: 5, icon: '↗️', desc: '🛣️ 点击或直线拖拽1~3格建匝道：建在地面主干道上将自动生成【桥下不断流·两侧辅道 + 中央上下匝道】！' },
-  road_tunnel: { id: 'road_tunnel', name: '穿山公路隧道', cost: 190, upkeep: 4.8, unlockPop: 450, unlockLevel: 5, icon: '🏔️', desc: '贯穿陡峭山脉的地下公路隧道' },
+  // Multi-layer Roads, Viaducts, Ramps, One-Way Streets, Interchanges & Tunnels (Real upkeep pressure!)
+  road_1:              { id: 'road_1',              name: '双车道街道', cost: 35, bridgeCost: 110, upkeep: 1.1, unlockPop: 0, unlockLevel: 1, category: 'road', icon: '🛣️', desc: '基础地面街道（维护 ¥1.1/格，前期切勿盲目铺太长！）' },
+  road_oneway:         { id: 'road_oneway',         name: '单行快车道', cost: 28, bridgeCost: 95, upkeep: 1, unlockPop: 150, unlockLevel: 2, category: 'road', icon: '➡️', desc: '双车道单向快行街（按拖拽方向设定行车流向，消除对向顶牛！点击已建单行道可一键反向）' },
+  road_2:              { id: 'road_2',              name: '四车道主干道', cost: 85, bridgeCost: 220, upkeep: 2.8, unlockPop: 350, unlockLevel: 3, category: 'road', icon: '🛤️', desc: '大容量主干道，跨水架斜拉桥（维护较高，需人口支撑）' },
+  road_elev:           { id: 'road_elev',           name: '高架快速路(+1层)', cost: 160, upkeep: 4.5, unlockPop: 450, unlockLevel: 5, category: 'road', icon: '🌉', desc: '二层立体高架桥！跨越地面拥堵路口、铁路与河流' },
+  road_ramp:           { id: 'road_ramp',           name: '高架上下匝道', cost: 110, upkeep: 2.2, unlockPop: 450, unlockLevel: 5, category: 'road', icon: '↗️', desc: '🛣️ 点击或直线拖拽1~3格建匝道：建在地面主干道上将自动生成【桥下不断流·两侧辅道 + 中央上下匝道】！' },
+  road_tunnel:         { id: 'road_tunnel',         name: '穿山公路隧道', cost: 190, upkeep: 4.8, unlockPop: 450, unlockLevel: 5, category: 'road', icon: '🏔️', desc: '贯穿陡峭山脉的地下公路隧道' },
+  interchange_diamond: { id: 'interchange_diamond', name: '菱形互通立交', cost: 1600, upkeep: 18, unlockPop: 1900, unlockLevel: 5, category: 'road', icon: '🔀', desc: '一键建造 5×5 菱形互通立交（高架直跨 + 地面四车道下穿 + 4条无冲突上下匝道，支持旋转）' },
+  interchange_rbt:     { id: 'interchange_rbt',     name: '立体环岛立交', cost: 1850, upkeep: 20, unlockPop: 1900, unlockLevel: 5, category: 'road', icon: '🔁', desc: '一键建造 5×5 立体环岛立交（地面3×3四车道环岛 + 高架直跨中心 + 双向衔接匝道，支持旋转）' },
 
-  // Underground Metro & High-Speed Rail
-  metro_line:    { id: 'metro_line',    name: '地下地铁隧道', cost: 110, upkeep: 3.2, unlockPop: 1100, unlockLevel: 7, icon: '🟣', desc: '地底地铁轨道，无视地面建筑与山河阻隔' },
-  metro_station: { id: 'metro_station', name: '地铁站出入口', cost: 1800, upkeep: 55, unlockPop: 1100, unlockLevel: 7, icon: '🚇', desc: '连接地铁隧道，大幅缓解路面堵车并拉升商业地价' },
-  rail_track:    { id: 'rail_track',    name: '高速铁路轨道', cost: 135, bridgeCost: 260, upkeep: 3.6, unlockPop: 2200, unlockLevel: 8, icon: '🚄', desc: '双线无砟高铁轨道（跨河跨路自动架设特大桥）' },
-  hsr_station:   { id: 'hsr_station',   name: '高铁中央车站', cost: 4800, upkeep: 130, unlockPop: 2200, unlockLevel: 8, icon: '🚉', desc: '接通城际高铁干线，复兴号停靠带来大量客流与商业税收' },
+  // Bus Transit, Underground Metro & High-Speed Rail
+  bus_stop:      { id: 'bus_stop',      name: '智能公交站', cost: 160, upkeep: 12, unlockPop: 150, unlockLevel: 2, category: 'rail', icon: '🚏', desc: '建在地面街道/主干道上的智慧公交亭！建成2座及以上自动开通新能源公交专线分流私家车' },
+  metro_line:    { id: 'metro_line',    name: '地下地铁隧道', cost: 110, upkeep: 3.2, unlockPop: 1100, unlockLevel: 7, category: 'rail', icon: '🟣', desc: '地底地铁轨道，无视地面建筑与山河阻隔' },
+  metro_station: { id: 'metro_station', name: '地铁站出入口', cost: 1800, upkeep: 55, unlockPop: 1100, unlockLevel: 7, category: 'rail', icon: '🚇', desc: '连接地铁隧道，大幅缓解路面堵车并拉升商业地价' },
+  rail_track:    { id: 'rail_track',    name: '高速铁路轨道', cost: 135, bridgeCost: 260, upkeep: 3.6, unlockPop: 2200, unlockLevel: 8, category: 'rail', icon: '🚄', desc: '双线无砟高铁轨道（跨河跨路自动架设特大桥）' },
+  hsr_station:   { id: 'hsr_station',   name: '高铁中央车站', cost: 4800, upkeep: 130, unlockPop: 2200, unlockLevel: 8, category: 'rail', icon: '🚉', desc: '接通城际高铁干线，复兴号停靠带来大量客流与商业税收' },
 
   // 6 Authentic Cities: Skylines Zones (Zoning is free in CS1, road/pipe upkeep is the real cost!)
   zone_RL: { id: 'zone_RL', name: '低密住宅(别墅)', cost: 0, unlockPop: 0, unlockLevel: 1, icon: '🏡', desc: '花园独栋与洋房，厌恶工业污染与高税率' },
@@ -131,7 +135,7 @@ export const MAYOR_LEVELS = [
     popReq: 180,
     xpReq: 220,
     reward: 4500,
-    summary: '解锁 🚒消防总署、🚓警察总局、🌳中央景观公园、🏦市政小额贷款'
+    summary: '解锁 🚒消防总署、🚓警察总局、🌳中央景观公园、➡️单行快车道、🚏智能公交站、🏦市政小额贷款'
   },
   {
     level: 3,
@@ -155,7 +159,7 @@ export const MAYOR_LEVELS = [
     popReq: 1900,
     xpReq: 2100,
     reward: 15000,
-    summary: '解锁 🌉二层高架快速路、↗️高架上下匝道、🏔️穿山公路隧道、🏢高密住宅(RH)'
+    summary: '解锁 🌉二层高架快速路、↗️高架上下匝道、🔀菱形/环岛立交、🏔️穿山公路隧道、🏢高密住宅(RH)'
   },
   {
     level: 6,
@@ -308,6 +312,231 @@ export const LOAN_OFFERS = [
   { id: 'loan_l', name: '超级工程建设国债', unlockLevel: 7, principal: 100000, totalRepay: 125000, periodPay: 1560, desc: '本金 ¥100,000（利率25%，每期还 ¥1,560）' }
 ];
 
+export const POLICY_CATALOG = [
+  { id: 'greenEnergy',   icon: '🌳', name: '环保减排法',   desc: '工业污染 -35%，但工业税收 -6%' },
+  { id: 'freeHigherEd',  icon: '🎓', name: '免费高等教育', desc: '全市高学历率 +18%，办公/高科税收 +15%，维护 +¥220 + 人口×0.08' },
+  { id: 'freeTransit',   icon: '🚌', name: '免费公共交通', desc: '公交/地铁/高铁客流 +35%，路面车流 -22%，免除公共交通票价收入' },
+  { id: 'energySubsidy', icon: '⚡', name: '工业节能补贴', desc: '全市用电用水需求 -15%，维护 +¥180 + 建筑数×1.2' },
+  { id: 'bizTaxBreak',   icon: '📈', name: '招商引资减税', desc: '商/办/工需求 +28%，但商业与办公税收 -10%' }
+];
+
+export const CIVIC_EVENTS = [
+  {
+    id: 'tech_hq_bid',
+    icon: '💻',
+    title: '科技巨头申请设立区域总部',
+    desc: '一家跨国人工智能集团希望在山河新城设立华东研发总部，正与市政府磋商落户方案与人才配套。',
+    choices: [
+      {
+        label: '批准专项优惠落户（-¥1,800）',
+        effectDesc: '办公与商业需求 +25%（持续3个月），市长经验 +80 XP',
+        apply(sim) {
+          if (sim.difficulty !== 'sandbox') sim.money -= 1800;
+          sim.applyTempDemandBoost(0.08, 0.25, 0.25, 3);
+          sim.addXP(80, '引进科技总部');
+        }
+      },
+      {
+        label: '坚持标准税率并要求公益配套（+¥1,200）',
+        effectDesc: '国库增收 +¥1,200，市民幸福度 +4（持续3个月），办公需求 +10%',
+        apply(sim) {
+          if (sim.difficulty !== 'sandbox') sim.money += 1200;
+          sim.applyTempDemandBoost(0, 0.05, 0.10, 3);
+          sim.applyTempHappinessBoost(4, 3);
+          sim.addXP(50, '规范招商签约');
+        }
+      },
+      {
+        label: '扶持本土高校与科创小微（开启免费高教）',
+        effectDesc: '启用【🎓 免费高等教育】政策，工业/科技需求 +18%（持续3个月）',
+        apply(sim) {
+          sim.policies.freeHigherEd = true;
+          sim.applyTempDemandBoost(0.05, 0.08, 0.18, 3);
+          sim.addXP(65, '本土科创扶持');
+        }
+      }
+    ]
+  },
+  {
+    id: 'riverfront_festival',
+    icon: '🎵',
+    title: '江滨国际音乐节筹办请示',
+    desc: '文旅协会申请沿滨江风光带举办为期一周的国际音乐节，预计吸引数万游客打卡，如何统筹预算与市民体验？',
+    choices: [
+      {
+        label: '市政补贴免费接驳盛大举办（-¥900）',
+        effectDesc: '市民幸福度 +8（持续3个月），商业需求 +22%，市长经验 +75 XP',
+        apply(sim) {
+          if (sim.difficulty !== 'sandbox') sim.money -= 900;
+          sim.applyTempDemandBoost(0.06, 0.22, 0, 3);
+          sim.applyTempHappinessBoost(8, 3);
+          sim.addXP(75, '成功举办江滨音乐节');
+        }
+      },
+      {
+        label: '引入商业冠名与门票分成（+¥2,400）',
+        effectDesc: '财政门票分成 +¥2,400，幸福度 +3（持续2个月），商业需求 +12%',
+        apply(sim) {
+          if (sim.difficulty !== 'sandbox') sim.money += 2400;
+          sim.applyTempDemandBoost(0, 0.12, 0, 2);
+          sim.applyTempHappinessBoost(3, 2);
+          sim.addXP(45, '商业音乐节收益');
+        }
+      },
+      {
+        label: '改办低噪音社区滨水艺术展（¥0）',
+        effectDesc: '零噪音扰民，零财政负担，幸福度 +4（持续2个月），经验 +50 XP',
+        apply(sim) {
+          sim.applyTempHappinessBoost(4, 2);
+          sim.addXP(50, '静谧文化惠民');
+        }
+      }
+    ]
+  },
+  {
+    id: 'drought_hydro_dispatch',
+    icon: '💧',
+    title: '上游枯水期水电联合调度',
+    desc: '水文气象台预警近期上游来水偏少，电网与水务调度中心提交了三套应急保供预案，请市长拍板。',
+    choices: [
+      {
+        label: '实施节水节能补贴保供（-¥1,500）',
+        effectDesc: '开启【⚡ 工业节能补贴】（水电需求 -15%），经验 +90 XP',
+        apply(sim) {
+          if (sim.difficulty !== 'sandbox') sim.money -= 1500;
+          sim.policies.energySubsidy = true;
+          sim.addXP(90, '枯水期节水调度');
+        }
+      },
+      {
+        label: '向周边省网紧急购电保民生（-¥2,200）',
+        effectDesc: '市民幸福度 +5（持续3个月），住宅需求 +15%，确保民生零停电',
+        apply(sim) {
+          if (sim.difficulty !== 'sandbox') sim.money -= 2200;
+          sim.applyTempDemandBoost(0.15, 0.05, 0, 3);
+          sim.applyTempHappinessBoost(5, 3);
+          sim.addXP(65, '跨区购电保民生');
+        }
+      },
+      {
+        label: '倡议工业企业错峰节能生产（+¥600）',
+        effectDesc: '财政节余 +¥600，工业需求短期 -10%（持续2个月），保障电网平稳',
+        apply(sim) {
+          if (sim.difficulty !== 'sandbox') sim.money += 600;
+          sim.applyTempDemandBoost(0, 0, -0.10, 2);
+          sim.addXP(40, '工业错峰调度');
+        }
+      }
+    ]
+  },
+  {
+    id: 'ev_bus_subsidy',
+    icon: '🚌',
+    title: '绿色新能源公交专项补贴',
+    desc: '省交通厅下发“绿色出行示范城”纯电公交采购补贴指标，市公交集团请求确定补贴使用方式。',
+    choices: [
+      {
+        label: '申领全额补贴并推行免费公交（+¥2,800）',
+        effectDesc: '获得补贴 +¥2,800，开启【🚌 免费公共交通】，幸福度 +6（持续3个月）',
+        apply(sim) {
+          if (sim.difficulty !== 'sandbox') sim.money += 2800;
+          sim.policies.freeTransit = true;
+          sim.applyTempHappinessBoost(6, 3);
+          sim.addXP(85, '绿色公交示范城');
+        }
+      },
+      {
+        label: '仅用于更新纯电车队保留票价（+¥1,600）',
+        effectDesc: '国库入账 +¥1,600，住宅需求 +12%（持续3个月），经验 +60 XP',
+        apply(sim) {
+          if (sim.difficulty !== 'sandbox') sim.money += 1600;
+          sim.applyTempDemandBoost(0.12, 0.08, 0, 3);
+          sim.addXP(60, '纯电公交升级');
+        }
+      }
+    ]
+  },
+  {
+    id: 'old_street_walkable',
+    icon: '🚶',
+    title: '老街区步行化微更新试点',
+    desc: '城市规划院提议将老城区核心街坊改造为低噪慢行街区并植入林荫口袋公园，重塑宜居烟火气。',
+    choices: [
+      {
+        label: '市政主导精品微更新（-¥1,400）',
+        effectDesc: '市民幸福度 +7（持续4个月），住宅/商业需求 +16%，经验 +100 XP',
+        apply(sim) {
+          if (sim.difficulty !== 'sandbox') sim.money -= 1400;
+          sim.applyTempDemandBoost(0.16, 0.16, 0, 4);
+          sim.applyTempHappinessBoost(7, 4);
+          sim.addXP(100, '老街区步行微更新');
+        }
+      },
+      {
+        label: '引入社会资本商业联合改造（+¥900）',
+        effectDesc: '财政入账 +¥900，商业需求 +18%（持续3个月），幸福度 +2',
+        apply(sim) {
+          if (sim.difficulty !== 'sandbox') sim.money += 900;
+          sim.applyTempDemandBoost(0.04, 0.18, 0, 3);
+          sim.applyTempHappinessBoost(2, 3);
+          sim.addXP(55, '政企联合街区更新');
+        }
+      }
+    ]
+  },
+  {
+    id: 'port_free_trade',
+    icon: '🚢',
+    title: '国际航运与跨境免税试点',
+    desc: '商务部拟将我市纳入区域跨境贸易与航运免税试点名单，大幅提升本地商业与制造外贸辐射力。',
+    choices: [
+      {
+        label: '高标准申报自贸免税枢纽（+¥3,200 专项）',
+        effectDesc: '财政专项支持 +¥3,200，商业与工业需求 +28%（持续4个月），经验 +120 XP',
+        apply(sim) {
+          if (sim.difficulty !== 'sandbox') sim.money += 3200;
+          sim.applyTempDemandBoost(0.08, 0.28, 0.28, 4);
+          sim.addXP(120, '国际自贸免税枢纽');
+        }
+      },
+      {
+        label: '稳妥推进保税物流与环保制造（+¥1,400）',
+        effectDesc: '国库入账 +¥1,400，开启【🌳 环保减排法】，商/工需求 +15%（持续3个月）',
+        apply(sim) {
+          if (sim.difficulty !== 'sandbox') sim.money += 1400;
+          sim.policies.greenEnergy = true;
+          sim.applyTempDemandBoost(0, 0.15, 0.15, 3);
+          sim.addXP(80, '绿色保税贸易试点');
+        }
+      }
+    ]
+  }
+];
+
+function createDefaultPolicies() {
+  return {
+    greenEnergy: false,
+    freeHigherEd: false,
+    freeTransit: false,
+    energySubsidy: false,
+    bizTaxBreak: false,
+    greenCity: false,
+    techBoost: false
+  };
+}
+
+function createEmptyTransitStats() {
+  return {
+    bus:   { stops: 0, riders: 0, revenue: 0, upkeep: 0, carsSaved: 0 },
+    metro: { stations: 0, riders: 0, revenue: 0, upkeep: 0, carsSaved: 0 },
+    hsr:   { stations: 0, riders: 0, revenue: 0, upkeep: 0, carsSaved: 0 },
+    totalRiders: 0,
+    totalRevenue: 0,
+    totalUpkeep: 0,
+    totalCarsSaved: 0
+  };
+}
+
 export class CitySimulation {
   constructor(sfx) {
     this.sfx = sfx;
@@ -333,11 +562,24 @@ export class CitySimulation {
     this.onLevelUp = null;
     this.onQuestComplete = null;
 
-    this.policies = {
-      freeTransit: false,
-      greenCity: false,
-      techBoost: false
-    };
+    // 15-Step Undo Stack
+    this.undoStack = [];
+    this._lastSculptUndoAt = 0;
+
+    // 5 Strategic City Policies (+ legacy compatibility flags)
+    this.policies = createDefaultPolicies();
+
+    // Deep Strategic Telemetry, History & Dynamic Civic Decisions
+    this.educatedRate = 0;
+    this.transitStats = createEmptyTransitStats();
+    this.lastTransitRevenue = 0;
+    this.history = [];
+    this.activeEvent = null;
+    this._eventMonthAccum = 0;
+    this._eventHistoryIdx = 0;
+    this.tempDemandBoost = { R: 0, C: 0, I: 0, monthsLeft: 0 };
+    this.tempHappinessBoost = 0;
+    this.tempHappinessMonths = 0;
 
     // Calm, realistic calendar & day-night flow!
     this.year = 2026;
@@ -581,6 +823,11 @@ export class CitySimulation {
         this.emitToast('💰 资金不足：改建景观环岛需 ¥120');
         return { ok: false };
       }
+    }
+
+    this.pushUndoSnapshot('路口管制模式');
+
+    if (mode === 'roundabout' && !t.roundaboutPaid) {
       if (this.difficulty !== 'sandbox') this.money -= cost;
       t.roundaboutPaid = true;
     }
@@ -595,6 +842,682 @@ export class CitySimulation {
       else if (this.sfx.tap) this.sfx.tap();
     }
     return { ok: true, cost };
+  }
+
+  // ==================== 15-Step Lightweight Undo Stack ====================
+  canUndo() {
+    return this.undoStack.length > 0;
+  }
+
+  get undoCount() {
+    return this.undoStack.length;
+  }
+
+  get lastUndoLabel() {
+    return this.undoStack.length > 0 ? this.undoStack[this.undoStack.length - 1].label : '';
+  }
+
+  pushUndoSnapshot(label = '城市操作') {
+    const N = this.grid.length;
+    const tiles = new Array(N);
+    for (let i = 0; i < N; i++) {
+      const t = this.grid[i];
+      const b = t.building;
+      tiles[i] = {
+        trees: t.trees,
+        waterSpring: t.waterSpring,
+        roadGround: t.roadGround,
+        roadBridge: t.roadBridge,
+        roadDir: typeof t.roadDir === 'number' ? t.roadDir : -1,
+        banTrucks: Boolean(t.banTrucks),
+        busStop: Boolean(t.busStop),
+        junctionMode: t.junctionMode || null,
+        roundaboutPaid: Boolean(t.roundaboutPaid),
+        roadElevated: t.roadElevated,
+        ramp: t.ramp,
+        rail: t.rail,
+        metro: t.metro,
+        pipe: t.pipe,
+        pipeBroken: t.pipeBroken,
+        pylon: t.pylon,
+        dam: t.dam,
+        damCrest: t.damCrest,
+        damOutputMW: t.damOutputMW,
+        damHealth: t.damHealth,
+        damStress: t.damStress,
+        zone: t.zone,
+        building: b ? { ...b } : null
+      };
+    }
+    if (this.undoStack.length >= 15) {
+      this.undoStack.shift();
+    }
+    this.undoStack.push({
+      label,
+      money: this.money,
+      corners: new Float32Array(this.corners),
+      waterDepth: new Float32Array(this.waterDepth),
+      waterPoll: new Float32Array(this.waterPoll),
+      tiles
+    });
+  }
+
+  undoLastAction() {
+    if (this.undoStack.length === 0) {
+      return { ok: false };
+    }
+    const snap = this.undoStack.pop();
+    const prevMoney = this.money;
+    this.money = snap.money;
+    this.corners.set(snap.corners);
+    this.waterDepth.set(snap.waterDepth);
+    this.waterPoll.set(snap.waterPoll);
+
+    const N = this.grid.length;
+    for (let i = 0; i < N; i++) {
+      const t = this.grid[i];
+      const s = snap.tiles[i];
+      t.trees = s.trees;
+      t.waterSpring = s.waterSpring;
+      t.roadGround = s.roadGround;
+      t.roadBridge = s.roadBridge;
+      t.roadDir = s.roadDir;
+      t.banTrucks = s.banTrucks;
+      t.busStop = s.busStop;
+      t.junctionMode = s.junctionMode;
+      t.roundaboutPaid = s.roundaboutPaid;
+      t.roadElevated = s.roadElevated;
+      t.ramp = s.ramp;
+      t.rail = s.rail;
+      t.metro = s.metro;
+      t.pipe = s.pipe;
+      t.pipeBroken = s.pipeBroken;
+      t.pylon = s.pylon;
+      t.dam = s.dam;
+      t.damCrest = s.damCrest;
+      t.damOutputMW = s.damOutputMW;
+      t.damHealth = s.damHealth;
+      t.damStress = s.damStress;
+      t.zone = s.zone;
+      t.building = s.building ? { ...s.building } : null;
+    }
+
+    if (this.waterPhysics && typeof this.waterPhysics.refreshCellElevations === 'function') {
+      this.waterPhysics.refreshCellElevations();
+    }
+    this.recomputeNetworksAndFields();
+    this.stepEconomy(false);
+    this.money = snap.money;
+    if (this.traffic && typeof this.traffic.refreshRoadGraph === 'function') {
+      this.traffic.refreshRoadGraph();
+    }
+    if (this.traffic && typeof this.traffic.revalidateVehicles === 'function') {
+      this.traffic.revalidateVehicles();
+    } else if (this.traffic && typeof this.traffic.revalidateActiveTransport === 'function') {
+      this.traffic.revalidateActiveTransport();
+    }
+    this.meshDirty = true;
+    if (this.sfx && this.sfx.tap) this.sfx.tap();
+
+    const moneyDelta = snap.money - prevMoney;
+    return { ok: true, label: snap.label, moneyDelta };
+  }
+
+  // ==================== One-Way Streets & Heavy-Truck Ban Actions ====================
+  flipOneWayDirection(x, z) {
+    const t = this.getTile(x, z);
+    if (!t || t.roadGround <= 0 || typeof t.roadDir !== 'number' || t.roadDir < 0) {
+      return { ok: false, count: 0 };
+    }
+    const oldDir = t.roadDir;
+    const newDir = oldDir ^ 1; // 0(N)<->1(S), 2(W)<->3(E)
+    const stepX = oldDir >= 2 ? 1 : 0;
+    const stepZ = oldDir < 2 ? 1 : 0;
+
+    const segment = [t];
+    for (const sign of [-1, 1]) {
+      let cx = x + stepX * sign;
+      let cz = z + stepZ * sign;
+      while (inBounds(cx, cz)) {
+        const nt = this.grid[idx(cx, cz)];
+        if (nt && nt.roadGround > 0 && !nt.dam && nt.roadDir === oldDir) {
+          segment.push(nt);
+          cx += stepX * sign;
+          cz += stepZ * sign;
+        } else {
+          break;
+        }
+      }
+    }
+
+    this.pushUndoSnapshot('反转单行方向');
+    for (let i = 0; i < segment.length; i++) {
+      segment[i].roadDir = newDir;
+    }
+
+    this.infraDirty = true;
+    this.recomputeNetworksAndFields();
+    if (this.traffic && typeof this.traffic.refreshRoadGraph === 'function') {
+      this.traffic.refreshRoadGraph();
+    }
+    if (this.sfx && this.sfx.tap) this.sfx.tap();
+    return { ok: true, dir: newDir, oldDir, count: segment.length };
+  }
+
+  toggleTruckBan(x, z) {
+    const t = this.getTile(x, z);
+    if (!t || t.roadGround < 1 || t.dam) {
+      return { ok: false, banTrucks: false, count: 0 };
+    }
+    const nextBan = !t.banTrucks;
+    const isPlainStreet = (tile) => Boolean(tile && tile.roadGround >= 1 && !tile.dam);
+    const getDeg = (gx, gz) => {
+      let d = 0;
+      if (isPlainStreet(this.getTile(gx + 1, gz))) d++;
+      if (isPlainStreet(this.getTile(gx - 1, gz))) d++;
+      if (isPlainStreet(this.getTile(gx, gz + 1))) d++;
+      if (isPlainStreet(this.getTile(gx, gz - 1))) d++;
+      return d;
+    };
+
+    const segment = [t];
+    const startDeg = getDeg(x, z);
+    if (startDeg > 0 && startDeg <= 2) {
+      const hasEW = isPlainStreet(this.getTile(x - 1, z)) || isPlainStreet(this.getTile(x + 1, z));
+      const hasNS = isPlainStreet(this.getTile(x, z - 1)) || isPlainStreet(this.getTile(x, z + 1));
+      if (hasEW !== hasNS) {
+        const stepX = hasEW ? 1 : 0;
+        const stepZ = hasNS ? 1 : 0;
+        for (const sign of [-1, 1]) {
+          let cx = x + stepX * sign;
+          let cz = z + stepZ * sign;
+          while (inBounds(cx, cz)) {
+            const nt = this.grid[idx(cx, cz)];
+            if (!isPlainStreet(nt)) break;
+            const ndeg = getDeg(cx, cz);
+            if (ndeg >= 3) break;
+            const nEW = isPlainStreet(this.getTile(cx - 1, cz)) || isPlainStreet(this.getTile(cx + 1, cz));
+            const nNS = isPlainStreet(this.getTile(cx, cz - 1)) || isPlainStreet(this.getTile(cx, cz + 1));
+            if (nEW && nNS) break; // Stop at 90-degree corner
+            segment.push(nt);
+            cx += stepX * sign;
+            cz += stepZ * sign;
+          }
+        }
+      }
+    }
+
+    this.pushUndoSnapshot(nextBan ? '街道禁行重卡' : '解除重卡禁行');
+    for (let i = 0; i < segment.length; i++) {
+      segment[i].banTrucks = nextBan;
+    }
+
+    this.recomputeNetworksAndFields();
+    if (this.traffic && typeof this.traffic.refreshRoadGraph === 'function') {
+      this.traffic.refreshRoadGraph();
+    }
+    this.infraDirty = true;
+    if (this.sfx && this.sfx.tap) this.sfx.tap();
+    return { ok: true, banTrucks: nextBan, count: segment.length };
+  }
+
+  // ==================== One-Tap 5x5 3D Interchange Presets ====================
+  _getInterchangeSpec(type, cx, cz, rot = 0) {
+    const r = rot & 1;
+    const mapUV = (u, v) => (r === 0 ? { x: cx + u, z: cz + v } : { x: cx + v, z: cz + u });
+    const specs = [];
+
+    if (type === 'interchange_diamond') {
+      // Elevated highway viaduct straight across v = 0, u = -2..+2
+      // Orthogonal ground 4-lane avenue u = 0, v = -2..+2
+      // 4 conflict-free bridgehead ramps at (u = +-1, v = +-1)
+      // 2 parallel flanking ground slip-connectors at v = +-2, u = +-1
+      for (let u = -2; u <= 2; u++) {
+        const p = mapUV(u, 0);
+        specs.push({
+          x: p.x,
+          z: p.z,
+          role: u === 0 ? 'overpass_crossing' : 'viaduct',
+          roadGround: u === 0 ? 2 : 0,
+          roadElevated: 1,
+          ramp: false,
+          junctionMode: 'signal'
+        });
+      }
+      for (const v of [-2, -1, 1, 2]) {
+        const p = mapUV(0, v);
+        specs.push({
+          x: p.x,
+          z: p.z,
+          role: 'avenue',
+          roadGround: 2,
+          roadElevated: 0,
+          ramp: false,
+          junctionMode: Math.abs(v) === 2 ? 'yield' : 'signal'
+        });
+      }
+      for (const u of [-1, 1]) {
+        for (const v of [-1, 1]) {
+          const pr = mapUV(u, v);
+          specs.push({
+            x: pr.x,
+            z: pr.z,
+            role: 'ramp',
+            roadGround: 1,
+            roadElevated: 1,
+            ramp: true,
+            junctionMode: 'signal'
+          });
+          const ps = mapUV(u, v * 2);
+          specs.push({
+            x: ps.x,
+            z: ps.z,
+            role: 'slip',
+            roadGround: 1,
+            roadElevated: 0,
+            ramp: false,
+            junctionMode: 'signal'
+          });
+        }
+      }
+      return specs;
+    }
+
+    if (type === 'interchange_rbt') {
+      // 3x3 ground 4-lane roundabout ring: max(|u|, |v|) === 1
+      // Center (0, 0): open island underneath elevated overpass
+      // Elevated overpass straight across v = 0, u = -2..+2
+      // Cross arterial spokes at (0, -2) and (0, +2)
+      // 2 symmetric conflict-free bridgehead ramps at (-2, -1) and (+2, +1) with slip roads at (-2,-2)/(-1,-2) & (+2,+2)/(+1,+2)
+      for (let u = -2; u <= 2; u++) {
+        const p = mapUV(u, 0);
+        const onRing = Math.abs(u) === 1;
+        specs.push({
+          x: p.x,
+          z: p.z,
+          role: onRing ? 'roundabout_crossing' : 'viaduct',
+          roadGround: onRing ? 2 : 0,
+          roadElevated: 1,
+          ramp: false,
+          junctionMode: onRing ? 'roundabout' : 'signal'
+        });
+      }
+      for (const v of [-1, 1]) {
+        for (let u = -1; u <= 1; u++) {
+          const p = mapUV(u, v);
+          specs.push({
+            x: p.x,
+            z: p.z,
+            role: 'roundabout',
+            roadGround: 2,
+            roadElevated: 0,
+            ramp: false,
+            junctionMode: 'roundabout'
+          });
+        }
+      }
+      for (const v of [-2, 2]) {
+        const p = mapUV(0, v);
+        specs.push({
+          x: p.x,
+          z: p.z,
+          role: 'avenue',
+          roadGround: 2,
+          roadElevated: 0,
+          ramp: false,
+          junctionMode: 'yield'
+        });
+      }
+      // West-North ramp & slip connector
+      const r1 = mapUV(-2, -1);
+      specs.push({ x: r1.x, z: r1.z, role: 'ramp', roadGround: 1, roadElevated: 1, ramp: true, junctionMode: 'signal' });
+      const s1a = mapUV(-2, -2);
+      specs.push({ x: s1a.x, z: s1a.z, role: 'slip', roadGround: 1, roadElevated: 0, ramp: false, junctionMode: 'signal' });
+      const s1b = mapUV(-1, -2);
+      specs.push({ x: s1b.x, z: s1b.z, role: 'slip', roadGround: 1, roadElevated: 0, ramp: false, junctionMode: 'signal' });
+      // East-South ramp & slip connector
+      const r2 = mapUV(2, 1);
+      specs.push({ x: r2.x, z: r2.z, role: 'ramp', roadGround: 1, roadElevated: 1, ramp: true, junctionMode: 'signal' });
+      const s2a = mapUV(2, 2);
+      specs.push({ x: s2a.x, z: s2a.z, role: 'slip', roadGround: 1, roadElevated: 0, ramp: false, junctionMode: 'signal' });
+      const s2b = mapUV(1, 2);
+      specs.push({ x: s2b.x, z: s2b.z, role: 'slip', roadGround: 1, roadElevated: 0, ramp: false, junctionMode: 'signal' });
+      return specs;
+    }
+
+    return null;
+  }
+
+  previewInterchange(type, cx, cz, rot = 0) {
+    const item = CATALOG[type];
+    const cost = this.difficulty === 'sandbox' ? 0 : (item?.cost || 1600);
+    const specs = this._getInterchangeSpec(type, cx, cz, rot);
+    if (!specs) {
+      return { valid: false, reason: '未知立交预设类型', cost, tiles: [] };
+    }
+    const tiles = specs.map((s) => ({ x: s.x, z: s.z, role: s.role }));
+
+    if (!this.isToolUnlocked(type)) {
+      return {
+        valid: false,
+        reason: `需升至市长等级 Lv.${item?.unlockLevel || 5} 解锁【${item?.name || type}】`,
+        cost,
+        tiles
+      };
+    }
+
+    // Validate full 5x5 bounding box is inside map & free of deep water / protected structures
+    for (let dz = -2; dz <= 2; dz++) {
+      for (let dx = -2; dx <= 2; dx++) {
+        const x = cx + dx;
+        const z = cz + dz;
+        if (!inBounds(x, z)) {
+          return { valid: false, reason: '5×5 立交范围超出地图边界', cost, tiles };
+        }
+      }
+    }
+
+    for (let i = 0; i < specs.length; i++) {
+      const s = specs[i];
+      const ti = idx(s.x, s.z);
+      const t = this.grid[ti];
+      if (!t) {
+        return { valid: false, reason: '立交超出边界', cost, tiles };
+      }
+      if (this.waterDepth[ti] > 0.25) {
+        return { valid: false, reason: '深水区域无法直接修建地面互通立交', cost, tiles };
+      }
+      if (t.dam || t.roadGround === 3 || t.rail === 2) {
+        return { valid: false, reason: '不可覆盖大坝或城际干线边境出入口', cost, tiles };
+      }
+      if (t.building && !BUILDING_NAMES[t.building.type]) {
+        return { valid: false, reason: '立交区域内存在市政设施或地标建筑，请先避让或拆除', cost, tiles };
+      }
+      const { slope } = this.getTileMinMaxElev(s.x, s.z);
+      if (slope > 1.15) {
+        return { valid: false, reason: '地形过于陡峭，请先用平整工具修整台地', cost, tiles };
+      }
+    }
+
+    return { valid: true, reason: '', cost, tiles };
+  }
+
+  placeInterchange(type, cx, cz, rot = 0, free = false) {
+    if (!free && !this.isToolUnlocked(type)) {
+      if (this.sfx) this.sfx.error();
+      this.emitToast(`🔒 需升至市长等级 Lv.${CATALOG[type]?.unlockLevel || 5} 解锁【${CATALOG[type]?.name}】！`);
+      return { ok: false, reason: 'locked' };
+    }
+
+    const savedUnlock = this.unlockAll;
+    if (free) this.unlockAll = true;
+    const preview = this.previewInterchange(type, cx, cz, rot);
+    this.unlockAll = savedUnlock;
+
+    if (!preview.valid) {
+      if (!free) {
+        if (this.sfx) this.sfx.error();
+        this.emitToast(`⚠️ 无法建造立交：${preview.reason}`);
+      }
+      return { ok: false, reason: preview.reason };
+    }
+
+    const cost = free ? 0 : preview.cost;
+    if (!free && this.difficulty !== 'sandbox' && this.money < cost) {
+      if (this.sfx) this.sfx.error();
+      this.emitToast(`💰 国库资金不足（建造【${CATALOG[type]?.name}】需 ¥${cost.toLocaleString()}）`);
+      return { ok: false, reason: 'insufficient_funds' };
+    }
+
+    if (!free) {
+      this.pushUndoSnapshot(CATALOG[type]?.name || '立体立交');
+    }
+    if (!free && this.difficulty !== 'sandbox') {
+      this.money -= cost;
+    }
+
+    // Gently grade 5x5 interchange pad toward center elevation for crisp viaduct & ramp geometry
+    const targetH = this.getTileElev(cx, cz);
+    for (let czC = Math.max(0, cz - 2); czC <= Math.min(CORNER_STRIDE - 1, cz + 3); czC++) {
+      for (let cxC = Math.max(0, cx - 2); cxC <= Math.min(CORNER_STRIDE - 1, cx + 3); cxC++) {
+        if (czC >= GRID_SIZE - 1 && (Math.abs(cxC - 22.5) <= 1.6 || Math.abs(cxC - 8.5) <= 1.6)) continue;
+        const ci = cIdx(cxC, czC);
+        const curH = this.corners[ci];
+        if (curH > 0.02) {
+          this.corners[ci] = curH + (targetH - curH) * 0.72;
+        }
+      }
+    }
+
+    const specs = this._getInterchangeSpec(type, cx, cz, rot);
+    for (let i = 0; i < specs.length; i++) {
+      const s = specs[i];
+      const t = this.grid[idx(s.x, s.z)];
+      t.zone = null;
+      t.building = null;
+      t.pylon = false;
+      t.trees = 0;
+      t.roadDir = -1;
+      t.banTrucks = false;
+      t.busStop = false;
+      t.roadGround = s.roadGround;
+      t.roadBridge = s.roadGround > 0 && this.isWaterTile(s.x, s.z);
+      t.roadElevated = s.roadElevated;
+      t.ramp = Boolean(s.ramp);
+      t.junctionMode = s.junctionMode || 'signal';
+      t.roundaboutPaid = s.junctionMode === 'roundabout';
+    }
+
+    if (this.waterPhysics && typeof this.waterPhysics.refreshCellElevations === 'function') {
+      this.waterPhysics.refreshCellElevations();
+    }
+
+    const prevSuppress = this._suppressPromotions;
+    if (free) this._suppressPromotions = true;
+    this.recomputeNetworksAndFields();
+    this._suppressPromotions = prevSuppress;
+
+    if (this.traffic && typeof this.traffic.refreshRoadGraph === 'function') {
+      this.traffic.refreshRoadGraph();
+    }
+    this.meshDirty = true;
+
+    if (!free) {
+      if (this.sfx && this.sfx.road) this.sfx.road();
+      this.addXP(65, CATALOG[type]?.name || '立体立交');
+      this.checkMayorQuests();
+      this.emitToast(`✨ 已落成 5×5【${CATALOG[type]?.name}】，立体车流无缝立交分流！`);
+    }
+
+    return { ok: true, cost, tiles: preview.tiles };
+  }
+
+  // ==================== Rush-Hour Tidal Traffic Period Helper ====================
+  getTrafficPeriodInfo() {
+    const p = ((this.dayProgress % 1) + 1) % 1;
+    if (p >= 0.29 && p <= 0.40) {
+      return { id: 'morning_rush', icon: '🌅', label: '早高峰通勤', mult: 2.1, commuteBias: 'to_work' };
+    }
+    if (p >= 0.48 && p <= 0.60) {
+      return { id: 'midday', icon: '☀️', label: '午间商贸潮', mult: 1.4, commuteBias: 'commercial' };
+    }
+    if (p >= 0.71 && p <= 0.83) {
+      return { id: 'evening_rush', icon: '🌆', label: '晚高峰返家', mult: 2.1, commuteBias: 'to_home' };
+    }
+    if (p >= 0.94 || p < 0.21) {
+      return { id: 'late_night', icon: '🌙', label: '深夜静谧', mult: 0.35, commuteBias: 'quiet' };
+    }
+    return { id: 'normal', icon: '🌤️', label: '平峰顺畅', mult: 1.0, commuteBias: 'balanced' };
+  }
+
+  // ==================== Strategic Policies, History & Civic Decisions ====================
+  togglePolicy(key) {
+    if (!key || !(key in this.policies)) return { ok: false };
+    this.policies[key] = !this.policies[key];
+    this.recomputeNetworksAndFields();
+    this.stepEconomy(false);
+    if (this.traffic && typeof this.traffic.refreshModalSplitDemand === 'function') {
+      this.traffic.refreshModalSplitDemand();
+    }
+    if (this.sfx && this.sfx.tap) this.sfx.tap();
+    return { ok: true, key, active: this.policies[key] };
+  }
+
+  applyTempDemandBoost(dR = 0, dC = 0, dI = 0, months = 3) {
+    this.tempDemandBoost = {
+      R: Math.max(-0.35, Math.min(0.45, (this.tempDemandBoost?.R || 0) + dR)),
+      C: Math.max(-0.35, Math.min(0.45, (this.tempDemandBoost?.C || 0) + dC)),
+      I: Math.max(-0.35, Math.min(0.45, (this.tempDemandBoost?.I || 0) + dI)),
+      monthsLeft: Math.max(this.tempDemandBoost?.monthsLeft || 0, months)
+    };
+  }
+
+  applyTempHappinessBoost(delta = 0, months = 3) {
+    this.tempHappinessBoost = Math.max(-15, Math.min(18, (this.tempHappinessBoost || 0) + delta));
+    this.tempHappinessMonths = Math.max(this.tempHappinessMonths || 0, months);
+  }
+
+  getAverageCongestion() {
+    let sum = 0;
+    let cnt = 0;
+    for (let i = 0; i < this.grid.length; i++) {
+      const t = this.grid[i];
+      if (t.roadGround > 0) {
+        sum += t.congestion || 0;
+        cnt++;
+      }
+    }
+    return cnt > 0 ? Math.round((sum / cnt) * 100) : 0;
+  }
+
+  recordHistorySnapshot() {
+    const label = `${this.year}-${String(this.month).padStart(2, '0')}`;
+    this.history.push({
+      label,
+      pop: this.population || 0,
+      netIncome: this.netIncome || 0,
+      tax: this.lastTaxIncome || 0,
+      upkeep: this.lastUpkeep || 0,
+      happiness: this.happiness || 75,
+      avgCongestion: this.getAverageCongestion(),
+      educatedRate: this.educatedRate || 0,
+      transitRiders: this.transitStats?.totalRiders || 0
+    });
+    while (this.history.length > 24) {
+      this.history.shift();
+    }
+  }
+
+  seedBaselineHistory(months = 6) {
+    this.history = [];
+    const basePop = this.population || 0;
+    const baseNet = this.netIncome || 0;
+    const baseTax = this.lastTaxIncome || 0;
+    const baseUpk = this.lastUpkeep || 0;
+    const baseHap = this.happiness || 75;
+    const baseCong = this.getAverageCongestion();
+    const baseEdu = this.educatedRate || 0;
+    const baseRid = this.transitStats?.totalRiders || 0;
+
+    for (let offset = months - 1; offset >= 0; offset--) {
+      let m = this.month - offset;
+      let y = this.year;
+      while (m <= 0) {
+        m += 12;
+        y -= 1;
+      }
+      const frac = months > 1 ? 0.72 + (0.28 * (months - 1 - offset)) / (months - 1) : 1.0;
+      const wave = Math.sin(offset * 1.15) * 0.04;
+      this.history.push({
+        label: `${y}-${String(m).padStart(2, '0')}`,
+        pop: Math.max(0, Math.round(basePop * frac)),
+        netIncome: Math.round(baseNet * (0.85 + 0.15 * frac + wave)),
+        tax: Math.max(0, Math.round(baseTax * (frac + wave))),
+        upkeep: Math.max(0, Math.round(baseUpk * (0.90 + 0.10 * frac))),
+        happiness: Math.max(5, Math.min(100, Math.round(baseHap - offset * 0.6))),
+        avgCongestion: Math.max(0, Math.min(100, Math.round(baseCong * (0.82 + 0.18 * frac)))),
+        educatedRate: Math.max(0, Math.min(100, Math.round(baseEdu * (0.85 + 0.15 * frac)))),
+        transitRiders: Math.max(0, Math.round(baseRid * frac))
+      });
+    }
+  }
+
+  _onMonthRollover() {
+    this.recordHistorySnapshot();
+
+    if (this.tempDemandBoost && this.tempDemandBoost.monthsLeft > 0) {
+      this.tempDemandBoost.monthsLeft--;
+      if (this.tempDemandBoost.monthsLeft <= 0) {
+        this.tempDemandBoost = { R: 0, C: 0, I: 0, monthsLeft: 0 };
+      }
+    }
+    if (this.tempHappinessMonths > 0) {
+      this.tempHappinessMonths--;
+      if (this.tempHappinessMonths <= 0) {
+        this.tempHappinessBoost = 0;
+        this.tempHappinessMonths = 0;
+      }
+    }
+  }
+
+  triggerSampleEvent(eventId = null) {
+    let def = null;
+    if (eventId) {
+      def = CIVIC_EVENTS.find((e) => e.id === eventId) || null;
+    }
+    if (!def) {
+      def = CIVIC_EVENTS[this._eventHistoryIdx % CIVIC_EVENTS.length];
+      this._eventHistoryIdx++;
+    }
+    this.activeEvent = {
+      id: def.id,
+      icon: def.icon,
+      title: def.title,
+      desc: def.desc,
+      choices: def.choices.map((c) => ({ label: c.label, effectDesc: c.effectDesc }))
+    };
+    this.latestChirp = {
+      user: '@市政府办公厅',
+      text: `📜 市政决策待批示：${def.icon}【${def.title}】，请市长审阅并拍板！`,
+      mood: 'info'
+    };
+    return this.activeEvent;
+  }
+
+  resolveCivicEvent(choiceIdx) {
+    if (!this.activeEvent) return { ok: false };
+    const def = CIVIC_EVENTS.find((e) => e.id === this.activeEvent.id);
+    if (!def || choiceIdx < 0 || choiceIdx >= def.choices.length) {
+      return { ok: false };
+    }
+    const choice = def.choices[choiceIdx];
+    const eventId = def.id;
+    const eventTitle = def.title;
+
+    choice.apply(this);
+
+    this.activeEvent = null;
+    this._eventMonthAccum = 0;
+    this.latestChirp = {
+      user: '@市政决策快讯',
+      text: `✅ 市长已批复【${eventTitle}】→「${choice.label}」(${choice.effectDesc})`,
+      mood: 'good'
+    };
+
+    this.recomputeNetworksAndFields();
+    this.stepEconomy(false);
+    if (this.traffic && typeof this.traffic.refreshModalSplitDemand === 'function') {
+      this.traffic.refreshModalSplitDemand();
+    }
+    if (this.sfx && this.sfx.milestone) this.sfx.milestone();
+
+    return {
+      ok: true,
+      eventId,
+      choiceIdx,
+      choiceLabel: choice.label,
+      effectDesc: choice.effectDesc
+    };
   }
 
   onTripGridlockTimeout(v) {
@@ -908,7 +1831,7 @@ export class CitySimulation {
     return { found, poll: found ? bestPoll : 0 };
   }
 
-  sculptTerrain(tx, tz, mode, flattenTarget = null) {
+  sculptTerrain(tx, tz, mode, flattenTarget = null, isStrokeStart = false) {
     if (!inBounds(tx, tz)) return false;
     if (!this.isToolUnlocked(mode)) {
       this.emitToast(`🔒 需升至市长等级 Lv.${CATALOG[mode]?.unlockLevel || 1} 解锁【${CATALOG[mode]?.name}】！`);
@@ -922,6 +1845,7 @@ export class CitySimulation {
     }
 
     if (mode === 'ter_spring') {
+      this.pushUndoSnapshot(CATALOG.ter_spring?.name || '高山水源泉眼');
       const t = this.getTile(tx, tz);
       t.waterSpring = t.waterSpring > 0 ? 0 : 0.56;
       if (t.waterSpring > 0) {
@@ -935,6 +1859,12 @@ export class CitySimulation {
       if (this.sfx) this.sfx.pipe();
       this.meshDirty = true;
       return true;
+    }
+
+    const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    const pushedUndo = Boolean(isStrokeStart) || (now - (this._lastSculptUndoAt || 0) > 600);
+    if (pushedUndo) {
+      this.pushUndoSnapshot(CATALOG[mode]?.name || '地形重塑');
     }
 
     const R = 2.8;
@@ -978,6 +1908,7 @@ export class CitySimulation {
     }
 
     if (modified) {
+      if (pushedUndo) this._lastSculptUndoAt = now;
       this.money -= cost;
       for (const [ti, oldE] of preElev.entries()) {
         const txCell = ti % GRID_SIZE;
@@ -995,6 +1926,8 @@ export class CitySimulation {
       if (this.traffic && typeof this.traffic.refreshRoadGraph === 'function') {
         this.traffic.refreshRoadGraph();
       }
+    } else if (pushedUndo && this.undoStack.length > 0) {
+      this.undoStack.pop();
     }
     return modified;
   }
@@ -1148,14 +2081,54 @@ export class CitySimulation {
     return false;
   }
 
-  estimateAction(toolId, tiles) {
+  _inferOneWayDirs(tiles, opts = null) {
+    const dirFromDelta = (dx, dz) => {
+      if (Math.abs(dx) >= Math.abs(dz)) return dx >= 0 ? 3 : 2;
+      return dz >= 0 ? 1 : 0;
+    };
+    const dirs = new Int8Array(tiles.length);
+    if (tiles.length === 1) {
+      let d = 3;
+      if (opts && typeof opts.dir === 'number' && opts.dir >= 0 && opts.dir <= 3) {
+        d = opts.dir;
+      } else {
+        const p = tiles[0];
+        for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const nt = this.getTile(p.x + dx, p.z + dz);
+          if (nt && nt.roadGround > 0 && typeof nt.roadDir === 'number' && nt.roadDir >= 0) {
+            d = nt.roadDir;
+            break;
+          }
+        }
+      }
+      dirs[0] = d;
+      return dirs;
+    }
+    for (let k = 0; k < tiles.length; k++) {
+      if (k < tiles.length - 1) {
+        dirs[k] = dirFromDelta(tiles[k + 1].x - tiles[k].x, tiles[k + 1].z - tiles[k].z);
+      } else {
+        dirs[k] = dirFromDelta(tiles[k].x - tiles[k - 1].x, tiles[k].z - tiles[k - 1].z);
+      }
+    }
+    return dirs;
+  }
+
+  estimateAction(toolId, tiles, opts = null) {
     let cost = 0;
     const validTiles = [];
     if (!this.isToolUnlocked(toolId)) {
       return { cost: 0, validTiles: [], lockedLevel: CATALOG[toolId]?.unlockLevel || 1 };
     }
+    if ((toolId === 'interchange_diamond' || toolId === 'interchange_rbt') && tiles && tiles.length > 0) {
+      const prev = this.previewInterchange(toolId, tiles[0].x, tiles[0].z, opts?.rot || 0);
+      return { cost: prev.valid ? prev.cost : 0, validTiles: prev.valid ? prev.tiles : [] };
+    }
 
-    for (const pos of tiles) {
+    const oneWayDirs = toolId === 'road_oneway' ? this._inferOneWayDirs(tiles, opts) : null;
+
+    for (let k = 0; k < tiles.length; k++) {
+      const pos = tiles[k];
       const t = this.getTile(pos.x, pos.z);
       if (!t) continue;
       const wet = this.isWaterTile(pos.x, pos.z);
@@ -1166,8 +2139,20 @@ export class CitySimulation {
         if (t.roadGround === 3 || t.dam) continue;
         if (slope > 0.72 && !wet) continue;
         if (t.building && !BUILDING_NAMES[t.building.type]) continue;
-        if (t.roadGround === target && (!wet || t.roadBridge)) continue;
+        if (t.roadGround === target && (typeof t.roadDir !== 'number' || t.roadDir < 0) && (!wet || t.roadBridge)) continue;
         cost += wet ? CATALOG[toolId].bridgeCost : CATALOG[toolId].cost;
+        validTiles.push(pos);
+      } else if (toolId === 'road_oneway') {
+        if (t.roadGround === 3 || t.dam) continue;
+        if (slope > 0.72 && !wet) continue;
+        if (t.building && !BUILDING_NAMES[t.building.type]) continue;
+        const targetDir = oneWayDirs[k];
+        if (t.roadGround === 1 && t.roadDir === targetDir && (!wet || t.roadBridge)) continue;
+        cost += wet ? CATALOG.road_oneway.bridgeCost : CATALOG.road_oneway.cost;
+        validTiles.push({ x: pos.x, z: pos.z, dir: targetDir });
+      } else if (toolId === 'bus_stop') {
+        if (t.roadGround < 1 || t.roadGround === 3 || t.roadGround === 4 || t.dam || t.ramp || t.busStop) continue;
+        cost += CATALOG.bus_stop.cost;
         validTiles.push(pos);
       } else if (toolId === 'road_elev') {
         if (t.roadElevated === 1 || t.dam) continue;
@@ -1216,7 +2201,7 @@ export class CitySimulation {
         if (t.zone) validTiles.push(pos);
       } else if (toolId === 'bulldoze') {
         if (t.roadGround === 3 || t.rail === 2) continue;
-        if (t.roadGround > 0 || t.roadElevated > 0 || t.ramp || t.rail > 0 || t.dam || t.pylon || t.building || t.zone) {
+        if (t.roadGround > 0 || t.roadElevated > 0 || t.ramp || t.rail > 0 || t.dam || t.pylon || t.building || t.zone || t.busStop) {
           cost += CATALOG.bulldoze.cost;
           validTiles.push(pos);
         }
@@ -1247,7 +2232,11 @@ export class CitySimulation {
     return { cost, validTiles };
   }
 
-  applyTool(toolId, tiles, free = false) {
+  applyTool(toolId, tiles, free = false, opts = null) {
+    if ((toolId === 'interchange_diamond' || toolId === 'interchange_rbt') && tiles && tiles.length > 0) {
+      return this.placeInterchange(toolId, tiles[0].x, tiles[0].z, opts?.rot || 0, free);
+    }
+
     if (!free && !this.isToolUnlocked(toolId)) {
       if (this.sfx) this.sfx.error();
       this.emitToast(`🔒 需升至市长等级 Lv.${CATALOG[toolId]?.unlockLevel || 1} 解锁【${CATALOG[toolId]?.name}】！`);
@@ -1256,7 +2245,7 @@ export class CitySimulation {
 
     const savedUnlock = this.unlockAll;
     if (free) this.unlockAll = true;
-    const { cost, validTiles } = this.estimateAction(toolId, tiles);
+    const { cost, validTiles } = this.estimateAction(toolId, tiles, opts);
     this.unlockAll = savedUnlock;
 
     if (validTiles.length === 0) {
@@ -1266,6 +2255,8 @@ export class CitySimulation {
         this.emitToast('☢️ 核裂变发电站必须建在河岸或海湾陆地上（2格内有冷却水）！');
       } else if (!free && toolId === 'seaport') {
         this.emitToast('🚢 深水集装箱海港必须建在海湾或深水河岸陆地上（2格内有水域）！');
+      } else if (!free && toolId === 'bus_stop') {
+        this.emitToast('🚏 智能公交站必须建在普通地面街道或主干道上（不可建在隧道/大坝/匝道上）！');
       }
       return { ok: false };
     }
@@ -1274,6 +2265,10 @@ export class CitySimulation {
       if (this.sfx) this.sfx.error();
       this.emitToast(`💰 国库资金不足（需 ¥${cost.toLocaleString()}）！可前往【📊 财政】申请市政贷款`);
       return { ok: false };
+    }
+
+    if (!free) {
+      this.pushUndoSnapshot(CATALOG[toolId]?.name || toolId);
     }
 
     if (!free && this.difficulty !== 'sandbox') {
@@ -1419,7 +2414,7 @@ export class CitySimulation {
       }
     };
 
-    if (toolId === 'road_1' || toolId === 'road_2' || toolId === 'road_ramp' || toolId === 'rail_track') {
+    if (toolId === 'road_1' || toolId === 'road_2' || toolId === 'road_oneway' || toolId === 'road_ramp' || toolId === 'rail_track') {
       gradeSmoothPath(validTiles);
     }
 
@@ -1429,11 +2424,22 @@ export class CitySimulation {
 
       if (toolId === 'road_1' || toolId === 'road_2') {
         t.roadGround = toolId === 'road_1' ? 1 : 2;
+        t.roadDir = -1;
         t.roadBridge = this.isWaterTile(pos.x, pos.z);
         t.zone = null;
         t.building = null;
         t.pylon = false;
         t.trees = 0;
+      } else if (toolId === 'road_oneway') {
+        t.roadGround = 1;
+        t.roadDir = typeof pos.dir === 'number' ? pos.dir : 3;
+        t.roadBridge = this.isWaterTile(pos.x, pos.z);
+        t.zone = null;
+        t.building = null;
+        t.pylon = false;
+        t.trees = 0;
+      } else if (toolId === 'bus_stop') {
+        t.busStop = true;
       } else if (toolId === 'road_elev') {
         t.roadElevated = 1;
         if (t.building && BUILDING_NAMES[t.building.type]) t.building = null;
@@ -1442,6 +2448,8 @@ export class CitySimulation {
         t.trees = 0;
       } else if (toolId === 'road_ramp') {
         if (t.roadGround === 0) t.roadGround = 2;
+        t.roadDir = -1;
+        t.busStop = false;
         t.roadElevated = 1;
         t.ramp = true;
         t.zone = null;
@@ -1464,6 +2472,8 @@ export class CitySimulation {
         }
       } else if (toolId === 'road_tunnel') {
         t.roadGround = 4;
+        t.roadDir = -1;
+        t.busStop = false;
         t.trees = 0;
       } else if (toolId === 'metro_line') {
         t.metro = true;
@@ -1482,6 +2492,9 @@ export class CitySimulation {
         t.damHealth = 100;
         t.damStress = 0;
         t.roadGround = 2;
+        t.roadDir = -1;
+        t.banTrucks = false;
+        t.busStop = false;
         t.zone = null;
         t.building = null;
         t.trees = 0;
@@ -1504,10 +2517,16 @@ export class CitySimulation {
           // Smart Layer-Priority Bulldoze: remove elevated viaduct/ramp FIRST, preserving ground street/rail!
           t.roadElevated = 0;
           t.ramp = false;
+        } else if (t.busStop && t.roadGround > 0) {
+          // Remove roadside bus stop shelter first, preserving the underlying street!
+          t.busStop = false;
         } else {
           if (t.roadGround !== 3) {
             t.roadGround = 0;
             t.roadBridge = false;
+            t.roadDir = -1;
+            t.banTrucks = false;
+            t.busStop = false;
             t.junctionMode = null;
             t.roundaboutPaid = false;
           }
@@ -1585,7 +2604,7 @@ export class CitySimulation {
     this._suppressPromotions = prevSuppress;
     if (gradedAny) this.terrainDirty = true;
     if (
-      toolId.startsWith('road_') || toolId === 'rail_track' || toolId === 'water_pipe' ||
+      toolId.startsWith('road_') || toolId === 'bus_stop' || toolId === 'rail_track' || toolId === 'water_pipe' ||
       toolId === 'metro_line' || toolId === 'power_line' || toolId === 'hydro_dam'
     ) {
       this.infraDirty = true;
@@ -1604,6 +2623,13 @@ export class CitySimulation {
       if (toolId === 'hsr_station' || toolId === 'metro_station') this.infraDirty = true;
     }
 
+    if (
+      (toolId.startsWith('road_') || toolId === 'bus_stop' || toolId === 'bulldoze' || toolId === 'hydro_dam' || toolId === 'rail_track' || toolId === 'metro_line') &&
+      this.traffic && typeof this.traffic.refreshRoadGraph === 'function'
+    ) {
+      this.traffic.refreshRoadGraph();
+    }
+
     if (!free && this.sfx) {
       if (toolId.startsWith('road_')) this.sfx.road();
       else if (toolId === 'water_pipe' || toolId === 'metro_line') this.sfx.pipe();
@@ -1615,11 +2641,13 @@ export class CitySimulation {
 
     if (!free) {
       if (
-        toolId === 'road_1' || toolId === 'road_2' || toolId === 'road_elev' ||
+        toolId === 'road_1' || toolId === 'road_2' || toolId === 'road_oneway' || toolId === 'road_elev' ||
         toolId === 'road_ramp' || toolId === 'road_tunnel' || toolId === 'water_pipe' ||
         toolId === 'metro_line' || toolId === 'rail_track' || toolId === 'power_pylon'
       ) {
         this.addXP(validTiles.length * 1, toolId);
+      } else if (toolId === 'bus_stop') {
+        this.addXP(validTiles.length * 15, '智能公交站');
       } else if (toolId === 'hydro_dam') {
         this.addXP(validTiles.length * 40, '水力发电大坝');
       } else if (!toolId.startsWith('zone_') && toolId !== 'dezone' && !toolId.startsWith('bulldoze') && CATALOG[toolId]) {
@@ -1677,7 +2705,9 @@ export class CitySimulation {
     const svcMult = this.budgets.service / 100;
     const pwrMult = this.budgets.power / 100;
     const wtrMult = this.budgets.water / 100;
+    const energyDemMult = this.policies.energySubsidy ? 0.85 : 1.0;
 
+    let activeBusStops = 0;
     for (let i = 0; i < N; i++) {
       const t = this.grid[i];
       const elev = this.getTileElev(t.x, t.z);
@@ -1686,11 +2716,15 @@ export class CitySimulation {
       t.watered = false;
       t.outsideConnected = false;
       t.pollution = 0;
+      t.noise = 0;
       t.serviceScore = 0;
       t.education = 0;
       t.crimeSafety = 0;
       t.fireSafety = 0;
       t.landValue = 22 + (nearW.found && nearW.poll <= 0.35 ? 14 : 0) + (elev > 0.7 && elev < 2.0 ? 9 : 0);
+      if (t.busStop && t.roadGround >= 1 && t.roadGround !== 3 && t.roadGround !== 4 && !t.dam && !t.ramp) {
+        activeBusStops++;
+      }
     }
 
     // ==================== PHASE A: Power Generation & HV Power Grid BFS ====================
@@ -1748,7 +2782,7 @@ export class CitySimulation {
       while (head < pQueue.length) {
         const ci = pQueue[head++];
         const ct = this.grid[ci];
-        const need = this.getBuildingStats(ct.building).power || 0;
+        const need = (this.getBuildingStats(ct.building).power || 0) * energyDemMult;
 
         if (pUsed + need <= totalPowerOut) {
           ct.powered = true;
@@ -1892,7 +2926,7 @@ export class CitySimulation {
       }
     }
 
-    // ==================== PHASE B: Powered Water/Sewage/Waste & Road-Reachable Civic Services ====================
+    // ==================== PHASE B: Powered Water/Sewage/Waste, Acoustic Noise & Road-Reachable Civic Services ====================
     const waterNodes = [];
     let totalWaterOut = 0;
     let totalSewageCap = 0;
@@ -1904,6 +2938,22 @@ export class CitySimulation {
       for (let x = 0; x < GRID_SIZE; x++) {
         const t = this.grid[idx(x, z)];
         if (t.roadGround === 2) this.addRadialField(x, z, 3, 5, 0, 0, 0, 0, 0);
+
+        // Acoustic Noise Map: roads, viaducts, highways (truck-ban cuts road noise by 55%!) & forest buffers
+        if (t.roadGround === 3 || t.roadElevated > 0) {
+          this.addNoiseField(x, z, 3, 26);
+        }
+        if (t.roadGround >= 1 && t.roadGround !== 4) {
+          let rdNoise = (t.roadGround >= 2 ? 12 : 6) + 30 * (t.congestion || 0);
+          if (t.banTrucks) rdNoise *= 0.45; // -55% heavy truck acoustic noise reduction!
+          this.addNoiseField(x, z, t.roadGround >= 2 ? 3 : 2, rdNoise);
+        }
+        if (t.trees > 0) {
+          this.addNoiseField(x, z, 2, -(4 + t.trees * 2));
+        }
+        if (activeBusStops >= 2 && t.busStop && t.roadGround >= 1 && t.roadGround !== 3 && t.roadGround !== 4 && !t.dam && !t.ramp) {
+          this.addRadialField(x, z, 4, 6, 0, 10, 0, 0, 0);
+        }
 
         const b = t.building;
         if (!b) continue;
@@ -1919,6 +2969,7 @@ export class CitySimulation {
         if (b.type === 'power_plant') {
           if (operational && this.findRoadAccess(x, z)) {
             this.addRadialField(x, z, 6, -18, 36, 0, 0, 0, 0);
+            this.addNoiseField(x, z, 4, 24);
           }
         } else if (b.type === 'solar_plant') {
           if (operational && t.powered) {
@@ -1933,8 +2984,12 @@ export class CitySimulation {
           if (operational && t.powered && hasRd) {
             totalTrashCap += CATALOG.waste_plant.trashCap * svcMult;
           }
-          const wPol = Math.round(16 * (this.policies.greenCity ? 0.5 : 1.0));
+          const wPolMult = (this.policies.greenEnergy ? 0.75 : 1.0) * (this.policies.greenCity ? 0.65 : 1.0);
+          const wPol = Math.round(16 * Math.max(0.45, wPolMult));
           this.addRadialField(x, z, 5, -10, wPol, (operational && t.powered && hasRd) ? 14 * svcMult : 0, 0, 0, 0);
+          if (operational && t.powered && hasRd) {
+            this.addNoiseField(x, z, 4, 20);
+          }
         } else if (b.type === 'water_pump') {
           if (operational && t.powered) {
             const nw = this.hasNearbyWater(x, z, 2);
@@ -1986,6 +3041,7 @@ export class CitySimulation {
           }
         } else if (b.type === 'park') {
           this.addRadialField(x, z, 7, 24, -8, 18, 0, 0, 0);
+          this.addNoiseField(x, z, 5, -22);
         } else if (b.type === 'metro_station') {
           if (operational && t.powered) {
             this.addRadialField(x, z, 9, 22, 0, 24, 0, 0, 0);
@@ -1999,11 +3055,13 @@ export class CitySimulation {
           if (operational && t.powered && this.hasNearbyWater(x, z, 2).found) {
             landmarkBonus += 0.10;
             this.addRadialField(x, z, 10, 12, 8, 20, 0, 0, 0);
+            this.addNoiseField(x, z, 5, 28);
           }
         } else if (b.type === 'airport') {
           if (operational && t.powered) {
             landmarkBonus += 0.16;
             this.addRadialField(x, z, 14, 22, 6, 26, 0, 0, 0);
+            this.addNoiseField(x, z, 9, 55);
           }
         } else if (b.type === 'amusement_park') {
           if (operational && t.powered) {
@@ -2021,24 +3079,33 @@ export class CitySimulation {
             this.addRadialField(x, z, 18, 38, 0, 34, 0, 0, 0);
           }
         } else if (b.type === 'I' && !b.underConstruction) {
-          const pol = Math.round((22 + b.level * 7) * (this.policies.greenCity ? 0.55 : 1.0));
+          const greenPolMult = (this.policies.greenEnergy ? 0.65 : 1.0) * (this.policies.greenCity ? 0.65 : 1.0);
+          const pol = Math.round((22 + b.level * 7) * Math.max(0.45, greenPolMult));
           this.addRadialField(x, z, 6, -Math.round(pol * 0.55), pol, 0, 0, 0, 0);
+          this.addNoiseField(x, z, 5, 42);
         }
       }
     }
 
-    if (this.policies.greenCity) {
-      for (let i = 0; i < N; i++) this.grid[i].landValue = Math.min(100, this.grid[i].landValue + 7);
+    if (this.policies.greenCity || this.policies.greenEnergy) {
+      const lvBoost = this.policies.greenCity ? 7 : 3;
+      for (let i = 0; i < N; i++) this.grid[i].landValue = Math.min(100, this.grid[i].landValue + lvBoost);
     }
 
     for (let i = 0; i < N; i++) {
       const t = this.grid[i];
       t.pollution = Math.max(0, Math.min(100, t.pollution));
+      t.noise = Math.round(Math.max(0, Math.min(100, t.noise || 0)));
       t.serviceScore = Math.max(0, Math.min(100, t.serviceScore));
       t.fireSafety = Math.max(0, Math.min(100, t.fireSafety));
       t.education = Math.max(0, Math.min(100, t.education || 0));
       t.crimeSafety = Math.max(0, Math.min(100, t.crimeSafety || 0));
-      t.landValue = Math.max(5, Math.min(100, t.landValue - t.pollution * 0.45));
+      let lv = t.landValue - t.pollution * 0.45;
+      const isResTile = t.zone === 'RL' || t.zone === 'RH' || t.building?.type === 'RL' || t.building?.type === 'RH';
+      if (isResTile && t.noise > 55) {
+        lv -= (t.noise - 55) * 0.45;
+      }
+      t.landValue = Math.max(5, Math.min(100, lv));
     }
 
     // Underground Water Pipe BFS + 4-Tile Coverage
@@ -2098,7 +3165,7 @@ export class CitySimulation {
       for (let i = 0; i < N; i++) {
         if (!covered[i]) continue;
         const t = this.grid[i];
-        const need = this.getBuildingStats(t.building).water || 0;
+        const need = (this.getBuildingStats(t.building).water || 0) * energyDemMult;
         if (wUsed + need <= totalWaterOut) {
           t.watered = true;
           wUsed += need;
@@ -2115,6 +3182,8 @@ export class CitySimulation {
     let jobs = 0;
     let happySum = 0;
     let resCount = 0;
+    let eduWeightedSum = 0;
+    let eduPopWeight = 0;
     let sickCount = 0;
     let abandoned = 0;
     let hasSeaport = false;
@@ -2133,8 +3202,8 @@ export class CitySimulation {
         continue;
       }
       const st = this.getBuildingStats(b);
-      totalPDemand += st.power;
-      totalWDemand += st.water;
+      totalPDemand += st.power * energyDemMult;
+      totalWDemand += st.water * energyDemMult;
 
       const active = t.powered && t.watered && !b.flooded && !(b.fire > 0.3);
       pop += active ? st.pop : Math.round(st.pop * 0.25);
@@ -2173,7 +3242,8 @@ export class CitySimulation {
     const wonderHappyBoost =
       (hasAmusementPark ? 4 : 0) +
       (hasStadium ? 3 : 0) +
-      (this.matchDayBoostTimer > 0 ? 8 : 0);
+      (this.matchDayBoostTimer > 0 ? 8 : 0) +
+      (this.tempHappinessBoost || 0);
 
     for (let i = 0; i < N; i++) {
       const t = this.grid[i];
@@ -2214,7 +3284,12 @@ export class CitySimulation {
       else if (b.trashPiled && (b.type === 'RL' || b.type === 'RH')) sickCount += Math.round(st.pop * 0.20);
 
       if ((b.type === 'RL' || b.type === 'RH') && !b.underConstruction) {
+        const popW = Math.max(1, st.pop);
+        eduWeightedSum += (t.education || 0) * popW;
+        eduPopWeight += popW;
+
         let h = 56 + t.landValue * 0.26 + t.serviceScore * 0.25 - t.pollution * 0.65 - (this.taxRate - 9) * 3.8 + wonderHappyBoost;
+        if (t.noise > 55) h -= (t.noise - 55) * 0.48;
         if (!t.powered) h -= 32;
         if (!t.watered) h -= 32;
         if (b.sick) h -= 38;
@@ -2228,6 +3303,9 @@ export class CitySimulation {
       }
     }
 
+    const baseEduRate = eduPopWeight > 0 ? (eduWeightedSum / eduPopWeight) : 0;
+    this.educatedRate = Math.round(Math.max(0, Math.min(100, baseEduRate + (this.policies.freeHigherEd ? 18 : 0))));
+
     this.population = pop;
     if (pop > this.maxPopReached) this.maxPopReached = pop;
     this.jobsTotal = jobs;
@@ -2238,7 +3316,7 @@ export class CitySimulation {
     const workforce = Math.round(pop * 0.58);
     this.unemploymentPct = workforce > 0 ? Math.max(0, Math.round(((workforce - jobs) / workforce) * 100)) : 0;
 
-    // Strict RCI Demand sensitive to Taxes, Unemployment, Goods & Happiness!
+    // Strict RCI Demand sensitive to Taxes, Unemployment, Goods, Happiness, Policies & Civic Decisions!
     const taxPenalty = this.taxRate > 11 ? (this.taxRate - 11) * 0.14 : (9 - this.taxRate) * 0.04;
     const workerNeed = (jobs - workforce + 35) / Math.max(100, workforce + 60);
     const cJobs = this.countZoneJobs(['CL', 'CH']);
@@ -2248,10 +3326,12 @@ export class CitySimulation {
     // Commercial needs BOTH population shoppers AND industrial goods supply!
     const shopperGap = (pop * 0.35 + 20 - cJobs) / Math.max(80, pop * 0.4 + 50);
     const indGap = (workforce * 0.52 + 25 - ioJobs) / Math.max(80, workforce * 0.5 + 50);
+    const bizBoost = this.policies.bizTaxBreak ? 0.28 : 0;
+    const tdb = this.tempDemandBoost || { R: 0, C: 0, I: 0 };
 
-    this.demand.R = Math.max(0.0, Math.min(1.0, 0.45 + workerNeed * 0.65 + taxPenalty + (this.happiness - 65) * 0.008));
-    this.demand.C = Math.max(0.0, Math.min(1.0, 0.35 + shopperGap * 0.68 + taxPenalty + landmarkBonus));
-    this.demand.I = Math.max(0.0, Math.min(1.0, 0.40 + indGap * 0.68 + taxPenalty + (this.policies.techBoost ? 0.10 : 0)));
+    this.demand.R = Math.max(0.0, Math.min(1.0, 0.45 + workerNeed * 0.65 + taxPenalty + (this.happiness - 65) * 0.008 + (tdb.R || 0)));
+    this.demand.C = Math.max(0.0, Math.min(1.0, 0.35 + shopperGap * 0.68 + taxPenalty + landmarkBonus + bizBoost + (tdb.C || 0)));
+    this.demand.I = Math.max(0.0, Math.min(1.0, 0.40 + indGap * 0.68 + taxPenalty + (this.policies.techBoost ? 0.10 : 0) + bizBoost + (tdb.I || 0)));
 
     while (
       this.milestoneIdx + 1 < MILESTONES.length &&
@@ -2276,8 +3356,8 @@ export class CitySimulation {
     return sum;
   }
 
-  propagateServiceAlongRoads(startRx, startRz, maxSteps, dLandVal, dService, dFire, dEdu, dCrime) {
-    if (!inBounds(startRx, startRz) || maxSteps <= 0) return;
+  _computeRoadServiceCoverage(startRx, startRz, maxSteps) {
+    if (!inBounds(startRx, startRz) || maxSteps <= 0) return [];
     const N = this.grid.length;
     if (!this._svcDistG || this._svcDistG.length !== N) {
       this._svcDistG = new Float32Array(N);
@@ -2292,7 +3372,7 @@ export class CitySimulation {
 
     const startIdx = idx(startRx, startRz);
     const startTile = this.grid[startIdx];
-    if (!startTile || (startTile.roadGround <= 0 && startTile.roadElevated <= 0)) return;
+    if (!startTile || (startTile.roadGround <= 0 && startTile.roadElevated <= 0)) return [];
 
     const q = [];
     const reachedGround = [];
@@ -2396,16 +3476,152 @@ export class CitySimulation {
       }
     }
 
+    const results = new Array(touchedTargets.length);
     for (let k = 0; k < touchedTargets.length; k++) {
       const ti = touchedTargets[k];
       const f = bestFalloff[ti];
       bestFalloff[ti] = 0;
-      const t = this.grid[ti];
+      results[k] = { ti, x: ti % GRID_SIZE, z: (ti / GRID_SIZE) | 0, falloff: f };
+    }
+    return results;
+  }
+
+  propagateServiceAlongRoads(startRx, startRz, maxSteps, dLandVal, dService, dFire, dEdu, dCrime) {
+    const cov = this._computeRoadServiceCoverage(startRx, startRz, maxSteps);
+    for (let k = 0; k < cov.length; k++) {
+      const c = cov[k];
+      const f = c.falloff;
+      const t = this.grid[c.ti];
       t.landValue += dLandVal * f;
       t.serviceScore += dService * f;
       t.fireSafety += dFire * f;
       t.education = (t.education || 0) + dEdu * f;
       t.crimeSafety = (t.crimeSafety || 0) + dCrime * f;
+    }
+  }
+
+  previewServiceCoverage(toolId, x, z) {
+    const label = CATALOG[toolId]?.name || toolId || '';
+    if (!inBounds(x, z)) {
+      return { tiles: [], affectedBuildings: 0, roadConnected: false, label };
+    }
+    const svcMult = (this.budgets?.service || 100) / 100;
+    const roadTools = {
+      fire_station: 12,
+      police_station: 13,
+      hospital: 14,
+      school: 15,
+      waste_plant: 10
+    };
+    const radialTools = {
+      park: 7,
+      metro_station: 9,
+      amusement_park: 14,
+      stadium: 15
+    };
+
+    const tiles = [];
+    let roadConnected = false;
+
+    if (toolId in roadTools) {
+      const acc = this.findRoadAccess(x, z);
+      roadConnected = Boolean(acc);
+      if (acc) {
+        const r = Math.round(roadTools[toolId] * svcMult);
+        const cov = this._computeRoadServiceCoverage(acc.rx, acc.rz, r * 1.45);
+        for (let i = 0; i < cov.length; i++) {
+          const c = cov[i];
+          tiles.push({
+            x: c.x,
+            z: c.z,
+            strength: Math.max(0.15, Math.min(1.0, c.falloff))
+          });
+        }
+      }
+    } else if (toolId === 'bus_stop') {
+      const t = this.getTile(x, z);
+      roadConnected = Boolean(t && t.roadGround >= 1 && t.roadGround !== 3 && t.roadGround !== 4 && !t.dam && !t.ramp);
+      if (roadConnected) {
+        const cov = this._computeRoadServiceCoverage(x, z, 6.5);
+        for (let i = 0; i < cov.length; i++) {
+          const c = cov[i];
+          tiles.push({
+            x: c.x,
+            z: c.z,
+            strength: Math.max(0.15, Math.min(1.0, c.falloff))
+          });
+        }
+      }
+    } else if (toolId === 'power_pylon') {
+      roadConnected = true;
+      const rad = 6;
+      const r2 = rad * rad;
+      const minX = Math.max(0, x - rad);
+      const maxX = Math.min(GRID_SIZE - 1, x + rad);
+      const minZ = Math.max(0, z - rad);
+      const maxZ = Math.min(GRID_SIZE - 1, z + rad);
+      for (let gz = minZ; gz <= maxZ; gz++) {
+        for (let gx = minX; gx <= maxX; gx++) {
+          const d2 = (gx - x) * (gx - x) + (gz - z) * (gz - z);
+          if (d2 > r2) continue;
+          const falloff = 1 - Math.sqrt(d2) / (rad + 0.5);
+          tiles.push({
+            x: gx,
+            z: gz,
+            strength: Math.max(0.15, Math.min(1.0, falloff))
+          });
+        }
+      }
+    } else if (toolId in radialTools) {
+      roadConnected = Boolean(this.findRoadAccess(x, z));
+      const rad = radialTools[toolId];
+      const r2 = rad * rad;
+      const minX = Math.max(0, x - rad);
+      const maxX = Math.min(GRID_SIZE - 1, x + rad);
+      const minZ = Math.max(0, z - rad);
+      const maxZ = Math.min(GRID_SIZE - 1, z + rad);
+      for (let gz = minZ; gz <= maxZ; gz++) {
+        for (let gx = minX; gx <= maxX; gx++) {
+          const d2 = (gx - x) * (gx - x) + (gz - z) * (gz - z);
+          if (d2 > r2) continue;
+          const falloff = 1 - Math.sqrt(d2) / (rad + 0.5);
+          tiles.push({
+            x: gx,
+            z: gz,
+            strength: Math.max(0.15, Math.min(1.0, falloff))
+          });
+        }
+      }
+    } else {
+      return { tiles: [], affectedBuildings: 0, roadConnected: false, label };
+    }
+
+    let affectedBuildings = 0;
+    for (let i = 0; i < tiles.length; i++) {
+      const pt = tiles[i];
+      if (pt.x === x && pt.z === z) continue;
+      const b = this.grid[idx(pt.x, pt.z)].building;
+      if (b && !b.abandoned) affectedBuildings++;
+    }
+
+    return { tiles, affectedBuildings, roadConnected, label };
+  }
+
+  addNoiseField(cx, cz, radius, delta) {
+    if (radius <= 0 || delta === 0) return;
+    const r2 = radius * radius;
+    const minX = Math.max(0, cx - radius);
+    const maxX = Math.min(GRID_SIZE - 1, cx + radius);
+    const minZ = Math.max(0, cz - radius);
+    const maxZ = Math.min(GRID_SIZE - 1, cz + radius);
+
+    for (let z = minZ; z <= maxZ; z++) {
+      for (let x = minX; x <= maxX; x++) {
+        const d2 = (x - cx) * (x - cx) + (z - cz) * (z - cz);
+        if (d2 > r2) continue;
+        const falloff = 1 - Math.sqrt(d2) / (radius + 0.5);
+        this.grid[idx(x, z)].noise += delta * falloff;
+      }
     }
   }
 
@@ -2490,6 +3706,16 @@ export class CitySimulation {
           this.month = 1;
           this.year++;
         }
+        this._onMonthRollover();
+      }
+    }
+
+    // Dynamic Civic Decision Event Timer (~2.5 in-game months when pop >= 120)
+    if (this.population >= 120 && !this.activeEvent) {
+      this._eventMonthAccum = (this._eventMonthAccum || 0) + simDt / (30 * 4.5);
+      if (this._eventMonthAccum >= 2.5) {
+        this._eventMonthAccum = 0;
+        this.triggerSampleEvent();
       }
     }
 
@@ -2847,7 +4073,8 @@ export class CitySimulation {
       else if (roadCong > 0.78 && (b.type === 'CL' || b.type === 'CH' || b.type === 'I')) problem = '道路严重瘫痪导致断货倒闭';
       else if (severeLaborShortage && (b.type === 'I' || b.type === 'CL' || b.type === 'CH') && Math.random() < 0.45) problem = '住宅人口不足引发严重用工荒';
       else if (severeGoodsShortage && (b.type === 'CL' || b.type === 'CH') && Math.random() < 0.35) problem = '缺乏工业区供货导致商场断货';
-      else if (b.type === 'O' && (t.education || 0) < 18) problem = '缺乏大学高学历人才写字楼空置';
+      else if (b.type === 'O' && (t.education || 0) < 18 && this.educatedRate < 28) problem = '缺乏大学高学历人才写字楼空置';
+      else if (b.type === 'I' && b.level >= 4 && this.educatedRate < 28 && Math.random() < 0.35) problem = '缺乏高学历研发人才高科厂减产';
 
       if (problem && this.difficulty !== 'sandbox') {
         b.distress = (b.distress || 0) + 1;
@@ -2874,13 +4101,14 @@ export class CitySimulation {
 
       b.rot = acc.rot;
       // High-density Lv.3+ requires Education + Healthcare/Service + Low Congestion!
-      if ((b.type === 'RH' || b.type === 'CH' || b.type === 'O') && b.level >= 2 && (t.education || 0) < 20) continue;
+      if ((b.type === 'RH' || b.type === 'CH' || b.type === 'O') && b.level >= 2 && (t.education || 0) < 20 && this.educatedRate < 40) continue;
 
       const aveBonus = acc.roadType >= 2 ? 10 : 0;
-      const eduBonus = (t.education || 0) * 0.22;
+      const eduBonus = (t.education || 0) * 0.22 + ((b.type === 'O' || (b.type === 'I' && b.level >= 3)) && this.educatedRate >= 60 ? 10 : 0);
+      const noisePen = ((b.type === 'RL' || b.type === 'RH') && (t.noise || 0) > 55) ? ((t.noise - 55) * 0.35) : 0;
       const score = (b.type === 'I')
         ? 18 + t.serviceScore * 0.65 + eduBonus + aveBonus - roadCong * 28
-        : t.landValue * 0.62 + t.serviceScore * 0.48 + eduBonus + aveBonus - t.pollution * 0.55 - roadCong * 25;
+        : t.landValue * 0.62 + t.serviceScore * 0.48 + eduBonus + aveBonus - t.pollution * 0.55 - noisePen - roadCong * 25;
 
       const thresholds = [0, 28, 46, 64, 80];
       const needed = thresholds[b.level] || 78;
@@ -2908,12 +4136,19 @@ export class CitySimulation {
     if (changed) this.buildingDirty = true;
   }
 
-  stepEconomy() {
+  stepEconomy(applyCash = true) {
     let infraUpkeep = 0;
     let pwrUpkeep = 0;
     let wtrUpkeep = 0;
     let svcUpkeep = 0;
     let grossTax = 0;
+    let activeBuildings = 0;
+
+    const busStopCoords = [];
+    const metroStationCoords = [];
+    let hsrStationCount = 0;
+    let metroTrackCount = 0;
+    let railTrackCount = 0;
 
     const workforce = Math.round(this.population * 0.58);
     // Labor efficiency: if you over-zone C/I without enough R workers, factories & shops run half-empty!
@@ -2921,26 +4156,60 @@ export class CitySimulation {
     const seaportTradeMult = this.hasSeaport ? 1.12 : 1.0;
     const airportTradeMult = this.hasAirport ? 1.15 : 1.0;
 
+    // Education -> High-Tech Office & Industry Productivity Multiplier
+    let highTechEduMult = 1.0;
+    if (this.educatedRate >= 60) {
+      highTechEduMult = 1.12 + ((this.educatedRate - 60) / 40) * 0.10; // up to +22%
+    } else if (this.educatedRate < 28) {
+      highTechEduMult = 0.72; // -28% efficiency penalty
+    } else {
+      highTechEduMult = 0.85 + ((this.educatedRate - 28) / 32) * 0.25;
+    }
+
+    const greenIndTaxMult = this.policies.greenEnergy ? 0.94 : 1.0;      // -6% ind tax
+    const higherEdTechMult = this.policies.freeHigherEd ? 1.15 : 1.0;    // +15% office/tech tax
+    const bizBreakMult = this.policies.bizTaxBreak ? 0.90 : 1.0;         // -10% commercial/office tax
+
     for (let i = 0; i < this.grid.length; i++) {
       const t = this.grid[i];
-      if (t.roadGround === 1) infraUpkeep += CATALOG.road_1.upkeep;
-      else if (t.roadGround === 2) infraUpkeep += CATALOG.road_2.upkeep;
-      else if (t.roadGround === 4) infraUpkeep += CATALOG.road_tunnel.upkeep;
+      if (t.roadGround === 1) {
+        infraUpkeep += (typeof t.roadDir === 'number' && t.roadDir >= 0) ? CATALOG.road_oneway.upkeep : CATALOG.road_1.upkeep;
+      } else if (t.roadGround === 2) {
+        infraUpkeep += CATALOG.road_2.upkeep;
+      } else if (t.roadGround === 4) {
+        infraUpkeep += CATALOG.road_tunnel.upkeep;
+      }
       if (t.roadElevated > 0) infraUpkeep += CATALOG.road_elev.upkeep;
       if (t.ramp) infraUpkeep += CATALOG.road_ramp.upkeep;
-      if (t.rail === 1) infraUpkeep += CATALOG.rail_track.upkeep;
-      if (t.metro) infraUpkeep += CATALOG.metro_line.upkeep;
+      if (t.rail === 1) {
+        infraUpkeep += CATALOG.rail_track.upkeep;
+        railTrackCount++;
+      }
+      if (t.metro) {
+        infraUpkeep += CATALOG.metro_line.upkeep;
+        metroTrackCount++;
+      }
       if (t.pipe) infraUpkeep += CATALOG.water_pipe.upkeep;
       if (t.pylon) infraUpkeep += CATALOG.power_pylon.upkeep;
       if (t.dam) pwrUpkeep += CATALOG.hydro_dam.upkeep * 0.35;
+      if (t.busStop && t.roadGround >= 1 && t.roadGround !== 3 && t.roadGround !== 4 && !t.dam && !t.ramp) {
+        svcUpkeep += CATALOG.bus_stop.upkeep;
+        busStopCoords.push({ x: t.x, z: t.z });
+      }
 
       const b = t.building;
       if (!b || b.underConstruction || b.abandoned) continue;
+      activeBuildings++;
 
       const u = CATALOG[b.type]?.upkeep || 0;
       if (b.type === 'power_wind' || b.type === 'power_plant' || b.type === 'solar_plant' || b.type === 'nuclear_plant') pwrUpkeep += u;
       else if (b.type === 'water_pump' || b.type === 'sewage_out' || b.type === 'water_treat') wtrUpkeep += u;
       else if (u > 0) svcUpkeep += u;
+
+      if (t.powered && !b.flooded && !(b.fire > 0.2)) {
+        if (b.type === 'metro_station') metroStationCoords.push({ x: t.x, z: t.z });
+        else if (b.type === 'hsr_station') hsrStationCount++;
+      }
 
       if (!t.powered || !t.watered || b.flooded || b.fire > 0.2) continue;
 
@@ -2950,11 +4219,15 @@ export class CitySimulation {
 
       if (b.type === 'RL') grossTax += (2.4 + b.level * 2.8) * sickPenalty;
       else if (b.type === 'RH') grossTax += (5.8 + b.level * 6.5) * sickPenalty;
-      else if (b.type === 'CL') grossTax += (3.2 + b.level * 3.6) * laborEff * congPenalty * seaportTradeMult * airportTradeMult;
-      else if (b.type === 'CH') grossTax += (7.5 + b.level * 8.2) * laborEff * congPenalty * seaportTradeMult * airportTradeMult;
-      else if (b.type === 'I')  grossTax += (3.8 + b.level * 4.2) * laborEff * congPenalty * seaportTradeMult;
-      else if (b.type === 'O')  grossTax += (6.5 + b.level * 7.2) * laborEff * airportTradeMult;
-      else if (b.type === 'landmark') grossTax += 85;
+      else if (b.type === 'CL') grossTax += (3.2 + b.level * 3.6) * laborEff * congPenalty * seaportTradeMult * airportTradeMult * bizBreakMult;
+      else if (b.type === 'CH') grossTax += (7.5 + b.level * 8.2) * laborEff * congPenalty * seaportTradeMult * airportTradeMult * bizBreakMult;
+      else if (b.type === 'I') {
+        const isHighTech = b.level >= 4;
+        const indMult = greenIndTaxMult * (isHighTech ? highTechEduMult * higherEdTechMult : 1.0);
+        grossTax += (3.8 + b.level * 4.2) * laborEff * congPenalty * seaportTradeMult * indMult;
+      } else if (b.type === 'O') {
+        grossTax += (6.5 + b.level * 7.2) * laborEff * airportTradeMult * highTechEduMult * higherEdTechMult * bizBreakMult;
+      } else if (b.type === 'landmark') grossTax += 85;
       else if (b.type === 'hsr_station') grossTax += 58;
       else if (b.type === 'airport') grossTax += 95;
       else if (b.type === 'seaport' && this.hasNearbyWater(t.x, t.z, 2).found) grossTax += 65;
@@ -2962,32 +4235,114 @@ export class CitySimulation {
       else if (b.type === 'amusement_park') grossTax += 48;
     }
 
+    // ==================== Live Public Transit Ridership & P&L Telemetry ====================
+    const freeTransitMult = this.policies.freeTransit ? 1.35 : 1.0;
+    const svcBudgetRatio = this.budgets.service / 100;
+
+    let busCatchment = 0;
+    let metroCatchment = 0;
+    if (busStopCoords.length >= 2 || metroStationCoords.length >= 2) {
+      for (let i = 0; i < this.grid.length; i++) {
+        const t = this.grid[i];
+        const b = t.building;
+        if (!b || b.abandoned || b.underConstruction) continue;
+        const st = this.getBuildingStats(b);
+        const weight = (st.pop || 0) + (st.jobs || 0);
+        if (weight <= 0) continue;
+
+        if (busStopCoords.length >= 2) {
+          for (let k = 0; k < busStopCoords.length; k++) {
+            const bs = busStopCoords[k];
+            if (Math.abs(t.x - bs.x) + Math.abs(t.z - bs.z) <= 6) {
+              busCatchment += weight;
+              break;
+            }
+          }
+        }
+        if (metroStationCoords.length >= 2) {
+          for (let k = 0; k < metroStationCoords.length; k++) {
+            const ms = metroStationCoords[k];
+            if (Math.abs(t.x - ms.x) + Math.abs(t.z - ms.z) <= 9) {
+              metroCatchment += weight;
+              break;
+            }
+          }
+        }
+      }
+    }
+
+    const busStops = busStopCoords.length;
+    const busUpkeep = Math.round(busStops * CATALOG.bus_stop.upkeep * svcBudgetRatio);
+    const busRiders = busStops >= 2
+      ? Math.round((busStops * 18 + busCatchment * 0.28) * Math.min(1.65, 0.65 + busStops * 0.14) * freeTransitMult)
+      : 0;
+    const busRevenue = this.policies.freeTransit ? 0 : Math.round(busRiders * 0.24);
+    const busCarsSaved = Math.round(busRiders * 0.42);
+
+    const metroStations = metroStationCoords.length;
+    const metroUpkeep = Math.round(metroStations * CATALOG.metro_station.upkeep * svcBudgetRatio + metroTrackCount * CATALOG.metro_line.upkeep);
+    const metroRiders = metroStations >= 2
+      ? Math.round((metroStations * 55 + metroCatchment * 0.48) * Math.min(2.0, 0.75 + metroStations * 0.18) * freeTransitMult)
+      : 0;
+    const metroRevenue = this.policies.freeTransit ? 0 : Math.round(metroRiders * 0.34);
+    const metroCarsSaved = Math.round(metroRiders * 0.58);
+
+    const hsrUpkeep = Math.round(hsrStationCount * CATALOG.hsr_station.upkeep * svcBudgetRatio + railTrackCount * CATALOG.rail_track.upkeep);
+    const hsrRiders = hsrStationCount >= 1
+      ? Math.round((hsrStationCount * 90 + (this.population + this.jobsTotal) * 0.12) * Math.min(1.8, 0.8 + hsrStationCount * 0.25) * freeTransitMult)
+      : 0;
+    const hsrRevenue = this.policies.freeTransit ? 0 : Math.round(hsrRiders * 0.45);
+    const hsrCarsSaved = Math.round(hsrRiders * 0.35);
+
+    const totalRiders = busRiders + metroRiders + hsrRiders;
+    const totalTransitRevenue = busRevenue + metroRevenue + hsrRevenue;
+    const totalTransitUpkeep = busUpkeep + metroUpkeep + hsrUpkeep;
+    const totalCarsSaved = busCarsSaved + metroCarsSaved + hsrCarsSaved;
+
+    this.transitStats = {
+      bus:   { stops: busStops, riders: busRiders, revenue: busRevenue, upkeep: busUpkeep, carsSaved: busCarsSaved },
+      metro: { stations: metroStations, riders: metroRiders, revenue: metroRevenue, upkeep: metroUpkeep, carsSaved: metroCarsSaved },
+      hsr:   { stations: hsrStationCount, riders: hsrRiders, revenue: hsrRevenue, upkeep: hsrUpkeep, carsSaved: hsrCarsSaved },
+      totalRiders,
+      totalRevenue: totalTransitRevenue,
+      totalUpkeep: totalTransitUpkeep,
+      totalCarsSaved
+    };
+
     // Department budget scaling
     const totalDeptUpkeep =
       infraUpkeep +
       pwrUpkeep * (this.budgets.power / 100) +
       wtrUpkeep * (this.budgets.water / 100) +
-      svcUpkeep * (this.budgets.service / 100);
+      svcUpkeep * svcBudgetRatio;
 
     let policyCost = 0;
     if (this.policies.freeTransit) policyCost += 25 + this.population * 0.018;
+    if (this.policies.freeHigherEd) policyCost += 220 + this.population * 0.08;
+    if (this.policies.energySubsidy) policyCost += 180 + activeBuildings * 1.2;
     if (this.policies.greenCity) policyCost += 20 + this.population * 0.014;
     if (this.policies.techBoost) policyCost += 28 + this.jobsTotal * 0.018;
 
     // Loan repayments
     let loanPay = 0;
-    for (let i = this.activeLoans.length - 1; i >= 0; i--) {
-      const ln = this.activeLoans[i];
-      const pay = Math.min(ln.remaining, ln.periodPay);
-      ln.remaining -= pay;
-      loanPay += pay;
-      if (ln.remaining <= 0) {
-        this.latestChirp = {
-          user: '@市政财政局',
-          text: `🎉 债券【${ln.name}】已全额结清，财政利息负担解除！`,
-          mood: 'good'
-        };
-        this.activeLoans.splice(i, 1);
+    if (applyCash) {
+      for (let i = this.activeLoans.length - 1; i >= 0; i--) {
+        const ln = this.activeLoans[i];
+        const pay = Math.min(ln.remaining, ln.periodPay);
+        ln.remaining -= pay;
+        loanPay += pay;
+        if (ln.remaining <= 0) {
+          this.latestChirp = {
+            user: '@市政财政局',
+            text: `🎉 债券【${ln.name}】已全额结清，财政利息负担解除！`,
+            mood: 'good'
+          };
+          this.activeLoans.splice(i, 1);
+        }
+      }
+    } else {
+      for (let i = 0; i < this.activeLoans.length; i++) {
+        loanPay += Math.min(this.activeLoans[i].remaining, this.activeLoans[i].periodPay);
       }
     }
 
@@ -2997,11 +4352,12 @@ export class CitySimulation {
     const totalUpkeep = Math.round(totalDeptUpkeep + policyCost);
 
     this.lastTaxIncome = taxIncome;
+    this.lastTransitRevenue = totalTransitRevenue;
     this.lastUpkeep = totalUpkeep;
     this.lastLoanPay = loanPay;
-    this.netIncome = taxIncome - totalUpkeep - loanPay;
+    this.netIncome = taxIncome + totalTransitRevenue - totalUpkeep - loanPay;
 
-    if (this.difficulty !== 'sandbox') {
+    if (applyCash && this.difficulty !== 'sandbox') {
       this.money += this.netIncome;
       if (this.money < -3000) {
         this.latestChirp = {
@@ -3252,7 +4608,21 @@ export class CitySimulation {
           hasUtilityOrSanitationIssue = true;
         }
 
-        // 4. Economy & Operating Distress Warnings (deduplicated from utility/sanitation)
+        // 4. High-Tech Workforce Education Shortage (educatedRate < 28% on O or I Lv.4+)
+        if (this.educatedRate < 28 && (b.type === 'O' || (b.type === 'I' && b.level >= 4))) {
+          categories.economy.push({
+            category: 'economy',
+            icon: '🎓',
+            title: `🎓 缺乏高学历人才（${bName}）`,
+            reason: `当前全市高学历率仅 ${this.educatedRate}%（低于 28%），办公区与高科工业效率 -28%`,
+            actionTip: '在住宅区连通道路旁增建通电的【市立理工大学】，或在财政政策面板开启【🎓 免费高等教育】',
+            x,
+            z,
+            severity: 3
+          });
+        }
+
+        // 5. Economy & Operating Distress Warnings (deduplicated from utility/sanitation)
         if (!hasUtilityOrSanitationIssue && (b.distress > 0 || b.abandonReason)) {
           const reason = b.abandonReason || '周边经营环境恶化';
           let tip = '改善周边道路交通、降低税率或补充市政服务设施';
@@ -3293,6 +4663,16 @@ export class CitySimulation {
   }
 
   clearAllAbandoned() {
+    let hasAny = false;
+    for (let i = 0; i < this.grid.length; i++) {
+      if (this.grid[i].building && this.grid[i].building.abandoned) {
+        hasAny = true;
+        break;
+      }
+    }
+    if (hasAny) {
+      this.pushUndoSnapshot('清理废弃建筑');
+    }
     let cleared = 0;
     let cost = 0;
     for (let i = 0; i < this.grid.length; i++) {
@@ -3311,7 +4691,7 @@ export class CitySimulation {
       }
       if (this.sfx && this.sfx.bulldoze) this.sfx.bulldoze();
       this.recomputeNetworksAndFields();
-      this.stepEconomy();
+      this.stepEconomy(false);
       this.buildingDirty = true;
     }
     return { cleared, cost };
@@ -3346,6 +4726,12 @@ export class CitySimulation {
     }
     if (b.type === 'nuclear_plant' && !this.hasNearbyWater(t.x, t.z, 2).found) return '☢️ 缺少冷却水源！核裂变电站2格内必须有河水或海水才能发电';
     if (b.type === 'seaport' && !this.hasNearbyWater(t.x, t.z, 2).found) return '🚢 航道干涸！海港2格内必须紧邻海湾或深水河道才能靠泊货轮';
+    if ((b.type === 'O' || (b.type === 'I' && b.level >= 4)) && this.educatedRate < 28) {
+      return `🎓 缺乏高学历人才（全市高学历率 ${this.educatedRate}% < 28%，效率 -28%）！请建【市立理工大学】或开启【免费高等教育】`;
+    }
+    if ((b.type === 'RL' || b.type === 'RH') && (t.noise || 0) > 55) {
+      return `🔊 周边声学噪音过高（${t.noise} dB）拖累幸福度与地价！建议在临街道路开启【禁行重卡】或增建【中央景观公园】隔音`;
+    }
     if (b.abandonReason) return `⚠️ 经营预警：${b.abandonReason}（持续恶化将导致荒废倒闭！）`;
     if (b.underConstruction) return '🏗️ 塔吊正在施工中...';
     if (!BUILDING_NAMES[b.type]) return CATALOG[b.type]?.desc || '';
@@ -3369,6 +4755,13 @@ export class CitySimulation {
     this.taxRate = 9;
     this.budgets = { power: 90, water: 90, service: 100 };
     this.activeLoans = [];
+    this.undoStack = [];
+    this._lastSculptUndoAt = 0;
+    this.activeEvent = null;
+    this._eventMonthAccum = 0;
+    this.tempDemandBoost = { R: 0, C: 0, I: 0, monthsLeft: 0 };
+    this.tempHappinessBoost = 0;
+    this.tempHappinessMonths = 0;
     this.mayorLevel = 1;
     this.mayorXP = 0;
     this.gridlockTimeouts = 0;
@@ -3386,7 +4779,7 @@ export class CitySimulation {
       text: '🎓 欢迎来到新手建城教学！请跟随左上角《📋 建城指引》从第 1 步修筑街道开始规划吧！',
       mood: 'info'
     };
-    this.policies = { freeTransit: false, greenCity: false, techBoost: false };
+    this.policies = createDefaultPolicies();
 
     const world = generateWorld(seed);
     this.corners = world.corners;
@@ -3396,6 +4789,7 @@ export class CitySimulation {
     if (this.waterPhysics) this.waterPhysics.refreshCellElevations();
     this.recomputeNetworksAndFields();
     this.stepEconomy();
+    this.seedBaselineHistory(6);
     this.meshDirty = true;
   }
 
@@ -3554,6 +4948,13 @@ export class CitySimulation {
     this.taxRate = 9;
     this.budgets = { power: 80, water: 80, service: 100 }; // Smart frugal startup budget!
     this.activeLoans = [];
+    this.undoStack = [];
+    this._lastSculptUndoAt = 0;
+    this.activeEvent = null;
+    this._eventMonthAccum = 0;
+    this.tempDemandBoost = { R: 0, C: 0, I: 0, monthsLeft: 0 };
+    this.tempHappinessBoost = 0;
+    this.tempHappinessMonths = 0;
     this._suppressPromotions = true;
     this.mayorLevel = 1;
     this.mayorXP = 95;
@@ -3572,7 +4973,7 @@ export class CitySimulation {
       text: '听说新市长上任了！期待我们的山河新城早日通上地铁和高铁🚄',
       mood: 'info'
     };
-    this.policies = { freeTransit: false, greenCity: false, techBoost: false };
+    this.policies = createDefaultPolicies();
 
     const world = generateWorld(seed);
     this.corners = world.corners;
@@ -3658,6 +5059,7 @@ export class CitySimulation {
     this._suppressPromotions = false;
     this.syncCompletedQuestsSilent();
     this.stepEconomy();
+    this.seedBaselineHistory(6);
     this.meshDirty = true;
   }
 
@@ -3671,6 +5073,13 @@ export class CitySimulation {
     this.taxRate = 9;
     this.budgets = { power: 80, water: 80, service: 90 };
     this.activeLoans = [];
+    this.undoStack = [];
+    this._lastSculptUndoAt = 0;
+    this.activeEvent = null;
+    this._eventMonthAccum = 0;
+    this.tempDemandBoost = { R: 0, C: 0, I: 0, monthsLeft: 0 };
+    this.tempHappinessBoost = 0;
+    this.tempHappinessMonths = 0;
     this.mayorLevel = 1;
     this.mayorXP = 0;
     this.gridlockTimeouts = 0;
@@ -3688,7 +5097,7 @@ export class CitySimulation {
       text: '听说新市长上任了！期待我们的山河新城早日通上地铁和高铁🚄',
       mood: 'info'
     };
-    this.policies = { freeTransit: false, greenCity: false, techBoost: false };
+    this.policies = createDefaultPolicies();
 
     const world = generateWorld(seed);
     this.corners = world.corners;
@@ -3698,6 +5107,8 @@ export class CitySimulation {
     if (this.waterPhysics) this.waterPhysics.refreshCellElevations();
     this.recomputeNetworksAndFields();
     this.stepEconomy();
+    this.history = [];
+    this.recordHistorySnapshot();
     this.meshDirty = true;
   }
 
@@ -3712,6 +5123,13 @@ export class CitySimulation {
     this.taxRate = 9;
     this.budgets = { power: 110, water: 110, service: 110 };
     this.activeLoans = [];
+    this.undoStack = [];
+    this._lastSculptUndoAt = 0;
+    this.activeEvent = null;
+    this._eventMonthAccum = 0;
+    this.tempDemandBoost = { R: 0, C: 0, I: 0, monthsLeft: 0 };
+    this.tempHappinessBoost = 0;
+    this.tempHappinessMonths = 0;
     this.mayorLevel = 10;
     this.mayorXP = 15000;
     this.gridlockTimeouts = 0;
@@ -3723,7 +5141,13 @@ export class CitySimulation {
     this.stadiumTimer = 0;
     this.matchDayBoostTimer = 0;
     this.chirpTimer = 0;
-    this.policies = { freeTransit: true, greenCity: true, techBoost: true };
+    this.policies = Object.assign(createDefaultPolicies(), {
+      freeTransit: true,
+      greenEnergy: true,
+      freeHigherEd: true,
+      greenCity: true,
+      techBoost: true
+    });
 
     const world = generateWorld(this.seed);
     this.corners = world.corners;
@@ -4036,17 +5460,26 @@ export class CitySimulation {
       }
     }
 
+    // Place 6 EV Bus Stops along showcase avenues so live EV buses shuttle between stops immediately!
+    for (const bs of [
+      { x: 15, z: 38 }, { x: 22, z: 38 }, { x: 32, z: 38 },
+      { x: 15, z: 44 }, { x: 29, z: 44 }, { x: 22, z: 32 }
+    ]) {
+      this.applyTool('bus_stop', [bs], true);
+    }
+
     this.milestoneIdx = MILESTONES.length - 1;
     this.recomputeNetworksAndFields();
     this._suppressPromotions = false;
     this.stepEconomy();
+    this.seedBaselineHistory(6);
     this.stepChirper();
     this.meshDirty = true;
   }
 
   toJSON() {
     return {
-      v: 3,
+      v: 4,
       seed: this.seed,
       cityName: this.cityName,
       difficulty: this.difficulty,
@@ -4056,6 +5489,11 @@ export class CitySimulation {
       budgets: this.budgets,
       activeLoans: this.activeLoans,
       policies: this.policies,
+      educatedRate: this.educatedRate,
+      tempDemandBoost: this.tempDemandBoost,
+      tempHappinessBoost: this.tempHappinessBoost,
+      tempHappinessMonths: this.tempHappinessMonths,
+      history: Array.isArray(this.history) ? this.history.slice(-24) : [],
       year: this.year,
       month: this.month,
       day: this.day,
@@ -4072,6 +5510,9 @@ export class CitySimulation {
       tiles: this.grid.map((t) => ({
         rg: t.roadGround || undefined,
         rb: t.roadBridge ? 1 : undefined,
+        rd: (typeof t.roadDir === 'number' && t.roadDir >= 0) ? t.roadDir : undefined,
+        bt: t.banTrucks ? 1 : undefined,
+        bs: t.busStop ? 1 : undefined,
         jm: t.junctionMode || undefined,
         rbp: t.roundaboutPaid ? 1 : undefined,
         re: t.roadElevated || undefined,
@@ -4102,10 +5543,14 @@ export class CitySimulation {
   }
 
   fromJSON(data) {
-    if (!data || data.v !== 3 || !Array.isArray(data.tiles) || data.tiles.length !== GRID_SIZE * GRID_SIZE) {
+    if (!data || (data.v !== 3 && data.v !== 4) || !Array.isArray(data.tiles) || data.tiles.length !== GRID_SIZE * GRID_SIZE) {
       return false;
     }
     this._suppressPromotions = true;
+    this.undoStack = [];
+    this._lastSculptUndoAt = 0;
+    this.activeEvent = null;
+    this._eventMonthAccum = 0;
     this.seed = data.seed || 2026;
     this.cityName = data.cityName || '山河天际市';
     this.difficulty = data.difficulty || 'hardcore';
@@ -4114,7 +5559,14 @@ export class CitySimulation {
     this.taxRate = data.taxRate || 9;
     this.budgets = Object.assign({ power: 100, water: 100, service: 100 }, data.budgets || {});
     this.activeLoans = Array.isArray(data.activeLoans) ? data.activeLoans : [];
-    this.policies = Object.assign({ freeTransit: false, greenCity: false, techBoost: false }, data.policies || {});
+    this.policies = Object.assign(createDefaultPolicies(), data.policies || {});
+    this.educatedRate = typeof data.educatedRate === 'number' ? data.educatedRate : 0;
+    this.tempDemandBoost = data.tempDemandBoost
+      ? Object.assign({ R: 0, C: 0, I: 0, monthsLeft: 0 }, data.tempDemandBoost)
+      : { R: 0, C: 0, I: 0, monthsLeft: 0 };
+    this.tempHappinessBoost = typeof data.tempHappinessBoost === 'number' ? data.tempHappinessBoost : 0;
+    this.tempHappinessMonths = typeof data.tempHappinessMonths === 'number' ? data.tempHappinessMonths : 0;
+    this.history = Array.isArray(data.history) ? data.history.slice(-24) : [];
     this.year = data.year || 2026;
     this.month = data.month || 3;
     this.day = data.day || 1;
@@ -4149,6 +5601,9 @@ export class CitySimulation {
       const t = this.grid[i];
       t.roadGround = s.rg || 0;
       t.roadBridge = s.rb !== undefined ? Boolean(s.rb) : (Boolean(s.rg === 1 || s.rg === 2) && this.waterDepth[i] > 0.08);
+      t.roadDir = typeof s.rd === 'number' ? s.rd : -1;
+      t.banTrucks = Boolean(s.bt);
+      t.busStop = Boolean(s.bs);
       t.junctionMode = s.jm || null;
       t.roundaboutPaid = Boolean(s.rbp || s.jm === 'roundabout');
       t.roadElevated = s.re || 0;
@@ -4191,7 +5646,10 @@ export class CitySimulation {
     if (typeof data.guideStep !== 'number') {
       this.syncCompletedQuestsSilent();
     }
-    this.stepEconomy();
+    this.stepEconomy(false);
+    if (this.history.length === 0) {
+      this.seedBaselineHistory(6);
+    }
     this.meshDirty = true;
     return true;
   }

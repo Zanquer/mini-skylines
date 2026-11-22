@@ -14,22 +14,22 @@ for (const dir of [WWW, TEX_OUT, MODEL_OUT, ICON_OUT]) {
   fs.mkdirSync(dir, { recursive: true });
 }
 
-// 14 Flagship PBR material definitions (profile controls Normal strength & Roughness physics)
+// 14 Flagship PBR material definitions (Hero 7 building facades baked at 1024x1024 Albedo + enhanced architectural Normal/Roughness!)
 const MATERIALS = [
-  { key: 'facade_office_glass',     src: 'facades/facade_office_glass.jpg',     profile: 'glass_curtain', normalStrength: 2.3, cropInset: 0.0 },
-  { key: 'facade_office_stone',     src: 'facades/facade_office_stone.jpg',     profile: 'facade_mix',    normalStrength: 2.4, cropInset: 0.0 },
-  { key: 'facade_res_beige',        src: 'facades/facade_res_beige.jpg',        profile: 'facade_mix',    normalStrength: 2.2, cropInset: 0.0 },
-  { key: 'facade_res_grey',         src: 'facades/facade_res_grey.jpg',         profile: 'facade_mix',    normalStrength: 2.2, cropInset: 0.0 },
-  { key: 'facade_retail_podium',    src: 'facades/facade_retail_podium.jpg',    profile: 'facade_mix',    normalStrength: 2.3, cropInset: 0.0 },
-  { key: 'facade_villa_plaster',    src: 'facades/facade_villa_plaster.jpg',    profile: 'plaster_mix',   normalStrength: 2.0, cropInset: 0.0 },
-  { key: 'facade_industrial_panel', src: 'facades/facade_industrial_panel.jpg', profile: 'metal_panel',   normalStrength: 2.6, cropInset: 0.0 },
-  { key: 'roof_concrete',           src: 'facades/roof_concrete.jpg',           profile: 'stone_matte',   normalStrength: 2.2, cropInset: 0.0 },
-  { key: 'roof_solar_green',        src: 'facades/roof_solar_green.jpg',        profile: 'solar_roof',    normalStrength: 2.2, cropInset: 0.0 },
-  { key: 'paving_plaza',            src: 'facades/paving_plaza.jpg',            profile: 'stone_matte',   normalStrength: 2.3, cropInset: 0.0 },
-  { key: 'road_2lane',              src: 'textures/road_2lane.jpg',             profile: 'road_asphalt',  normalStrength: 1.8, cropInset: 0.0 },
-  { key: 'road_4lane',              src: 'textures/road_4lane.jpg',             profile: 'road_asphalt',  normalStrength: 1.8, cropInset: 0.0 },
-  { key: 'road_hub',                src: 'textures/road_hub.jpg',               profile: 'road_asphalt',  normalStrength: 1.8, cropInset: 0.095 },
-  { key: 'dam_concrete',            src: 'textures/dam_concrete.jpg',           profile: 'dam_concrete',  normalStrength: 2.8, cropInset: 0.0 }
+  { key: 'facade_office_glass',     src: 'facades/facade_office_glass.jpg',     profile: 'glass_curtain', normalStrength: 3.1, cropInset: 0.0, albedoSize: 1024 },
+  { key: 'facade_office_stone',     src: 'facades/facade_office_stone.jpg',     profile: 'facade_mix',    normalStrength: 3.2, cropInset: 0.0, albedoSize: 1024 },
+  { key: 'facade_res_beige',        src: 'facades/facade_res_beige.jpg',        profile: 'facade_mix',    normalStrength: 2.9, cropInset: 0.0, albedoSize: 1024 },
+  { key: 'facade_res_grey',         src: 'facades/facade_res_grey.jpg',         profile: 'facade_mix',    normalStrength: 2.9, cropInset: 0.0, albedoSize: 1024 },
+  { key: 'facade_retail_podium',    src: 'facades/facade_retail_podium.jpg',    profile: 'facade_mix',    normalStrength: 3.0, cropInset: 0.0, albedoSize: 1024 },
+  { key: 'facade_villa_plaster',    src: 'facades/facade_villa_plaster.jpg',    profile: 'plaster_mix',   normalStrength: 2.6, cropInset: 0.0, albedoSize: 1024 },
+  { key: 'facade_industrial_panel', src: 'facades/facade_industrial_panel.jpg', profile: 'metal_panel',   normalStrength: 3.3, cropInset: 0.0, albedoSize: 1024 },
+  { key: 'roof_concrete',           src: 'facades/roof_concrete.jpg',           profile: 'stone_matte',   normalStrength: 2.6, cropInset: 0.0, albedoSize: 768 },
+  { key: 'roof_solar_green',        src: 'facades/roof_solar_green.jpg',        profile: 'solar_roof',    normalStrength: 2.6, cropInset: 0.0, albedoSize: 768 },
+  { key: 'paving_plaza',            src: 'facades/paving_plaza.jpg',            profile: 'stone_matte',   normalStrength: 2.6, cropInset: 0.0, albedoSize: 768 },
+  { key: 'road_2lane',              src: 'textures/road_2lane.jpg',             profile: 'road_asphalt',  normalStrength: 2.0, cropInset: 0.0, albedoSize: 768 },
+  { key: 'road_4lane',              src: 'textures/road_4lane.jpg',             profile: 'road_asphalt',  normalStrength: 2.0, cropInset: 0.0, albedoSize: 768 },
+  { key: 'road_hub',                src: 'textures/road_hub.jpg',               profile: 'road_asphalt',  normalStrength: 2.0, cropInset: 0.095, albedoSize: 768 },
+  { key: 'dam_concrete',            src: 'textures/dam_concrete.jpg',           profile: 'dam_concrete',  normalStrength: 3.1, cropInset: 0.0, albedoSize: 768 }
 ];
 
 const jobSpec = {
@@ -45,7 +45,8 @@ const jobSpec = {
     outRough: path.join(TEX_OUT, `${m.key}_rough.jpg`),
     profile: m.profile,
     normalStrength: m.normalStrength,
-    cropInset: m.cropInset
+    cropInset: m.cropInset,
+    albedoSize: m.albedoSize || 768
   }))
 };
 
@@ -127,10 +128,10 @@ public static class PbrBaker
     {
         using (var src = new Bitmap(srcPath))
         {
-            // 1. High-Res Albedo (768x768)
+            // 1. High-Res Albedo (1024x1024 on 7 hero facades, 768x768 on secondary/roads/dam)
             using (var alb = ResizeCrop(src, albedoSize, cropInset))
             {
-                SaveJpeg(alb, outAlbedo, 86L);
+                SaveJpeg(alb, outAlbedo, albedoSize >= 1024 ? 88L : 86L);
             }
 
             // 2. PBR Working Bitmap (512x512) for fast seamless Sobel Normal + Physical Roughness
@@ -170,22 +171,22 @@ public static class PbrBaker
                         {
                             // Dark or cool-blue glass panes -> ultra-glossy mirror IBL; bright silver mullions -> satin metal
                             bool isGlass = (lum < 0.56) || (blueDom > 0.045);
-                            ht = isGlass ? lum * 0.45 : 0.65 + lum * 0.35;
-                            rough = isGlass ? (0.11 + lum * 0.10) : (0.34 + (1.0 - lum) * 0.14);
+                            ht = isGlass ? lum * 0.35 : 0.72 + lum * 0.28;
+                            rough = isGlass ? (0.08 + lum * 0.08) : (0.34 + (1.0 - lum) * 0.14);
                         }
                         else if (profile == "facade_mix" || profile == "plaster_mix")
                         {
                             // Windows are darker or cooler blue-grey; walls/frames are brighter/warmer
-                            bool isWindow = (lum < 0.36) || (blueDom > 0.055 && lum < 0.60);
+                            bool isWindow = (lum < 0.38) || (blueDom > 0.050 && lum < 0.62);
                             if (isWindow)
                             {
-                                ht = lum * 0.35;
-                                rough = 0.16 + lum * 0.18;
+                                ht = lum * 0.24;
+                                rough = 0.10 + lum * 0.14;
                             }
                             else
                             {
-                                ht = 0.50 + lum * 0.50;
-                                rough = (profile == "plaster_mix" ? 0.80 : 0.72) + (1.0 - lum) * 0.14;
+                                ht = 0.58 + lum * 0.42;
+                                rough = (profile == "plaster_mix" ? 0.84 : 0.76) + (1.0 - lum) * 0.14;
                             }
                         }
                         else if (profile == "metal_panel")
@@ -294,10 +295,11 @@ Add-Type -TypeDefinition $cs -ReferencedAssemblies System.Drawing
 
 $spec = Get-Content -Raw -Path '${jobJsonPath.replace(/\\/g, '\\\\')}' | ConvertFrom-Json
 foreach ($it in $spec.items) {
+    $albSz = if ($it.albedoSize) { [int]$it.albedoSize } else { [int]$spec.albedoSize }
     [PbrBaker]::BakeMaterial($it.src, $it.outAlbedo, $it.outNorm, $it.outRough,
-                             [int]$spec.albedoSize, [int]$spec.pbrSize,
+                             $albSz, [int]$spec.pbrSize,
                              [string]$it.profile, [double]$it.normalStrength, [double]$it.cropInset)
-    Write-Output ("Baked PBR: " + $it.key)
+    Write-Output ("Baked PBR (" + $albSz + "px): " + $it.key)
 }
 
 if (Test-Path $spec.iconSrc) {
@@ -359,7 +361,7 @@ const versionHash = hashObj.digest('hex').slice(0, 10);
 const totalBytes = assetFiles.reduce((s, f) => s + f.bytes, 0);
 
 const manifest = {
-  version: `v7.0-${versionHash}`,
+  version: `v7.5-${versionHash}`,
   generatedAt: new Date().toISOString(),
   totalBytes,
   fileCount: assetFiles.length,

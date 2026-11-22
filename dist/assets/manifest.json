@@ -1,7 +1,7 @@
 {
-  "version": "v7.0-5d66b1890b-90e77013",
-  "generatedAt": "2026-11-22T14:21:50.643Z",
-  "totalBytes": 4912361,
+  "version": "v7.5-dc58e4cc25-47100c9b",
+  "generatedAt": "2026-11-22T16:47:14.723Z",
+  "totalBytes": 5498531,
   "fileCount": 58,
   "textures": [
     {
@@ -145,7 +145,7 @@
     },
     {
       "path": "assets/textures/dam_concrete_norm.jpg",
-      "bytes": 98736
+      "bytes": 103021
     },
     {
       "path": "assets/textures/dam_concrete_rough.jpg",
@@ -153,11 +153,11 @@
     },
     {
       "path": "assets/textures/facade_industrial_panel.jpg",
-      "bytes": 114648
+      "bytes": 204625
     },
     {
       "path": "assets/textures/facade_industrial_panel_norm.jpg",
-      "bytes": 81085
+      "bytes": 84063
     },
     {
       "path": "assets/textures/facade_industrial_panel_rough.jpg",
@@ -165,75 +165,75 @@
     },
     {
       "path": "assets/textures/facade_office_glass.jpg",
-      "bytes": 96475
+      "bytes": 163193
     },
     {
       "path": "assets/textures/facade_office_glass_norm.jpg",
-      "bytes": 65958
+      "bytes": 67304
     },
     {
       "path": "assets/textures/facade_office_glass_rough.jpg",
-      "bytes": 25983
+      "bytes": 26861
     },
     {
       "path": "assets/textures/facade_office_stone.jpg",
-      "bytes": 115174
+      "bytes": 214986
     },
     {
       "path": "assets/textures/facade_office_stone_norm.jpg",
-      "bytes": 75489
+      "bytes": 72461
     },
     {
       "path": "assets/textures/facade_office_stone_rough.jpg",
-      "bytes": 37767
+      "bytes": 33893
     },
     {
       "path": "assets/textures/facade_res_beige.jpg",
-      "bytes": 94673
+      "bytes": 170991
     },
     {
       "path": "assets/textures/facade_res_beige_norm.jpg",
-      "bytes": 72689
+      "bytes": 75101
     },
     {
       "path": "assets/textures/facade_res_beige_rough.jpg",
-      "bytes": 40368
+      "bytes": 43881
     },
     {
       "path": "assets/textures/facade_res_grey.jpg",
-      "bytes": 110677
+      "bytes": 196846
     },
     {
       "path": "assets/textures/facade_res_grey_norm.jpg",
-      "bytes": 99049
+      "bytes": 93146
     },
     {
       "path": "assets/textures/facade_res_grey_rough.jpg",
-      "bytes": 71081
+      "bytes": 68350
     },
     {
       "path": "assets/textures/facade_retail_podium.jpg",
-      "bytes": 75838
+      "bytes": 139327
     },
     {
       "path": "assets/textures/facade_retail_podium_norm.jpg",
-      "bytes": 63055
+      "bytes": 63522
     },
     {
       "path": "assets/textures/facade_retail_podium_rough.jpg",
-      "bytes": 43355
+      "bytes": 44264
     },
     {
       "path": "assets/textures/facade_villa_plaster.jpg",
-      "bytes": 64270
+      "bytes": 137136
     },
     {
       "path": "assets/textures/facade_villa_plaster_norm.jpg",
-      "bytes": 38717
+      "bytes": 39484
     },
     {
       "path": "assets/textures/facade_villa_plaster_rough.jpg",
-      "bytes": 19621
+      "bytes": 19346
     },
     {
       "path": "assets/textures/paving_plaza.jpg",
@@ -241,7 +241,7 @@
     },
     {
       "path": "assets/textures/paving_plaza_norm.jpg",
-      "bytes": 109064
+      "bytes": 115123
     },
     {
       "path": "assets/textures/paving_plaza_rough.jpg",
@@ -253,7 +253,7 @@
     },
     {
       "path": "assets/textures/road_2lane_norm.jpg",
-      "bytes": 110151
+      "bytes": 114227
     },
     {
       "path": "assets/textures/road_2lane_rough.jpg",
@@ -265,7 +265,7 @@
     },
     {
       "path": "assets/textures/road_4lane_norm.jpg",
-      "bytes": 86232
+      "bytes": 90428
     },
     {
       "path": "assets/textures/road_4lane_rough.jpg",
@@ -277,7 +277,7 @@
     },
     {
       "path": "assets/textures/road_hub_norm.jpg",
-      "bytes": 82189
+      "bytes": 85577
     },
     {
       "path": "assets/textures/road_hub_rough.jpg",
@@ -289,7 +289,7 @@
     },
     {
       "path": "assets/textures/roof_concrete_norm.jpg",
-      "bytes": 61458
+      "bytes": 67443
     },
     {
       "path": "assets/textures/roof_concrete_rough.jpg",
@@ -301,7 +301,7 @@
     },
     {
       "path": "assets/textures/roof_solar_green_norm.jpg",
-      "bytes": 100938
+      "bytes": 106311
     },
     {
       "path": "assets/textures/roof_solar_green_rough.jpg",

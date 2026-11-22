@@ -336,25 +336,233 @@ export function buildHighResTerrainMesh(THREE, sim, overlayMode, detailTex, shar
   // Detect active data overlay mode & scale normalization
   const activeOverlay = (overlayMode && overlayMode !== 'none' && overlayMode !== 'off') ? String(overlayMode) : null;
   let pollScale = 1;
+  let waterPollScale = 1;
   let trashScale = 1;
   let servScale = 1;
+  let eduScale = 1;
+  let hasEduField = false;
   let fireScale = 1;
   let congScale = 1;
+  let noiseScale = 1;
+
+  let pollField = null;
+  let eduField = null;
+  let noiseField = null;
+  let quietField = null;
+
+  const getBuildingTypeStr = (b) => {
+    if (!b) return '';
+    if (typeof b === 'string') return b;
+    if (typeof b === 'object') return String(b.type || b.kind || b.id || b.name || '');
+    return '';
+  };
+
+  const sampleTileField = (field, u, v) => {
+    const tx = Math.min(GRID_SIZE - 1, Math.max(0, Math.floor(u === GRID_SIZE ? GRID_SIZE - 0.001 : u)));
+    const tz = Math.min(GRID_SIZE - 1, Math.max(0, Math.floor(v === GRID_SIZE ? GRID_SIZE - 0.001 : v)));
+    const exact = field[idx(tx, tz)];
+
+    const fx = Math.min(GRID_SIZE - 1.0001, Math.max(0, u - 0.5));
+    const fz = Math.min(GRID_SIZE - 1.0001, Math.max(0, v - 0.5));
+    const x0 = Math.floor(fx);
+    const z0 = Math.floor(fz);
+    const x1 = Math.min(GRID_SIZE - 1, x0 + 1);
+    const z1 = Math.min(GRID_SIZE - 1, z0 + 1);
+    const sx = fx - x0;
+    const sz = fz - z0;
+    const smooth =
+      (field[idx(x0, z0)] * (1 - sx) + field[idx(x1, z0)] * sx) * (1 - sz) +
+      (field[idx(x0, z1)] * (1 - sx) + field[idx(x1, z1)] * sx) * sz;
+
+    return exact * 0.45 + smooth * 0.55;
+  };
+
   if (activeOverlay) {
-    let maxP = 0, maxTr = 0, maxS = 0, maxF = 0, maxCg = 0;
+    let maxP = 0, maxWP = 0, maxTr = 0, maxS = 0, maxEdu = 0, maxF = 0, maxCg = 0, maxN = 0;
     for (let i = 0; i < grid.length; i++) {
       const t = grid[i];
-      if (t.pollution > maxP) maxP = t.pollution;
-      if ((t.trash || 0) > maxTr) maxTr = t.trash || 0;
-      if (t.serviceScore > maxS) maxS = t.serviceScore;
-      if (t.fireSafety > maxF) maxF = t.fireSafety;
-      if (t.congestion > maxCg) maxCg = t.congestion;
+      const tp = Number.isFinite(t.pollution) ? t.pollution : 0;
+      const wp = (waterPoll && Number.isFinite(waterPoll[i])) ? waterPoll[i] : 0;
+      const tr = Number.isFinite(t.trash) ? t.trash : 0;
+      const sv = Number.isFinite(t.serviceScore) ? t.serviceScore : 0;
+      const fv = Number.isFinite(t.fireSafety) ? t.fireSafety : 0;
+      const cg = Number.isFinite(t.congestion) ? t.congestion : 0;
+      const nv = Number.isFinite(t.noise) ? t.noise : 0;
+      if (tp > maxP) maxP = tp;
+      if (wp > maxWP) maxWP = wp;
+      if (tr > maxTr) maxTr = tr;
+      if (sv > maxS) maxS = sv;
+      if (fv > maxF) maxF = fv;
+      if (cg > maxCg) maxCg = cg;
+      if (nv > maxN) maxN = nv;
+      if (typeof t.education === 'number' && Number.isFinite(t.education)) {
+        if (t.education > 0) hasEduField = true;
+        if (t.education > maxEdu) maxEdu = t.education;
+      }
     }
     pollScale = maxP > 1.05 ? 0.01 : 1.0;
+    waterPollScale = maxWP > 1.05 ? 0.01 : 1.0;
     trashScale = maxTr > 1.05 ? 0.01 : 1.0;
     servScale = maxS > 1.05 ? 0.01 : 1.0;
+    eduScale = maxEdu > 1.05 ? 0.01 : 1.0;
     fireScale = maxF > 1.05 ? 0.01 : 1.0;
     congScale = maxCg > 1.05 ? 0.01 : 1.0;
+    noiseScale = maxN > 1.05 ? 0.01 : 1.0;
+
+    if (activeOverlay === 'pollution') {
+      pollField = new Float32Array(GRID_SIZE * GRID_SIZE);
+      for (let i = 0; i < grid.length; i++) {
+        const t = grid[i];
+        const gp = clamp01((Number.isFinite(t.pollution) ? t.pollution : 0) * pollScale);
+        const wp = clamp01(((waterPoll && Number.isFinite(waterPoll[i])) ? waterPoll[i] : 0) * waterPollScale);
+        const combined = clamp01(Math.max(gp, wp) + 0.35 * Math.min(gp, wp));
+        pollField[i] = combined > 0 ? Math.pow(combined, 0.85) : 0;
+      }
+    } else if (activeOverlay === 'education' || activeOverlay === 'edu') {
+      eduField = new Float32Array(GRID_SIZE * GRID_SIZE);
+      for (let z = 0; z < GRID_SIZE; z++) {
+        for (let x = 0; x < GRID_SIZE; x++) {
+          const i = idx(x, z);
+          const t = grid[i];
+          const rawServ = clamp01((Number.isFinite(t.serviceScore) ? t.serviceScore : 0) * servScale);
+          const rawEdu = (typeof t.education === 'number' && Number.isFinite(t.education))
+            ? clamp01(t.education * eduScale)
+            : -1;
+          let ev = (rawEdu >= 0 && hasEduField)
+            ? clamp01(Math.max(rawEdu, rawEdu * 0.72 + rawServ * 0.28))
+            : rawServ;
+          const bType = getBuildingTypeStr(t.building);
+          if (bType) {
+            if (/school|univ|college|lib|edu|campus/i.test(bType)) {
+              ev = Math.max(ev, 0.96);
+            } else if (/civic|museum|landmark|city_?hall|hospital|police|fire|park|plaza|stadium|station/i.test(bType)) {
+              ev = clamp01(Math.max(ev, rawServ + 0.18));
+            }
+          }
+          eduField[i] = ev;
+        }
+      }
+      // Radiate warm civic education coverage halos from schools / universities / libraries
+      for (let z = 0; z < GRID_SIZE; z++) {
+        for (let x = 0; x < GRID_SIZE; x++) {
+          const bType = getBuildingTypeStr(grid[idx(x, z)].building);
+          if (!bType || !/school|univ|college|lib|edu|campus/i.test(bType)) continue;
+          const rad = /univ|college|campus/i.test(bType) ? 6 : 4;
+          for (let dz = -rad; dz <= rad; dz++) {
+            const nz = z + dz;
+            if (nz < 0 || nz >= GRID_SIZE) continue;
+            for (let dx = -rad; dx <= rad; dx++) {
+              const nx = x + dx;
+              if (nx < 0 || nx >= GRID_SIZE) continue;
+              const dist = Math.hypot(dx, dz);
+              if (dist > rad) continue;
+              const halo = (1.0 - dist / (rad + 0.5)) * 0.88;
+              const ni = idx(nx, nz);
+              if (halo > eduField[ni]) eduField[ni] = halo;
+            }
+          }
+        }
+      }
+    } else if (activeOverlay === 'noise' || activeOverlay === 'acoustic') {
+      noiseField = new Float32Array(GRID_SIZE * GRID_SIZE);
+      quietField = new Float32Array(GRID_SIZE * GRID_SIZE);
+      const fallbackNoise = new Float32Array(GRID_SIZE * GRID_SIZE);
+
+      // Pass A: Direct & radiated acoustic fallback sources (traffic, highways, HSR, industry, airport) + quiet shields
+      for (let z = 0; z < GRID_SIZE; z++) {
+        for (let x = 0; x < GRID_SIZE; x++) {
+          const i = idx(x, z);
+          const t = grid[i];
+          const cg = clamp01((Number.isFinite(t.congestion) ? t.congestion : 0) * congScale);
+          const bType = getBuildingTypeStr(t.building);
+          let src = 0;
+
+          if (t.roadElevated > 0) {
+            const ecg = clamp01((Number.isFinite(t.elevCongestion) ? t.elevCongestion : cg) * congScale);
+            src = Math.max(src, 0.42 + ecg * 0.45);
+          }
+          if (t.roadGround >= 1 && t.roadGround !== 4) {
+            const rBase = t.roadGround >= 2 ? (0.24 + cg * 0.48) : (0.12 + cg * 0.36);
+            src = Math.max(src, t.banTrucks ? rBase * 0.40 : rBase);
+          }
+          if (t.rail > 0) {
+            src = Math.max(src, 0.36);
+          }
+          if (t.zone === 'I') {
+            src = Math.max(src, 0.52);
+          } else if (t.zone === 'CH') {
+            src = Math.max(src, 0.28);
+          }
+          if (bType) {
+            if (/airport|runway/i.test(bType)) src = Math.max(src, 0.88);
+            else if (/power_plant|waste_plant|coal|oil|incinerator|factory|industry|seaport|port|freight/i.test(bType)) src = Math.max(src, 0.64);
+            else if (/station|stadium|amusement|mall|power_wind/i.test(bType)) src = Math.max(src, 0.42);
+          }
+
+          if (src > fallbackNoise[i]) fallbackNoise[i] = src;
+
+          // Radiate industrial / airport / heavy-highway acoustic bleed into surrounding tiles
+          const isHeavyNoiseSource =
+            t.zone === 'I' ||
+            (bType && /airport|runway|power_plant|waste_plant|coal|oil|incinerator|factory|industry|seaport|port/i.test(bType));
+          if (isHeavyNoiseSource) {
+            const rad = (bType && /airport|runway/i.test(bType)) ? 3 : 2;
+            for (let dz = -rad; dz <= rad; dz++) {
+              const nz = z + dz;
+              if (nz < 0 || nz >= GRID_SIZE) continue;
+              for (let dx = -rad; dx <= rad; dx++) {
+                if (dx === 0 && dz === 0) continue;
+                const nx = x + dx;
+                if (nx < 0 || nx >= GRID_SIZE) continue;
+                const dist = Math.hypot(dx, dz);
+                if (dist > rad + 0.2) continue;
+                const bleed = src * Math.max(0, 1.0 - dist / (rad + 0.9)) * 0.62;
+                const ni = idx(nx, nz);
+                if (bleed > fallbackNoise[ni]) fallbackNoise[ni] = bleed;
+              }
+            }
+          }
+
+          // Mark quiet green zones where banTrucks, quiet parks, or dense forest reduce noise
+          const isPark = Boolean(bType && !/amusement/i.test(bType) && /park|plaza|garden|botanic|forest/i.test(bType));
+          if (t.banTrucks || isPark) {
+            quietField[i] = 1.0;
+            const qBuf = t.banTrucks ? 0.68 : 0.58;
+            for (let dz = -1; dz <= 1; dz++) {
+              const nz = z + dz;
+              if (nz < 0 || nz >= GRID_SIZE) continue;
+              for (let dx = -1; dx <= 1; dx++) {
+                if (dx === 0 && dz === 0) continue;
+                const nx = x + dx;
+                if (nx < 0 || nx >= GRID_SIZE) continue;
+                const ni = idx(nx, nz);
+                const nt = grid[ni];
+                if (nt.zone === 'I') continue;
+                const atten = (dx === 0 || dz === 0) ? qBuf : qBuf * 0.55;
+                if (atten > quietField[ni]) quietField[ni] = atten;
+              }
+            }
+          } else if ((t.trees || 0) >= 3 && t.roadGround === 0 && t.roadElevated === 0 && t.zone !== 'I') {
+            if (quietField[i] < 0.42) quietField[i] = 0.42;
+          }
+        }
+      }
+
+      // Pass B: Combine live t.noise (when > 0) with fallback estimate & acoustic dampening
+      for (let i = 0; i < grid.length; i++) {
+        const t = grid[i];
+        const bType = getBuildingTypeStr(t.building);
+        const isPark = Boolean(bType && !/amusement/i.test(bType) && /park|plaza|garden|botanic|forest/i.test(bType));
+        const liveNoise = (Number.isFinite(t.noise) && t.noise > 0) ? clamp01(t.noise * noiseScale) : -1;
+        let nv = liveNoise >= 0 ? liveNoise : clamp01(fallbackNoise[i]);
+        if (liveNoise < 0) {
+          if (t.banTrucks) nv *= 0.45;
+          if (isPark) nv *= 0.35;
+          else if ((t.trees || 0) > 0) nv *= (1.0 - Math.min(0.28, t.trees * 0.06));
+        }
+        noiseField[i] = clamp01(nv);
+      }
+    }
   }
 
   const useLinear = !!(THREE.ColorManagement && THREE.ColorManagement.enabled);
@@ -555,11 +763,57 @@ export function buildHighResTerrainMesh(THREE, sim, overlayMode, detailTex, shar
             or = 0.20; og = 0.68; ob = 0.95;
           }
         } else if (activeOverlay === 'pollution') {
-          const wp = waterPoll[idx(tx, tz)] || 0;
-          const pv = clamp01(Math.max(tile.pollution * pollScale, wp));
-          or = 0.26 + pv * 0.68;
-          og = 0.78 - pv * 0.56;
-          ob = 0.38 - pv * 0.12 + (pv > 0.6 ? (pv - 0.6) * 0.5 : 0);
+          // Clean emerald green -> toxic amber -> deep violet-red blending t.pollution + waterPoll
+          const pv = clamp01(pollField ? sampleTileField(pollField, u, v) : 0);
+          if (pv <= 0.48) {
+            const k = pv / 0.48;
+            or = 0.14 + (0.95 - 0.14) * k;
+            og = 0.72 + (0.64 - 0.72) * k;
+            ob = 0.42 + (0.12 - 0.42) * k;
+          } else {
+            const k = (pv - 0.48) / 0.52;
+            or = 0.95 + (0.58 - 0.95) * k;
+            og = 0.64 + (0.09 - 0.64) * k;
+            ob = 0.12 + (0.38 - 0.12) * k;
+          }
+          oWeight = 0.82;
+        } else if (activeOverlay === 'education' || activeOverlay === 'edu') {
+          // Deep navy -> vibrant cyan -> royal gold driven by t.education / t.serviceScore & civic coverage
+          const ev = clamp01(eduField ? sampleTileField(eduField, u, v) : 0);
+          if (ev <= 0.50) {
+            const k = ev / 0.50;
+            or = 0.08 + (0.09 - 0.08) * k;
+            og = 0.14 + (0.76 - 0.14) * k;
+            ob = 0.34 + (0.90 - 0.34) * k;
+          } else {
+            const k = (ev - 0.50) / 0.50;
+            or = 0.09 + (0.99 - 0.09) * k;
+            og = 0.76 + (0.81 - 0.76) * k;
+            ob = 0.90 + (0.18 - 0.90) * k;
+          }
+          oWeight = 0.82;
+        } else if (activeOverlay === 'noise' || activeOverlay === 'acoustic') {
+          // Calm dark teal -> warm amber -> bright magenta-red, with quiet green zones where banTrucks / parks dampen noise
+          const nv = clamp01(noiseField ? sampleTileField(noiseField, u, v) : 0);
+          const qv = clamp01(quietField ? sampleTileField(quietField, u, v) : 0);
+          if (nv <= 0.50) {
+            const k = nv / 0.50;
+            or = 0.07 + (0.96 - 0.07) * k;
+            og = 0.32 + (0.64 - 0.32) * k;
+            ob = 0.36 + (0.14 - 0.36) * k;
+          } else {
+            const k = (nv - 0.50) / 0.50;
+            or = 0.96 + (0.96 - 0.96) * k;
+            og = 0.64 + (0.12 - 0.64) * k;
+            ob = 0.14 + (0.42 - 0.14) * k;
+          }
+          const qMix = clamp01(qv * (1.0 - smoothstep(0.18, 0.58, nv))) * 0.88;
+          if (qMix > 0.001) {
+            or = or * (1 - qMix) + 0.16 * qMix;
+            og = og * (1 - qMix) + 0.74 * qMix;
+            ob = ob * (1 - qMix) + 0.42 * qMix;
+          }
+          oWeight = 0.82;
         } else if (activeOverlay === 'landValue' || activeOverlay === 'land_value' || activeOverlay === 'value') {
           const lv = clamp01(tile.landValue * 0.01);
           or = 0.45 - lv * 0.28;
@@ -1146,6 +1400,15 @@ function getOrCreateInfraAuxMaterials(THREE, mats) {
       color: 0xffffff,
       roughness: 0.72,
       metalness: 0.04
+    }),
+    roadMarking: new THREE.MeshStandardMaterial({
+      vertexColors: true,
+      color: 0xffffff,
+      roughness: 0.52,
+      metalness: 0.02,
+      polygonOffset: true,
+      polygonOffsetFactor: -2,
+      polygonOffsetUnits: -4
     })
   };
   if (mats && typeof mats === 'object') {
@@ -1186,6 +1449,31 @@ function createGeoBatch(useColors = false) {
     }
     ind.push(base, base + 1, base + 2, base, base + 2, base + 3);
     vCount += 4;
+  }
+
+  // Counter-clockwise triangle (A -> B -> C) when viewed from front/top:
+  // Normal = normalize((B - A) x (C - A))
+  function addTri(
+    ax, ay, az, bx, by, bz, cx, cy, cz,
+    cr = 1, cg = 1, cb = 1
+  ) {
+    const e1x = bx - ax, e1y = by - ay, e1z = bz - az;
+    const e2x = cx - ax, e2y = cy - ay, e2z = cz - az;
+    let nx = e1y * e2z - e1z * e2y;
+    let ny = e1z * e2x - e1x * e2z;
+    let nz = e1x * e2y - e1y * e2x;
+    const len = Math.hypot(nx, ny, nz) || 1;
+    nx /= len; ny /= len; nz /= len;
+
+    const base = vCount;
+    pos.push(ax, ay, az, bx, by, bz, cx, cy, cz);
+    norm.push(nx, ny, nz, nx, ny, nz, nx, ny, nz);
+    uv.push(0.5, 1, 0, 0, 1, 0);
+    if (col) {
+      col.push(cr, cg, cb, cr, cg, cb, cr, cg, cb);
+    }
+    ind.push(base, base + 1, base + 2);
+    vCount += 3;
   }
 
   // Extruded 3D sloped beam / barrier / slab / rail from P0(p0x, p0z) to P1(p1x, p1z)
@@ -1385,7 +1673,7 @@ function createGeoBatch(useColors = false) {
     return mesh;
   }
 
-  return { addQuad, addBeam, addCylinder, addCappedCylinder, addBilinearDeck, toMesh };
+  return { addQuad, addTri, addBeam, addCylinder, addCappedCylinder, addBilinearDeck, toMesh };
 }
 
 // Cardinal directions: 0:N(0,-1), 1:S(0,+1), 2:W(-1,0), 3:E(+1,0)
@@ -1875,6 +2163,7 @@ export function buildContinuousRoadAndViaductGroup(THREE, sim, overlayMode, mats
   const bConcrete = createGeoBatch(true);
   const bTunnelDark = createGeoBatch(false);
   const bSteel = createGeoBatch(false);
+  const bMarkings = createGeoBatch(true);
 
   const cCurb = [toCol(0.73), toCol(0.74), toCol(0.76)];
   const cParapet = [toCol(0.82), toCol(0.83), toCol(0.85)];
@@ -1882,6 +2171,10 @@ export function buildContinuousRoadAndViaductGroup(THREE, sim, overlayMode, mats
   const cPier = [toCol(0.62), toCol(0.64), toCol(0.67)];
   const cPortal = [toCol(0.76), toCol(0.77), toCol(0.79)];
   const cSlab = [toCol(0.78), toCol(0.79), toCol(0.81)];
+  const cArrowWhite = [toCol(0.96), toCol(0.97), toCol(0.99)];
+  const cBanCrimson = [toCol(0.89), toCol(0.24), toCol(0.16)];
+  const cBanAmber = [toCol(0.95), toCol(0.49), toCol(0.14)];
+  const cBusGold = [toCol(0.98), toCol(0.79), toCol(0.14)];
 
   const trafficColorFor = (cong) => {
     const cv = clamp01(cong * congScale);
@@ -1906,6 +2199,34 @@ export function buildContinuousRoadAndViaductGroup(THREE, sim, overlayMode, mats
     return (h00 * (1 - tu) + h10 * tu) * (1 - tv) + (h01 * (1 - tu) + h11 * tu) * tv;
   }
 
+  // Flush corner-welded road pavement decal helpers (local frame: F=(fx,fz), R=(-fz,fx) -> guaranteed +Y normal)
+  function addRoadDecalQuad(cx, cz, fx, fz, rx, rz, s0, s1, u0, u1, yLift, cr, cg, cb) {
+    const ax = cx + fx * s1 + rx * u0, az = cz + fz * s1 + rz * u0;
+    const bx = cx + fx * s0 + rx * u0, bz = cz + fz * s0 + rz * u0;
+    const cxp = cx + fx * s0 + rx * u1, czp = cz + fz * s0 + rz * u1;
+    const dx = cx + fx * s1 + rx * u1, dz = cz + fz * s1 + rz * u1;
+    bMarkings.addQuad(
+      ax, sampleCornerGrid(roadCornerY, ax, az) + yLift, az,
+      bx, sampleCornerGrid(roadCornerY, bx, bz) + yLift, bz,
+      cxp, sampleCornerGrid(roadCornerY, cxp, czp) + yLift, czp,
+      dx, sampleCornerGrid(roadCornerY, dx, dz) + yLift, dz,
+      0, 0, 0, 1, 1, 1, 1, 0,
+      cr, cg, cb
+    );
+  }
+
+  function addRoadDecalTri(cx, cz, fx, fz, rx, rz, sa, ua, sb, ub, sc, uc, yLift, cr, cg, cb) {
+    const ax = cx + fx * sa + rx * ua, az = cz + fz * sa + rz * ua;
+    const bx = cx + fx * sb + rx * ub, bz = cz + fz * sb + rz * ub;
+    const cxp = cx + fx * sc + rx * uc, czp = cz + fz * sc + rz * uc;
+    bMarkings.addTri(
+      ax, sampleCornerGrid(roadCornerY, ax, az) + yLift, az,
+      bx, sampleCornerGrid(roadCornerY, bx, bz) + yLift, bz,
+      cxp, sampleCornerGrid(roadCornerY, cxp, czp) + yLift, czp,
+      cr, cg, cb
+    );
+  }
+
   // Edge endpoint helper for tile (x, z) and dir d in 0:N, 1:S, 2:W, 3:E
   // Ordered so moving P0 -> P1 has the tile's OUTER side on its RIGHT (+right faces outward!)
   function getTileEdgeEndpoints(x, z, d, heightGrid) {
@@ -1924,9 +2245,10 @@ export function buildContinuousRoadAndViaductGroup(THREE, sim, overlayMode, mats
     return { p0x: x1, p0z: z0, y0: y10, p1x: x1, p1z: z1, y1: y11 };              // E: N->S, right=East
   }
 
-  // Exact-height streetlamp & live traffic signal placement registries for InstancedMesh rendering
+  // Exact-height streetlamp, live traffic signal & bus shelter placement registries for InstancedMesh rendering
   const lamps = [];
   const signals = [];
+  const busStops = [];
   const pylonFootprints = [];
   const cPylon = [toCol(0.89), toCol(0.90), toCol(0.92)];
 
@@ -2588,6 +2910,140 @@ export function buildContinuousRoadAndViaductGroup(THREE, sim, overlayMode, mats
               isElev: false
             });
           }
+        }
+      }
+
+      // 1. One-Way Street Directional Pavement Chevron Arrow (t.roadDir in 0..3, flush on roadCornerY + 0.014)
+      if (t.roadGround >= 1 && t.roadGround !== 4 && !t.dam && typeof t.roadDir === 'number' && t.roadDir >= 0 && t.roadDir <= 3) {
+        const cx = x0 + 0.5;
+        const cz = z0 + 0.5;
+        const fx = DIRS[t.roadDir].dx;
+        const fz = DIRS[t.roadDir].dz;
+        const rx = -fz;
+        const rz = fx;
+        // Shaft + swept-back chevron arrowhead centered on tile
+        addRoadDecalQuad(cx, cz, fx, fz, rx, rz, -0.30, 0.09, -0.052, 0.052, 0.014, cArrowWhite[0], cArrowWhite[1], cArrowWhite[2]);
+        addRoadDecalTri(cx, cz, fx, fz, rx, rz, 0.32, 0.0, 0.00, -0.195, 0.08, 0.0, 0.014, cArrowWhite[0], cArrowWhite[1], cArrowWhite[2]);
+        addRoadDecalTri(cx, cz, fx, fz, rx, rz, 0.32, 0.0, 0.08, 0.0, 0.00, 0.195, 0.014, cArrowWhite[0], cArrowWhite[1], cArrowWhite[2]);
+      }
+
+      // 2. Heavy-Truck Ban Curb Restriction Dashes (t.banTrucks === true, flush on roadCornerY + 0.013 at ±0.34m)
+      if (t.banTrucks === true && t.roadGround >= 1 && t.roadGround !== 4 && !t.dam) {
+        const cx = x0 + 0.5;
+        const cz = z0 + 0.5;
+        if (!isJunctionOrTurn) {
+          const runEW = hasEW ? !hasNS : (t.roadDir === 2 || t.roadDir === 3);
+          const fx = runEW ? 1 : 0;
+          const fz = runEW ? 0 : 1;
+          const rx = -fz;
+          const rz = fx;
+          const dashSpans = [[-0.44, -0.22], [-0.11, 0.11], [0.22, 0.44]];
+          for (const side of [-1, 1]) {
+            const u0 = side * 0.34 - 0.022;
+            const u1 = side * 0.34 + 0.022;
+            for (let di = 0; di < dashSpans.length; di++) {
+              const cDash = (di === 1) ? cBanAmber : cBanCrimson;
+              addRoadDecalQuad(cx, cz, fx, fz, rx, rz, dashSpans[di][0], dashSpans[di][1], u0, u1, 0.013, cDash[0], cDash[1], cDash[2]);
+            }
+          }
+        } else if (connCount < 4) {
+          for (let d = 0; d < 4; d++) {
+            if (conn[d]) continue;
+            const outX = DIRS[d].dx;
+            const outZ = DIRS[d].dz;
+            const efx = -outZ;
+            const efz = outX;
+            const erx = -outX;
+            const erz = -outZ;
+            addRoadDecalQuad(cx, cz, efx, efz, erx, erz, -0.31, -0.06, -0.362, -0.318, 0.013, cBanCrimson[0], cBanCrimson[1], cBanCrimson[2]);
+            addRoadDecalQuad(cx, cz, efx, efz, erx, erz, 0.06, 0.31, -0.362, -0.318, 0.013, cBanAmber[0], cBanAmber[1], cBanAmber[2]);
+          }
+        } else {
+          // 4-way crossroads: compact crimson-amber L-curb ticks around all 4 sidewalk corners (±0.34m)
+          for (const sx of [-1, 1]) {
+            for (const sz of [-1, 1]) {
+              const xs0 = sx > 0 ? 0.32 : -0.45;
+              const xs1 = sx > 0 ? 0.45 : -0.32;
+              const zu0 = sz * 0.34 - 0.022;
+              const zu1 = sz * 0.34 + 0.022;
+              addRoadDecalQuad(cx, cz, 1, 0, 0, 1, xs0, xs1, zu0, zu1, 0.013, cBanCrimson[0], cBanCrimson[1], cBanCrimson[2]);
+
+              const zs0 = sx * 0.34 - 0.022;
+              const zs1 = sx * 0.34 + 0.022;
+              const xu0 = sz > 0 ? 0.32 : -0.45;
+              const xu1 = sz > 0 ? 0.45 : -0.32;
+              addRoadDecalQuad(cx, cz, 1, 0, 0, 1, zs0, zs1, xu0, xu1, 0.013, cBanAmber[0], cBanAmber[1], cBanAmber[2]);
+            }
+          }
+        }
+      }
+
+      // 3. Bus Stop Curb Bay Outline (0.64m x 0.16m golden-yellow at roadCornerY + 0.014) & Exact-Height Shelter Placement
+      if (t.busStop === true && t.roadGround >= 1 && t.roadGround !== 4 && !t.dam && !t.ramp) {
+        const cx = x0 + 0.5;
+        const cz = z0 + 0.5;
+        let candOrder;
+        if (typeof t.roadDir === 'number' && t.roadDir >= 0 && t.roadDir <= 3) {
+          candOrder = [RIGHT_DIR[t.roadDir], LEFT_DIR[t.roadDir], t.roadDir, DIRS[t.roadDir].opp];
+        } else if (hasEW && !hasNS) {
+          candOrder = [1, 0, 3, 2];
+        } else if (hasNS && !hasEW) {
+          candOrder = [3, 2, 1, 0];
+        } else {
+          candOrder = [1, 3, 0, 2];
+        }
+
+        let busEdgeDir = -1;
+        let fallbackDir = -1;
+        for (let k = 0; k < 4; k++) {
+          const d = candOrder[k];
+          if (conn[d]) continue;
+          if (fallbackDir < 0) fallbackDir = d;
+          const testX = cx + DIRS[d].dx * 0.45;
+          const testZ = cz + DIRS[d].dz * 0.45;
+          let blocked = false;
+          for (let li = lamps.length - 1; li >= Math.max(0, lamps.length - 4); li--) {
+            const lp = lamps[li];
+            if (!lp.isElev && Math.hypot(lp.x - testX, lp.z - testZ) < 0.25) {
+              blocked = true;
+              break;
+            }
+          }
+          if (!blocked && pylonFootprints.some((p) => !p.isElev && Math.hypot(p.x - testX, p.z - testZ) < 0.38)) {
+            blocked = true;
+          }
+          if (!blocked) {
+            busEdgeDir = d;
+            break;
+          }
+        }
+        if (busEdgeDir < 0) busEdgeDir = fallbackDir;
+
+        if (busEdgeDir >= 0) {
+          const outX = DIRS[busEdgeDir].dx;
+          const outZ = DIRS[busEdgeDir].dz;
+          const inwardX = -outX;
+          const inwardZ = -outZ;
+
+          // Emit exact-height shelter anchor on outer sidewalk curb (±0.45m) facing road centerline
+          const bx = cx + outX * 0.45;
+          const bz = cz + outZ * 0.45;
+          const by = sampleCornerGrid(roadCornerY, bx, bz);
+          const yaw = Math.atan2(inwardX, inwardZ);
+          busStops.push({ x: bx, y: by, z: bz, tx: x, tz: z, yaw });
+
+          // Golden-yellow rectangular curb bus-bay outline (0.64m x 0.16m) flush at roadCornerY + 0.014
+          const bfx = -outZ;
+          const bfz = outX;
+          const brx = inwardX;
+          const brz = inwardZ;
+          const bw = 0.026;
+          addRoadDecalQuad(cx, cz, bfx, bfz, brx, brz, -0.32, 0.32, -0.38, -0.38 + bw, 0.014, cBusGold[0], cBusGold[1], cBusGold[2]);
+          addRoadDecalQuad(cx, cz, bfx, bfz, brx, brz, -0.32, 0.32, -0.22 - bw, -0.22, 0.014, cBusGold[0], cBusGold[1], cBusGold[2]);
+          addRoadDecalQuad(cx, cz, bfx, bfz, brx, brz, -0.32, -0.32 + bw, -0.38 + bw, -0.22 - bw, 0.014, cBusGold[0], cBusGold[1], cBusGold[2]);
+          addRoadDecalQuad(cx, cz, bfx, bfz, brx, brz, 0.32 - bw, 0.32, -0.38 + bw, -0.22 - bw, 0.014, cBusGold[0], cBusGold[1], cBusGold[2]);
+          addRoadDecalQuad(cx, cz, bfx, bfz, brx, brz, -0.18, -0.04, -0.312, -0.288, 0.014, cBusGold[0], cBusGold[1], cBusGold[2]);
+          addRoadDecalQuad(cx, cz, bfx, bfz, brx, brz, 0.04, 0.18, -0.312, -0.288, 0.014, cBusGold[0], cBusGold[1], cBusGold[2]);
         }
       }
 
@@ -3421,6 +3877,13 @@ export function buildContinuousRoadAndViaductGroup(THREE, sim, overlayMode, mats
   }
 
   // Finalize compact merged meshes into returned THREE.Group
+  const markMesh = bMarkings.toMesh(THREE, auxMats.roadMarking);
+  if (markMesh) {
+    markMesh.name = 'roadMarkings';
+    markMesh.castShadow = false;
+    markMesh.receiveShadow = true;
+  }
+
   const meshes = [
     bRoad2.toMesh(THREE, matRoad2),
     bRoad4.toMesh(THREE, matRoad4),
@@ -3428,14 +3891,15 @@ export function buildContinuousRoadAndViaductGroup(THREE, sim, overlayMode, mats
     bTraffic.toMesh(THREE, auxMats.trafficDeck),
     bConcrete.toMesh(THREE, auxMats.concrete),
     bTunnelDark.toMesh(THREE, auxMats.tunnelDark),
-    bSteel.toMesh(THREE, auxMats.steelRail)
+    bSteel.toMesh(THREE, auxMats.steelRail),
+    markMesh
   ];
 
   for (let i = 0; i < meshes.length; i++) {
     if (meshes[i]) group.add(meshes[i]);
   }
 
-  group.userData.streetProps = { lamps, signals };
+  group.userData.streetProps = { lamps, signals, busStops };
 
   return group;
 }

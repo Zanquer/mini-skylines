@@ -100,6 +100,9 @@ export function createEmptyTile(x, z) {
     waterSpring: 0,    // >0 means mountain spring water source inflow!
     roadGround: 0,     // 0 none, 1 street(2L), 2 avenue(4L), 3 highway-portal, 4 mountain-tunnel
     roadBridge: false, // true when roadGround 1/2 was built over water as an elevated bridge deck
+    roadDir: -1,       // -1 two-way, 0=N(-Z), 1=S(+Z), 2=W(-X), 3=E(+X) for one-way streets
+    banTrucks: false,  // true when heavy trucks & garbage trucks are banned from this street
+    busStop: false,    // true when a roadside EV bus shelter is built on this road tile
     junctionMode: 'signal', // 'signal' | 'yield' | 'roundabout' for road intersections
     roadElevated: 0,   // 0 none, 1 elevated highway overpass (+0.68m)
     ramp: false,       // connects roadGround <-> roadElevated
@@ -119,6 +122,7 @@ export function createEmptyTile(x, z) {
     watered: false,
     landValue: 32,
     pollution: 0,
+    noise: 0,          // 0..100 live traffic/industry/airport acoustic noise level
     trash: 0,
     serviceScore: 0,
     fireSafety: 0,

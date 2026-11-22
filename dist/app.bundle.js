@@ -807,6 +807,9 @@ function createEmptyTile(x, z) {
     waterSpring: 0,    // >0 means mountain spring water source inflow!
     roadGround: 0,     // 0 none, 1 street(2L), 2 avenue(4L), 3 highway-portal, 4 mountain-tunnel
     roadBridge: false, // true when roadGround 1/2 was built over water as an elevated bridge deck
+    roadDir: -1,       // -1 two-way, 0=N(-Z), 1=S(+Z), 2=W(-X), 3=E(+X) for one-way streets
+    banTrucks: false,  // true when heavy trucks & garbage trucks are banned from this street
+    busStop: false,    // true when a roadside EV bus shelter is built on this road tile
     junctionMode: 'signal', // 'signal' | 'yield' | 'roundabout' for road intersections
     roadElevated: 0,   // 0 none, 1 elevated highway overpass (+0.68m)
     ramp: false,       // connects roadGround <-> roadElevated
@@ -826,6 +829,7 @@ function createEmptyTile(x, z) {
     watered: false,
     landValue: 32,
     pollution: 0,
+    noise: 0,          // 0..100 live traffic/industry/airport acoustic noise level
     trash: 0,
     serviceScore: 0,
     fireSafety: 0,
@@ -2230,25 +2234,233 @@ function buildHighResTerrainMesh(THREE, sim, overlayMode, detailTex, sharedMat =
   // Detect active data overlay mode & scale normalization
   const activeOverlay = (overlayMode && overlayMode !== 'none' && overlayMode !== 'off') ? String(overlayMode) : null;
   let pollScale = 1;
+  let waterPollScale = 1;
   let trashScale = 1;
   let servScale = 1;
+  let eduScale = 1;
+  let hasEduField = false;
   let fireScale = 1;
   let congScale = 1;
+  let noiseScale = 1;
+
+  let pollField = null;
+  let eduField = null;
+  let noiseField = null;
+  let quietField = null;
+
+  const getBuildingTypeStr = (b) => {
+    if (!b) return '';
+    if (typeof b === 'string') return b;
+    if (typeof b === 'object') return String(b.type || b.kind || b.id || b.name || '');
+    return '';
+  };
+
+  const sampleTileField = (field, u, v) => {
+    const tx = Math.min(GRID_SIZE - 1, Math.max(0, Math.floor(u === GRID_SIZE ? GRID_SIZE - 0.001 : u)));
+    const tz = Math.min(GRID_SIZE - 1, Math.max(0, Math.floor(v === GRID_SIZE ? GRID_SIZE - 0.001 : v)));
+    const exact = field[idx(tx, tz)];
+
+    const fx = Math.min(GRID_SIZE - 1.0001, Math.max(0, u - 0.5));
+    const fz = Math.min(GRID_SIZE - 1.0001, Math.max(0, v - 0.5));
+    const x0 = Math.floor(fx);
+    const z0 = Math.floor(fz);
+    const x1 = Math.min(GRID_SIZE - 1, x0 + 1);
+    const z1 = Math.min(GRID_SIZE - 1, z0 + 1);
+    const sx = fx - x0;
+    const sz = fz - z0;
+    const smooth =
+      (field[idx(x0, z0)] * (1 - sx) + field[idx(x1, z0)] * sx) * (1 - sz) +
+      (field[idx(x0, z1)] * (1 - sx) + field[idx(x1, z1)] * sx) * sz;
+
+    return exact * 0.45 + smooth * 0.55;
+  };
+
   if (activeOverlay) {
-    let maxP = 0, maxTr = 0, maxS = 0, maxF = 0, maxCg = 0;
+    let maxP = 0, maxWP = 0, maxTr = 0, maxS = 0, maxEdu = 0, maxF = 0, maxCg = 0, maxN = 0;
     for (let i = 0; i < grid.length; i++) {
       const t = grid[i];
-      if (t.pollution > maxP) maxP = t.pollution;
-      if ((t.trash || 0) > maxTr) maxTr = t.trash || 0;
-      if (t.serviceScore > maxS) maxS = t.serviceScore;
-      if (t.fireSafety > maxF) maxF = t.fireSafety;
-      if (t.congestion > maxCg) maxCg = t.congestion;
+      const tp = Number.isFinite(t.pollution) ? t.pollution : 0;
+      const wp = (waterPoll && Number.isFinite(waterPoll[i])) ? waterPoll[i] : 0;
+      const tr = Number.isFinite(t.trash) ? t.trash : 0;
+      const sv = Number.isFinite(t.serviceScore) ? t.serviceScore : 0;
+      const fv = Number.isFinite(t.fireSafety) ? t.fireSafety : 0;
+      const cg = Number.isFinite(t.congestion) ? t.congestion : 0;
+      const nv = Number.isFinite(t.noise) ? t.noise : 0;
+      if (tp > maxP) maxP = tp;
+      if (wp > maxWP) maxWP = wp;
+      if (tr > maxTr) maxTr = tr;
+      if (sv > maxS) maxS = sv;
+      if (fv > maxF) maxF = fv;
+      if (cg > maxCg) maxCg = cg;
+      if (nv > maxN) maxN = nv;
+      if (typeof t.education === 'number' && Number.isFinite(t.education)) {
+        if (t.education > 0) hasEduField = true;
+        if (t.education > maxEdu) maxEdu = t.education;
+      }
     }
     pollScale = maxP > 1.05 ? 0.01 : 1.0;
+    waterPollScale = maxWP > 1.05 ? 0.01 : 1.0;
     trashScale = maxTr > 1.05 ? 0.01 : 1.0;
     servScale = maxS > 1.05 ? 0.01 : 1.0;
+    eduScale = maxEdu > 1.05 ? 0.01 : 1.0;
     fireScale = maxF > 1.05 ? 0.01 : 1.0;
     congScale = maxCg > 1.05 ? 0.01 : 1.0;
+    noiseScale = maxN > 1.05 ? 0.01 : 1.0;
+
+    if (activeOverlay === 'pollution') {
+      pollField = new Float32Array(GRID_SIZE * GRID_SIZE);
+      for (let i = 0; i < grid.length; i++) {
+        const t = grid[i];
+        const gp = clamp01((Number.isFinite(t.pollution) ? t.pollution : 0) * pollScale);
+        const wp = clamp01(((waterPoll && Number.isFinite(waterPoll[i])) ? waterPoll[i] : 0) * waterPollScale);
+        const combined = clamp01(Math.max(gp, wp) + 0.35 * Math.min(gp, wp));
+        pollField[i] = combined > 0 ? Math.pow(combined, 0.85) : 0;
+      }
+    } else if (activeOverlay === 'education' || activeOverlay === 'edu') {
+      eduField = new Float32Array(GRID_SIZE * GRID_SIZE);
+      for (let z = 0; z < GRID_SIZE; z++) {
+        for (let x = 0; x < GRID_SIZE; x++) {
+          const i = idx(x, z);
+          const t = grid[i];
+          const rawServ = clamp01((Number.isFinite(t.serviceScore) ? t.serviceScore : 0) * servScale);
+          const rawEdu = (typeof t.education === 'number' && Number.isFinite(t.education))
+            ? clamp01(t.education * eduScale)
+            : -1;
+          let ev = (rawEdu >= 0 && hasEduField)
+            ? clamp01(Math.max(rawEdu, rawEdu * 0.72 + rawServ * 0.28))
+            : rawServ;
+          const bType = getBuildingTypeStr(t.building);
+          if (bType) {
+            if (/school|univ|college|lib|edu|campus/i.test(bType)) {
+              ev = Math.max(ev, 0.96);
+            } else if (/civic|museum|landmark|city_?hall|hospital|police|fire|park|plaza|stadium|station/i.test(bType)) {
+              ev = clamp01(Math.max(ev, rawServ + 0.18));
+            }
+          }
+          eduField[i] = ev;
+        }
+      }
+      // Radiate warm civic education coverage halos from schools / universities / libraries
+      for (let z = 0; z < GRID_SIZE; z++) {
+        for (let x = 0; x < GRID_SIZE; x++) {
+          const bType = getBuildingTypeStr(grid[idx(x, z)].building);
+          if (!bType || !/school|univ|college|lib|edu|campus/i.test(bType)) continue;
+          const rad = /univ|college|campus/i.test(bType) ? 6 : 4;
+          for (let dz = -rad; dz <= rad; dz++) {
+            const nz = z + dz;
+            if (nz < 0 || nz >= GRID_SIZE) continue;
+            for (let dx = -rad; dx <= rad; dx++) {
+              const nx = x + dx;
+              if (nx < 0 || nx >= GRID_SIZE) continue;
+              const dist = Math.hypot(dx, dz);
+              if (dist > rad) continue;
+              const halo = (1.0 - dist / (rad + 0.5)) * 0.88;
+              const ni = idx(nx, nz);
+              if (halo > eduField[ni]) eduField[ni] = halo;
+            }
+          }
+        }
+      }
+    } else if (activeOverlay === 'noise' || activeOverlay === 'acoustic') {
+      noiseField = new Float32Array(GRID_SIZE * GRID_SIZE);
+      quietField = new Float32Array(GRID_SIZE * GRID_SIZE);
+      const fallbackNoise = new Float32Array(GRID_SIZE * GRID_SIZE);
+
+      // Pass A: Direct & radiated acoustic fallback sources (traffic, highways, HSR, industry, airport) + quiet shields
+      for (let z = 0; z < GRID_SIZE; z++) {
+        for (let x = 0; x < GRID_SIZE; x++) {
+          const i = idx(x, z);
+          const t = grid[i];
+          const cg = clamp01((Number.isFinite(t.congestion) ? t.congestion : 0) * congScale);
+          const bType = getBuildingTypeStr(t.building);
+          let src = 0;
+
+          if (t.roadElevated > 0) {
+            const ecg = clamp01((Number.isFinite(t.elevCongestion) ? t.elevCongestion : cg) * congScale);
+            src = Math.max(src, 0.42 + ecg * 0.45);
+          }
+          if (t.roadGround >= 1 && t.roadGround !== 4) {
+            const rBase = t.roadGround >= 2 ? (0.24 + cg * 0.48) : (0.12 + cg * 0.36);
+            src = Math.max(src, t.banTrucks ? rBase * 0.40 : rBase);
+          }
+          if (t.rail > 0) {
+            src = Math.max(src, 0.36);
+          }
+          if (t.zone === 'I') {
+            src = Math.max(src, 0.52);
+          } else if (t.zone === 'CH') {
+            src = Math.max(src, 0.28);
+          }
+          if (bType) {
+            if (/airport|runway/i.test(bType)) src = Math.max(src, 0.88);
+            else if (/power_plant|waste_plant|coal|oil|incinerator|factory|industry|seaport|port|freight/i.test(bType)) src = Math.max(src, 0.64);
+            else if (/station|stadium|amusement|mall|power_wind/i.test(bType)) src = Math.max(src, 0.42);
+          }
+
+          if (src > fallbackNoise[i]) fallbackNoise[i] = src;
+
+          // Radiate industrial / airport / heavy-highway acoustic bleed into surrounding tiles
+          const isHeavyNoiseSource =
+            t.zone === 'I' ||
+            (bType && /airport|runway|power_plant|waste_plant|coal|oil|incinerator|factory|industry|seaport|port/i.test(bType));
+          if (isHeavyNoiseSource) {
+            const rad = (bType && /airport|runway/i.test(bType)) ? 3 : 2;
+            for (let dz = -rad; dz <= rad; dz++) {
+              const nz = z + dz;
+              if (nz < 0 || nz >= GRID_SIZE) continue;
+              for (let dx = -rad; dx <= rad; dx++) {
+                if (dx === 0 && dz === 0) continue;
+                const nx = x + dx;
+                if (nx < 0 || nx >= GRID_SIZE) continue;
+                const dist = Math.hypot(dx, dz);
+                if (dist > rad + 0.2) continue;
+                const bleed = src * Math.max(0, 1.0 - dist / (rad + 0.9)) * 0.62;
+                const ni = idx(nx, nz);
+                if (bleed > fallbackNoise[ni]) fallbackNoise[ni] = bleed;
+              }
+            }
+          }
+
+          // Mark quiet green zones where banTrucks, quiet parks, or dense forest reduce noise
+          const isPark = Boolean(bType && !/amusement/i.test(bType) && /park|plaza|garden|botanic|forest/i.test(bType));
+          if (t.banTrucks || isPark) {
+            quietField[i] = 1.0;
+            const qBuf = t.banTrucks ? 0.68 : 0.58;
+            for (let dz = -1; dz <= 1; dz++) {
+              const nz = z + dz;
+              if (nz < 0 || nz >= GRID_SIZE) continue;
+              for (let dx = -1; dx <= 1; dx++) {
+                if (dx === 0 && dz === 0) continue;
+                const nx = x + dx;
+                if (nx < 0 || nx >= GRID_SIZE) continue;
+                const ni = idx(nx, nz);
+                const nt = grid[ni];
+                if (nt.zone === 'I') continue;
+                const atten = (dx === 0 || dz === 0) ? qBuf : qBuf * 0.55;
+                if (atten > quietField[ni]) quietField[ni] = atten;
+              }
+            }
+          } else if ((t.trees || 0) >= 3 && t.roadGround === 0 && t.roadElevated === 0 && t.zone !== 'I') {
+            if (quietField[i] < 0.42) quietField[i] = 0.42;
+          }
+        }
+      }
+
+      // Pass B: Combine live t.noise (when > 0) with fallback estimate & acoustic dampening
+      for (let i = 0; i < grid.length; i++) {
+        const t = grid[i];
+        const bType = getBuildingTypeStr(t.building);
+        const isPark = Boolean(bType && !/amusement/i.test(bType) && /park|plaza|garden|botanic|forest/i.test(bType));
+        const liveNoise = (Number.isFinite(t.noise) && t.noise > 0) ? clamp01(t.noise * noiseScale) : -1;
+        let nv = liveNoise >= 0 ? liveNoise : clamp01(fallbackNoise[i]);
+        if (liveNoise < 0) {
+          if (t.banTrucks) nv *= 0.45;
+          if (isPark) nv *= 0.35;
+          else if ((t.trees || 0) > 0) nv *= (1.0 - Math.min(0.28, t.trees * 0.06));
+        }
+        noiseField[i] = clamp01(nv);
+      }
+    }
   }
 
   const useLinear = !!(THREE.ColorManagement && THREE.ColorManagement.enabled);
@@ -2449,11 +2661,57 @@ function buildHighResTerrainMesh(THREE, sim, overlayMode, detailTex, sharedMat =
             or = 0.20; og = 0.68; ob = 0.95;
           }
         } else if (activeOverlay === 'pollution') {
-          const wp = waterPoll[idx(tx, tz)] || 0;
-          const pv = clamp01(Math.max(tile.pollution * pollScale, wp));
-          or = 0.26 + pv * 0.68;
-          og = 0.78 - pv * 0.56;
-          ob = 0.38 - pv * 0.12 + (pv > 0.6 ? (pv - 0.6) * 0.5 : 0);
+          // Clean emerald green -> toxic amber -> deep violet-red blending t.pollution + waterPoll
+          const pv = clamp01(pollField ? sampleTileField(pollField, u, v) : 0);
+          if (pv <= 0.48) {
+            const k = pv / 0.48;
+            or = 0.14 + (0.95 - 0.14) * k;
+            og = 0.72 + (0.64 - 0.72) * k;
+            ob = 0.42 + (0.12 - 0.42) * k;
+          } else {
+            const k = (pv - 0.48) / 0.52;
+            or = 0.95 + (0.58 - 0.95) * k;
+            og = 0.64 + (0.09 - 0.64) * k;
+            ob = 0.12 + (0.38 - 0.12) * k;
+          }
+          oWeight = 0.82;
+        } else if (activeOverlay === 'education' || activeOverlay === 'edu') {
+          // Deep navy -> vibrant cyan -> royal gold driven by t.education / t.serviceScore & civic coverage
+          const ev = clamp01(eduField ? sampleTileField(eduField, u, v) : 0);
+          if (ev <= 0.50) {
+            const k = ev / 0.50;
+            or = 0.08 + (0.09 - 0.08) * k;
+            og = 0.14 + (0.76 - 0.14) * k;
+            ob = 0.34 + (0.90 - 0.34) * k;
+          } else {
+            const k = (ev - 0.50) / 0.50;
+            or = 0.09 + (0.99 - 0.09) * k;
+            og = 0.76 + (0.81 - 0.76) * k;
+            ob = 0.90 + (0.18 - 0.90) * k;
+          }
+          oWeight = 0.82;
+        } else if (activeOverlay === 'noise' || activeOverlay === 'acoustic') {
+          // Calm dark teal -> warm amber -> bright magenta-red, with quiet green zones where banTrucks / parks dampen noise
+          const nv = clamp01(noiseField ? sampleTileField(noiseField, u, v) : 0);
+          const qv = clamp01(quietField ? sampleTileField(quietField, u, v) : 0);
+          if (nv <= 0.50) {
+            const k = nv / 0.50;
+            or = 0.07 + (0.96 - 0.07) * k;
+            og = 0.32 + (0.64 - 0.32) * k;
+            ob = 0.36 + (0.14 - 0.36) * k;
+          } else {
+            const k = (nv - 0.50) / 0.50;
+            or = 0.96 + (0.96 - 0.96) * k;
+            og = 0.64 + (0.12 - 0.64) * k;
+            ob = 0.14 + (0.42 - 0.14) * k;
+          }
+          const qMix = clamp01(qv * (1.0 - smoothstep(0.18, 0.58, nv))) * 0.88;
+          if (qMix > 0.001) {
+            or = or * (1 - qMix) + 0.16 * qMix;
+            og = og * (1 - qMix) + 0.74 * qMix;
+            ob = ob * (1 - qMix) + 0.42 * qMix;
+          }
+          oWeight = 0.82;
         } else if (activeOverlay === 'landValue' || activeOverlay === 'land_value' || activeOverlay === 'value') {
           const lv = clamp01(tile.landValue * 0.01);
           or = 0.45 - lv * 0.28;
@@ -3040,6 +3298,15 @@ function getOrCreateInfraAuxMaterials(THREE, mats) {
       color: 0xffffff,
       roughness: 0.72,
       metalness: 0.04
+    }),
+    roadMarking: new THREE.MeshStandardMaterial({
+      vertexColors: true,
+      color: 0xffffff,
+      roughness: 0.52,
+      metalness: 0.02,
+      polygonOffset: true,
+      polygonOffsetFactor: -2,
+      polygonOffsetUnits: -4
     })
   };
   if (mats && typeof mats === 'object') {
@@ -3080,6 +3347,31 @@ function createGeoBatch(useColors = false) {
     }
     ind.push(base, base + 1, base + 2, base, base + 2, base + 3);
     vCount += 4;
+  }
+
+  // Counter-clockwise triangle (A -> B -> C) when viewed from front/top:
+  // Normal = normalize((B - A) x (C - A))
+  function addTri(
+    ax, ay, az, bx, by, bz, cx, cy, cz,
+    cr = 1, cg = 1, cb = 1
+  ) {
+    const e1x = bx - ax, e1y = by - ay, e1z = bz - az;
+    const e2x = cx - ax, e2y = cy - ay, e2z = cz - az;
+    let nx = e1y * e2z - e1z * e2y;
+    let ny = e1z * e2x - e1x * e2z;
+    let nz = e1x * e2y - e1y * e2x;
+    const len = Math.hypot(nx, ny, nz) || 1;
+    nx /= len; ny /= len; nz /= len;
+
+    const base = vCount;
+    pos.push(ax, ay, az, bx, by, bz, cx, cy, cz);
+    norm.push(nx, ny, nz, nx, ny, nz, nx, ny, nz);
+    uv.push(0.5, 1, 0, 0, 1, 0);
+    if (col) {
+      col.push(cr, cg, cb, cr, cg, cb, cr, cg, cb);
+    }
+    ind.push(base, base + 1, base + 2);
+    vCount += 3;
   }
 
   // Extruded 3D sloped beam / barrier / slab / rail from P0(p0x, p0z) to P1(p1x, p1z)
@@ -3279,7 +3571,7 @@ function createGeoBatch(useColors = false) {
     return mesh;
   }
 
-  return { addQuad, addBeam, addCylinder, addCappedCylinder, addBilinearDeck, toMesh };
+  return { addQuad, addTri, addBeam, addCylinder, addCappedCylinder, addBilinearDeck, toMesh };
 }
 
 // Cardinal directions: 0:N(0,-1), 1:S(0,+1), 2:W(-1,0), 3:E(+1,0)
@@ -3769,6 +4061,7 @@ function buildContinuousRoadAndViaductGroup(THREE, sim, overlayMode, mats) {
   const bConcrete = createGeoBatch(true);
   const bTunnelDark = createGeoBatch(false);
   const bSteel = createGeoBatch(false);
+  const bMarkings = createGeoBatch(true);
 
   const cCurb = [toCol(0.73), toCol(0.74), toCol(0.76)];
   const cParapet = [toCol(0.82), toCol(0.83), toCol(0.85)];
@@ -3776,6 +4069,10 @@ function buildContinuousRoadAndViaductGroup(THREE, sim, overlayMode, mats) {
   const cPier = [toCol(0.62), toCol(0.64), toCol(0.67)];
   const cPortal = [toCol(0.76), toCol(0.77), toCol(0.79)];
   const cSlab = [toCol(0.78), toCol(0.79), toCol(0.81)];
+  const cArrowWhite = [toCol(0.96), toCol(0.97), toCol(0.99)];
+  const cBanCrimson = [toCol(0.89), toCol(0.24), toCol(0.16)];
+  const cBanAmber = [toCol(0.95), toCol(0.49), toCol(0.14)];
+  const cBusGold = [toCol(0.98), toCol(0.79), toCol(0.14)];
 
   const trafficColorFor = (cong) => {
     const cv = clamp01(cong * congScale);
@@ -3800,6 +4097,34 @@ function buildContinuousRoadAndViaductGroup(THREE, sim, overlayMode, mats) {
     return (h00 * (1 - tu) + h10 * tu) * (1 - tv) + (h01 * (1 - tu) + h11 * tu) * tv;
   }
 
+  // Flush corner-welded road pavement decal helpers (local frame: F=(fx,fz), R=(-fz,fx) -> guaranteed +Y normal)
+  function addRoadDecalQuad(cx, cz, fx, fz, rx, rz, s0, s1, u0, u1, yLift, cr, cg, cb) {
+    const ax = cx + fx * s1 + rx * u0, az = cz + fz * s1 + rz * u0;
+    const bx = cx + fx * s0 + rx * u0, bz = cz + fz * s0 + rz * u0;
+    const cxp = cx + fx * s0 + rx * u1, czp = cz + fz * s0 + rz * u1;
+    const dx = cx + fx * s1 + rx * u1, dz = cz + fz * s1 + rz * u1;
+    bMarkings.addQuad(
+      ax, sampleCornerGrid(roadCornerY, ax, az) + yLift, az,
+      bx, sampleCornerGrid(roadCornerY, bx, bz) + yLift, bz,
+      cxp, sampleCornerGrid(roadCornerY, cxp, czp) + yLift, czp,
+      dx, sampleCornerGrid(roadCornerY, dx, dz) + yLift, dz,
+      0, 0, 0, 1, 1, 1, 1, 0,
+      cr, cg, cb
+    );
+  }
+
+  function addRoadDecalTri(cx, cz, fx, fz, rx, rz, sa, ua, sb, ub, sc, uc, yLift, cr, cg, cb) {
+    const ax = cx + fx * sa + rx * ua, az = cz + fz * sa + rz * ua;
+    const bx = cx + fx * sb + rx * ub, bz = cz + fz * sb + rz * ub;
+    const cxp = cx + fx * sc + rx * uc, czp = cz + fz * sc + rz * uc;
+    bMarkings.addTri(
+      ax, sampleCornerGrid(roadCornerY, ax, az) + yLift, az,
+      bx, sampleCornerGrid(roadCornerY, bx, bz) + yLift, bz,
+      cxp, sampleCornerGrid(roadCornerY, cxp, czp) + yLift, czp,
+      cr, cg, cb
+    );
+  }
+
   // Edge endpoint helper for tile (x, z) and dir d in 0:N, 1:S, 2:W, 3:E
   // Ordered so moving P0 -> P1 has the tile's OUTER side on its RIGHT (+right faces outward!)
   function getTileEdgeEndpoints(x, z, d, heightGrid) {
@@ -3818,9 +4143,10 @@ function buildContinuousRoadAndViaductGroup(THREE, sim, overlayMode, mats) {
     return { p0x: x1, p0z: z0, y0: y10, p1x: x1, p1z: z1, y1: y11 };              // E: N->S, right=East
   }
 
-  // Exact-height streetlamp & live traffic signal placement registries for InstancedMesh rendering
+  // Exact-height streetlamp, live traffic signal & bus shelter placement registries for InstancedMesh rendering
   const lamps = [];
   const signals = [];
+  const busStops = [];
   const pylonFootprints = [];
   const cPylon = [toCol(0.89), toCol(0.90), toCol(0.92)];
 
@@ -4482,6 +4808,140 @@ function buildContinuousRoadAndViaductGroup(THREE, sim, overlayMode, mats) {
               isElev: false
             });
           }
+        }
+      }
+
+      // 1. One-Way Street Directional Pavement Chevron Arrow (t.roadDir in 0..3, flush on roadCornerY + 0.014)
+      if (t.roadGround >= 1 && t.roadGround !== 4 && !t.dam && typeof t.roadDir === 'number' && t.roadDir >= 0 && t.roadDir <= 3) {
+        const cx = x0 + 0.5;
+        const cz = z0 + 0.5;
+        const fx = DIRS[t.roadDir].dx;
+        const fz = DIRS[t.roadDir].dz;
+        const rx = -fz;
+        const rz = fx;
+        // Shaft + swept-back chevron arrowhead centered on tile
+        addRoadDecalQuad(cx, cz, fx, fz, rx, rz, -0.30, 0.09, -0.052, 0.052, 0.014, cArrowWhite[0], cArrowWhite[1], cArrowWhite[2]);
+        addRoadDecalTri(cx, cz, fx, fz, rx, rz, 0.32, 0.0, 0.00, -0.195, 0.08, 0.0, 0.014, cArrowWhite[0], cArrowWhite[1], cArrowWhite[2]);
+        addRoadDecalTri(cx, cz, fx, fz, rx, rz, 0.32, 0.0, 0.08, 0.0, 0.00, 0.195, 0.014, cArrowWhite[0], cArrowWhite[1], cArrowWhite[2]);
+      }
+
+      // 2. Heavy-Truck Ban Curb Restriction Dashes (t.banTrucks === true, flush on roadCornerY + 0.013 at ±0.34m)
+      if (t.banTrucks === true && t.roadGround >= 1 && t.roadGround !== 4 && !t.dam) {
+        const cx = x0 + 0.5;
+        const cz = z0 + 0.5;
+        if (!isJunctionOrTurn) {
+          const runEW = hasEW ? !hasNS : (t.roadDir === 2 || t.roadDir === 3);
+          const fx = runEW ? 1 : 0;
+          const fz = runEW ? 0 : 1;
+          const rx = -fz;
+          const rz = fx;
+          const dashSpans = [[-0.44, -0.22], [-0.11, 0.11], [0.22, 0.44]];
+          for (const side of [-1, 1]) {
+            const u0 = side * 0.34 - 0.022;
+            const u1 = side * 0.34 + 0.022;
+            for (let di = 0; di < dashSpans.length; di++) {
+              const cDash = (di === 1) ? cBanAmber : cBanCrimson;
+              addRoadDecalQuad(cx, cz, fx, fz, rx, rz, dashSpans[di][0], dashSpans[di][1], u0, u1, 0.013, cDash[0], cDash[1], cDash[2]);
+            }
+          }
+        } else if (connCount < 4) {
+          for (let d = 0; d < 4; d++) {
+            if (conn[d]) continue;
+            const outX = DIRS[d].dx;
+            const outZ = DIRS[d].dz;
+            const efx = -outZ;
+            const efz = outX;
+            const erx = -outX;
+            const erz = -outZ;
+            addRoadDecalQuad(cx, cz, efx, efz, erx, erz, -0.31, -0.06, -0.362, -0.318, 0.013, cBanCrimson[0], cBanCrimson[1], cBanCrimson[2]);
+            addRoadDecalQuad(cx, cz, efx, efz, erx, erz, 0.06, 0.31, -0.362, -0.318, 0.013, cBanAmber[0], cBanAmber[1], cBanAmber[2]);
+          }
+        } else {
+          // 4-way crossroads: compact crimson-amber L-curb ticks around all 4 sidewalk corners (±0.34m)
+          for (const sx of [-1, 1]) {
+            for (const sz of [-1, 1]) {
+              const xs0 = sx > 0 ? 0.32 : -0.45;
+              const xs1 = sx > 0 ? 0.45 : -0.32;
+              const zu0 = sz * 0.34 - 0.022;
+              const zu1 = sz * 0.34 + 0.022;
+              addRoadDecalQuad(cx, cz, 1, 0, 0, 1, xs0, xs1, zu0, zu1, 0.013, cBanCrimson[0], cBanCrimson[1], cBanCrimson[2]);
+
+              const zs0 = sx * 0.34 - 0.022;
+              const zs1 = sx * 0.34 + 0.022;
+              const xu0 = sz > 0 ? 0.32 : -0.45;
+              const xu1 = sz > 0 ? 0.45 : -0.32;
+              addRoadDecalQuad(cx, cz, 1, 0, 0, 1, zs0, zs1, xu0, xu1, 0.013, cBanAmber[0], cBanAmber[1], cBanAmber[2]);
+            }
+          }
+        }
+      }
+
+      // 3. Bus Stop Curb Bay Outline (0.64m x 0.16m golden-yellow at roadCornerY + 0.014) & Exact-Height Shelter Placement
+      if (t.busStop === true && t.roadGround >= 1 && t.roadGround !== 4 && !t.dam && !t.ramp) {
+        const cx = x0 + 0.5;
+        const cz = z0 + 0.5;
+        let candOrder;
+        if (typeof t.roadDir === 'number' && t.roadDir >= 0 && t.roadDir <= 3) {
+          candOrder = [RIGHT_DIR[t.roadDir], LEFT_DIR[t.roadDir], t.roadDir, DIRS[t.roadDir].opp];
+        } else if (hasEW && !hasNS) {
+          candOrder = [1, 0, 3, 2];
+        } else if (hasNS && !hasEW) {
+          candOrder = [3, 2, 1, 0];
+        } else {
+          candOrder = [1, 3, 0, 2];
+        }
+
+        let busEdgeDir = -1;
+        let fallbackDir = -1;
+        for (let k = 0; k < 4; k++) {
+          const d = candOrder[k];
+          if (conn[d]) continue;
+          if (fallbackDir < 0) fallbackDir = d;
+          const testX = cx + DIRS[d].dx * 0.45;
+          const testZ = cz + DIRS[d].dz * 0.45;
+          let blocked = false;
+          for (let li = lamps.length - 1; li >= Math.max(0, lamps.length - 4); li--) {
+            const lp = lamps[li];
+            if (!lp.isElev && Math.hypot(lp.x - testX, lp.z - testZ) < 0.25) {
+              blocked = true;
+              break;
+            }
+          }
+          if (!blocked && pylonFootprints.some((p) => !p.isElev && Math.hypot(p.x - testX, p.z - testZ) < 0.38)) {
+            blocked = true;
+          }
+          if (!blocked) {
+            busEdgeDir = d;
+            break;
+          }
+        }
+        if (busEdgeDir < 0) busEdgeDir = fallbackDir;
+
+        if (busEdgeDir >= 0) {
+          const outX = DIRS[busEdgeDir].dx;
+          const outZ = DIRS[busEdgeDir].dz;
+          const inwardX = -outX;
+          const inwardZ = -outZ;
+
+          // Emit exact-height shelter anchor on outer sidewalk curb (±0.45m) facing road centerline
+          const bx = cx + outX * 0.45;
+          const bz = cz + outZ * 0.45;
+          const by = sampleCornerGrid(roadCornerY, bx, bz);
+          const yaw = Math.atan2(inwardX, inwardZ);
+          busStops.push({ x: bx, y: by, z: bz, tx: x, tz: z, yaw });
+
+          // Golden-yellow rectangular curb bus-bay outline (0.64m x 0.16m) flush at roadCornerY + 0.014
+          const bfx = -outZ;
+          const bfz = outX;
+          const brx = inwardX;
+          const brz = inwardZ;
+          const bw = 0.026;
+          addRoadDecalQuad(cx, cz, bfx, bfz, brx, brz, -0.32, 0.32, -0.38, -0.38 + bw, 0.014, cBusGold[0], cBusGold[1], cBusGold[2]);
+          addRoadDecalQuad(cx, cz, bfx, bfz, brx, brz, -0.32, 0.32, -0.22 - bw, -0.22, 0.014, cBusGold[0], cBusGold[1], cBusGold[2]);
+          addRoadDecalQuad(cx, cz, bfx, bfz, brx, brz, -0.32, -0.32 + bw, -0.38 + bw, -0.22 - bw, 0.014, cBusGold[0], cBusGold[1], cBusGold[2]);
+          addRoadDecalQuad(cx, cz, bfx, bfz, brx, brz, 0.32 - bw, 0.32, -0.38 + bw, -0.22 - bw, 0.014, cBusGold[0], cBusGold[1], cBusGold[2]);
+          addRoadDecalQuad(cx, cz, bfx, bfz, brx, brz, -0.18, -0.04, -0.312, -0.288, 0.014, cBusGold[0], cBusGold[1], cBusGold[2]);
+          addRoadDecalQuad(cx, cz, bfx, bfz, brx, brz, 0.04, 0.18, -0.312, -0.288, 0.014, cBusGold[0], cBusGold[1], cBusGold[2]);
         }
       }
 
@@ -5315,6 +5775,13 @@ function buildContinuousRoadAndViaductGroup(THREE, sim, overlayMode, mats) {
   }
 
   // Finalize compact merged meshes into returned THREE.Group
+  const markMesh = bMarkings.toMesh(THREE, auxMats.roadMarking);
+  if (markMesh) {
+    markMesh.name = 'roadMarkings';
+    markMesh.castShadow = false;
+    markMesh.receiveShadow = true;
+  }
+
   const meshes = [
     bRoad2.toMesh(THREE, matRoad2),
     bRoad4.toMesh(THREE, matRoad4),
@@ -5322,14 +5789,15 @@ function buildContinuousRoadAndViaductGroup(THREE, sim, overlayMode, mats) {
     bTraffic.toMesh(THREE, auxMats.trafficDeck),
     bConcrete.toMesh(THREE, auxMats.concrete),
     bTunnelDark.toMesh(THREE, auxMats.tunnelDark),
-    bSteel.toMesh(THREE, auxMats.steelRail)
+    bSteel.toMesh(THREE, auxMats.steelRail),
+    markMesh
   ];
 
   for (let i = 0; i < meshes.length; i++) {
     if (meshes[i]) group.add(meshes[i]);
   }
 
-  group.userData.streetProps = { lamps, signals };
+  group.userData.streetProps = { lamps, signals, busStops };
 
   return group;
 }
@@ -5347,7 +5815,7 @@ Object.assign(__M, { FACADE_TEXTURES });
 
 // ====== MODULE: architecture3d.js ======
 (function () {
-// Flagship v7.0 PBR 3D Architectural Asset Library, True-Proportion Vehicles, CR400 Trains, Hydro Dam, Aircraft, Ships & Sky Dome
+// Flagship v7.5 PBR 3D Architectural Asset Library, Micro-Detail Kits, EV Bus Shelters, True-Proportion Vehicles, CR400 Trains, Hydro Dam, Aircraft, Ships & Sky Dome
 // Supports full Albedo + Normal + Roughness PBR channels (via globalThis.__ASSET_MGR / applyLoadedPBRTextures) with offline DataURI fallback.
 
 const { FACADE_TEXTURES } = __M;
@@ -5497,7 +5965,7 @@ function buildCR400NoseGeometry(THREE) {
   return geo;
 }
 
-// ==================== World-Space Full PBR (Albedo + Normal + Roughness) & Night-Window Shader Patch ====================
+// ==================== World-Space Full PBR (Albedo + Normal + Roughness), Vertical AO, Glass Sky Fresnel & Multi-Tone Night Shader Patch ====================
 
 function applyWorldFacadePatch(mat, opts) {
   const {
@@ -5511,28 +5979,33 @@ function applyWorldFacadePatch(mat, opts) {
     nightMode = 0,
     cellsX = 4.0,
     cellsY = 4.0,
-    planarOnly = false
+    planarOnly = false,
+    nightUniform = null
   } = opts;
 
   const fTileW = Number(tileW).toFixed(4);
   const fTileH = Number(tileH).toFixed(4);
   const fRoofS = Number(roofScale).toFixed(4);
-  const fCellsX = Number(cellsX).toFixed(2);
-  const fCellsY = Number(cellsY).toFixed(2);
   const iNightMode = nightMode | 0;
   const iPlanar = planarOnly ? 1 : 0;
 
-  // Shared mutable uniform holders so applyLoadedPBRTextures() hot-updates roof PBR channels without rebuilding meshes!
+  // Shared mutable uniform holders so applyLoadedPBRTextures() & setNightFactor() hot-update without rebuilding meshes!
   const pbrUniforms = {
     uArchRoofMap: { value: roofTex || mat.map },
     uArchRoofNormMap: { value: roofNormTex },
-    uArchRoofRoughMap: { value: roofRoughTex }
+    uArchRoofRoughMap: { value: roofRoughTex },
+    uArchNight: nightUniform || { value: 0.0 },
+    uArchCellsX: { value: Number(cellsX) },
+    uArchCellsY: { value: Number(cellsY) }
   };
 
   const patchFn = (shader) => {
     shader.uniforms.uArchRoofMap = pbrUniforms.uArchRoofMap;
     shader.uniforms.uArchRoofNormMap = pbrUniforms.uArchRoofNormMap;
     shader.uniforms.uArchRoofRoughMap = pbrUniforms.uArchRoofRoughMap;
+    shader.uniforms.uArchNight = pbrUniforms.uArchNight;
+    shader.uniforms.uArchCellsX = pbrUniforms.uArchCellsX;
+    shader.uniforms.uArchCellsY = pbrUniforms.uArchCellsY;
 
     shader.vertexShader = shader.vertexShader
       .replace(
@@ -5540,7 +6013,9 @@ function applyWorldFacadePatch(mat, opts) {
         `#include <common>
 varying vec3 vArchWorldPos;
 varying vec3 vArchWorldNorm;
-varying vec3 vArchBasePos;`
+varying vec3 vArchBasePos;
+varying float vArchLocalY;
+varying float vArchMeshH;`
       )
       .replace(
         '#include <project_vertex>',
@@ -5554,7 +6029,10 @@ vArchWorldNorm = normalize(
   archCol1 * (objectNormal.y / max(1e-6, dot(archCol1, archCol1))) +
   archCol2 * (objectNormal.z / max(1e-6, dot(archCol2, archCol2)))
 );
-vArchBasePos = (modelMatrix * vec4(0.0, -0.5, 0.0, 1.0)).xyz;`
+vArchBasePos = (modelMatrix * vec4(0.0, -0.5, 0.0, 1.0)).xyz;
+float archTopWorldY = (modelMatrix * vec4(0.0, 0.5, 0.0, 1.0)).y;
+vArchLocalY = vArchWorldPos.y - vArchBasePos.y;
+vArchMeshH = max(0.05, archTopWorldY - vArchBasePos.y);`
       );
 
     shader.fragmentShader = shader.fragmentShader
@@ -5564,17 +6042,23 @@ vArchBasePos = (modelMatrix * vec4(0.0, -0.5, 0.0, 1.0)).xyz;`
 uniform sampler2D uArchRoofMap;
 uniform sampler2D uArchRoofNormMap;
 uniform sampler2D uArchRoofRoughMap;
+uniform float uArchNight;
+uniform float uArchCellsX;
+uniform float uArchCellsY;
 varying vec3 vArchWorldPos;
 varying vec3 vArchWorldNorm;
-varying vec3 vArchBasePos;`
+varying vec3 vArchBasePos;
+varying float vArchLocalY;
+varying float vArchMeshH;`
       )
       .replace(
         '#include <map_fragment>',
         `vec3 archN = normalize(vArchWorldNorm);
 bool archIsRoof = (${iPlanar} == 1) || (abs(archN.y) >= 0.5);
+float archLocalYClamped = max(0.0, vArchLocalY);
 vec2 archWallUV = vec2(
   ((abs(archN.x) > abs(archN.z) ? (vArchWorldPos.z - vArchBasePos.z) : (vArchWorldPos.x - vArchBasePos.x)) / ${fTileW}) + 0.5,
-  max(0.0, vArchWorldPos.y - vArchBasePos.y) / ${fTileH}
+  archLocalYClamped / ${fTileH}
 );
 vec2 archRoofUV = vArchWorldPos.xz / ${fRoofS};
 vec2 archActiveUV = archIsRoof ? archRoofUV : archWallUV;
@@ -5585,6 +6069,20 @@ vec4 archTexel = vec4(1.0);
   archTexel = archIsRoof ? archRoofSample : archWallSample;
   diffuseColor *= archTexel;
 #endif`
+      )
+      .replace(
+        '#include <color_fragment>',
+        `#include <color_fragment>
+float archHeightRatio = clamp(archLocalYClamped / max(0.24, vArchMeshH), 0.0, 1.0);
+if (!archIsRoof) {
+  float archGroundAO = mix(0.79, 1.0, smoothstep(0.0, 0.42, archLocalYClamped));
+  float archUpperSun = mix(1.0, 1.06, smoothstep(0.45, 1.0, archHeightRatio) * smoothstep(0.35, 1.20, vArchMeshH));
+  float archCorniceLift = mix(1.0, 1.05, smoothstep(0.86, 1.0, archHeightRatio));
+  diffuseColor.rgb *= archGroundAO * archUpperSun * archCorniceLift;
+} else {
+  float archRoofLift = mix(1.0, 1.045, smoothstep(0.12, 0.45, vArchMeshH));
+  diffuseColor.rgb *= archRoofLift;
+}`
       )
       .replace(
         '#include <roughnessmap_fragment>',
@@ -5626,66 +6124,146 @@ vec4 archTexel = vec4(1.0);
         '#include <emissivemap_fragment>',
         `float archNight = totalEmissiveRadiance.r;
 totalEmissiveRadiance = vec3(0.0);
-#if defined(USE_MAP) && (${iNightMode} > 0)
-  if (!archIsRoof && archNight > 0.005) {
-    vec2 archCellScaled = archWallUV * vec2(${fCellsX}, ${fCellsY});
-    vec2 archCellId = floor(archCellScaled);
+vec3 archFresnelSkySpec = vec3(0.0);
+#if ${iNightMode} > 0
+  if (!archIsRoof) {
+    vec2 archCellScaled = archActiveUV * vec2(uArchCellsX, uArchCellsY);
+    vec2 winCell = floor(archCellScaled);
     vec2 archCellFrac = fract(archCellScaled);
 
     float bldgSeed = floor(vArchBasePos.x * 3.17 + 0.5) * 19.3 + floor(vArchBasePos.z * 3.17 + 0.5) * 47.9;
     float faceSeed = abs(archN.x) > abs(archN.z) ? (archN.x > 0.0 ? 11.0 : 23.0) : (archN.z > 0.0 ? 37.0 : 53.0);
-    float rnd = fract(sin(dot(archCellId + vec2(bldgSeed, faceSeed), vec2(127.1, 311.7))) * 43758.5453);
-    float rndTemp = fract(rnd * 17.37 + 0.23);
+    float winHash = fract(sin(dot(winCell + vec2(bldgSeed, faceSeed), vec2(127.1, 311.7))) * 43758.5453);
+    float winHash2 = fract(winHash * 17.37 + 0.23);
+    float winHash3 = fract(winHash * 43.19 + 0.71);
 
-    vec3 srgbTex = sqrt(max(vec3(0.0), archTexel.rgb));
-    float sLum = dot(srgbTex, vec3(0.299, 0.587, 0.114));
-    float glassMask = 0.0;
+    // Per-window glossy glass sky Fresnel glint & subtle interior depth variation
+    if (roughnessFactor < 0.36) {
+      float archGlassAmt = smoothstep(0.36, 0.14, roughnessFactor);
+      vec3 archPaneTint = winHash2 < 0.34
+        ? vec3(0.94, 0.99, 1.06)
+        : (winHash2 > 0.68 ? vec3(1.06, 1.01, 0.94) : vec3(0.96, 0.98, 1.01));
+      float archInteriorDepth = mix(0.94, 1.06, winHash3);
+      float archBlindShade = mix(0.95, 1.04, smoothstep(0.28, 0.76, archCellFrac.y));
+      diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * archPaneTint * archInteriorDepth * archBlindShade, archGlassAmt);
 
-    #if ${iNightMode} == 1
-      float inResPane = step(0.09, archCellFrac.x) * step(archCellFrac.x, 0.91) * step(0.28, archCellFrac.y) * step(archCellFrac.y, 0.90);
-      float darkPane = smoothstep(0.73, 0.52, sLum) * smoothstep(0.18, 0.28, sLum);
-      float coolPane = smoothstep(-0.01, 0.03, srgbTex.b - srgbTex.r) * smoothstep(0.80, 0.56, sLum);
-      glassMask = inResPane * max(darkPane, coolPane);
-    #elif ${iNightMode} == 2
-      float inVision = step(0.05, archCellFrac.x) * step(archCellFrac.x, 0.95) * step(0.20, archCellFrac.y) * step(archCellFrac.y, 0.84);
-      glassMask = inVision * smoothstep(0.01, 0.06, srgbTex.b - srgbTex.r * 0.94) * smoothstep(0.74, 0.55, sLum) * smoothstep(0.16, 0.26, sLum);
-    #elif ${iNightMode} == 3
-      float inStoneWin = step(0.15, archCellFrac.x) * step(archCellFrac.x, 0.85) * step(0.10, archCellFrac.y) * step(archCellFrac.y, 0.88);
-      glassMask = inStoneWin * smoothstep(0.58, 0.40, sLum) * smoothstep(0.14, 0.23, sLum);
-    #elif ${iNightMode} == 4
-      float inShop = step(0.06, archCellFrac.x) * step(archCellFrac.x, 0.94) * step(0.03, archCellFrac.y) * step(archCellFrac.y, 0.62);
-      glassMask = inShop * smoothstep(0.20, 0.30, sLum) * smoothstep(0.86, 0.64, sLum);
-    #elif ${iNightMode} == 5
-      float inVilla = step(0.16, archCellFrac.x) * step(archCellFrac.x, 0.84) * step(0.16, archCellFrac.y) * step(archCellFrac.y, 0.82);
-      glassMask = inVilla * smoothstep(0.52, 0.34, sLum);
-    #elif ${iNightMode} == 6
-      float vBand = fract(archWallUV.y);
-      float inClere = step(0.75, vBand) * step(vBand, 0.89);
-      glassMask = inClere * smoothstep(0.68, 0.48, sLum) * smoothstep(0.22, 0.32, sLum);
+      float fres = pow(max(0.0001, 1.0 - clamp(abs(dot(normalize(normal), normalize(vViewPosition))), 0.0, 1.0)), 2.8);
+      vec3 archSkyCol = vec3(0.55, 0.78, 1.0) * (1.0 - uArchNight * 0.72);
+      diffuseColor.rgb = mix(diffuseColor.rgb, archSkyCol, fres * archGlassAmt * 0.20);
+      archFresnelSkySpec = archSkyCol * fres * archGlassAmt * 0.38;
+    }
+
+    // Multi-tone realistic nighttime interior lighting + mechanical refuge bands + warm ground storefronts
+    #ifdef USE_MAP
+      if (archNight > 0.005) {
+        vec3 srgbTex = sqrt(max(vec3(0.0), archTexel.rgb));
+        float sLum = dot(srgbTex, vec3(0.299, 0.587, 0.114));
+        float glassMask = 0.0;
+
+        #if ${iNightMode} == 1
+          float inResPane = step(0.09, archCellFrac.x) * step(archCellFrac.x, 0.91) * step(0.28, archCellFrac.y) * step(archCellFrac.y, 0.90);
+          float darkPane = smoothstep(0.73, 0.52, sLum) * smoothstep(0.18, 0.28, sLum);
+          float coolPane = smoothstep(-0.01, 0.03, srgbTex.b - srgbTex.r) * smoothstep(0.80, 0.56, sLum);
+          glassMask = inResPane * max(darkPane, coolPane);
+        #elif ${iNightMode} == 2
+          float inVision = step(0.05, archCellFrac.x) * step(archCellFrac.x, 0.95) * step(0.20, archCellFrac.y) * step(archCellFrac.y, 0.84);
+          glassMask = inVision * smoothstep(0.01, 0.06, srgbTex.b - srgbTex.r * 0.94) * smoothstep(0.74, 0.55, sLum) * smoothstep(0.16, 0.26, sLum);
+        #elif ${iNightMode} == 3
+          float inStoneWin = step(0.15, archCellFrac.x) * step(archCellFrac.x, 0.85) * step(0.10, archCellFrac.y) * step(archCellFrac.y, 0.88);
+          glassMask = inStoneWin * smoothstep(0.58, 0.40, sLum) * smoothstep(0.14, 0.23, sLum);
+        #elif ${iNightMode} == 4
+          float inShop = step(0.06, archCellFrac.x) * step(archCellFrac.x, 0.94) * step(0.03, archCellFrac.y) * step(archCellFrac.y, 0.62);
+          glassMask = inShop * smoothstep(0.20, 0.30, sLum) * smoothstep(0.86, 0.64, sLum);
+        #elif ${iNightMode} == 5
+          float inVilla = step(0.16, archCellFrac.x) * step(archCellFrac.x, 0.84) * step(0.16, archCellFrac.y) * step(archCellFrac.y, 0.82);
+          glassMask = inVilla * smoothstep(0.52, 0.34, sLum);
+        #elif ${iNightMode} == 6
+          float vBand = fract(archWallUV.y);
+          float inClere = step(0.75, vBand) * step(vBand, 0.89);
+          glassMask = inClere * smoothstep(0.68, 0.48, sLum) * smoothstep(0.22, 0.32, sLum);
+        #endif
+
+        float isRefugeBand = 0.0;
+        #if ${iNightMode} == 1 || ${iNightMode} == 2 || ${iNightMode} == 3
+          if (vArchMeshH > 1.05 && archLocalYClamped > 0.62) {
+            isRefugeBand = step(abs(mod(floor(archLocalYClamped / 0.14), 7.0) - 5.0), 0.25);
+          }
+        #endif
+
+        float isGroundLobby = (${iNightMode} == 6) ? 0.0 : (1.0 - smoothstep(0.15, 0.19, archLocalYClamped));
+        float baseProb = (${iNightMode} == 4) ? 0.78 : ((${iNightMode} == 2 || ${iNightMode} == 3) ? 0.50 : 0.46);
+        float litProb = mix(baseProb, 0.90, isGroundLobby);
+        float isLit = step(1.0 - litProb, winHash) * (1.0 - isRefugeBand);
+
+        vec3 col2700K = vec3(1.0, 0.76, 0.42);
+        vec3 col3400K = vec3(1.0, 0.84, 0.55);
+        vec3 col4800K = vec3(0.86, 0.93, 1.0);
+        vec3 colCyan = vec3(0.45, 0.85, 1.0);
+
+        vec3 toneCol = col2700K;
+        #if ${iNightMode} == 2 || ${iNightMode} == 3
+          if (winHash2 < 0.18) toneCol = col2700K;
+          else if (winHash2 < 0.40) toneCol = col3400K;
+          else if (winHash2 < 0.91) toneCol = col4800K;
+          else toneCol = colCyan;
+        #elif ${iNightMode} == 4
+          if (winHash2 < 0.24) toneCol = col2700K;
+          else if (winHash2 < 0.78) toneCol = col3400K;
+          else if (winHash2 < 0.94) toneCol = col4800K;
+          else toneCol = colCyan;
+        #elif ${iNightMode} == 6
+          if (winHash2 < 0.15) toneCol = col2700K;
+          else if (winHash2 < 0.40) toneCol = col3400K;
+          else if (winHash2 < 0.92) toneCol = col4800K;
+          else toneCol = colCyan;
+        #else
+          if (winHash2 < 0.58) toneCol = col2700K;
+          else if (winHash2 < 0.84) toneCol = col3400K;
+          else if (winHash2 < 0.96) toneCol = col4800K;
+          else toneCol = colCyan;
+        #endif
+
+        vec3 lobbyTone = mix(col2700K, col3400K, winHash3);
+        toneCol = mix(toneCol, lobbyTone, isGroundLobby * 0.85);
+        float lobbyBoost = mix(1.0, (${iNightMode} == 4) ? 1.30 : 1.18, isGroundLobby);
+        float paneGrad = mix(0.86, 1.14, smoothstep(0.15, 0.88, archCellFrac.y));
+        vec3 winRadiance = toneCol * (0.76 + 0.44 * winHash3) * lobbyBoost * paneGrad;
+
+        totalEmissiveRadiance = winRadiance * glassMask * isLit * archNight;
+      }
     #endif
-
-    float litProb = (${iNightMode} == 4) ? 0.78 : ((${iNightMode} == 2 || ${iNightMode} == 3) ? 0.48 : 0.44);
-    float isLit = step(1.0 - litProb, rnd);
-
-    vec3 warmGlow = vec3(1.0, 0.83, 0.58);
-    vec3 coolGlow = vec3(0.82, 0.92, 1.0);
-    float coolMix = (${iNightMode} == 2 || ${iNightMode} == 3) ? step(0.60, rndTemp) : step(0.88, rndTemp);
-    vec3 winRadiance = mix(warmGlow, coolGlow, coolMix) * (0.76 + 0.44 * fract(rnd * 29.3));
-
-    totalEmissiveRadiance = winRadiance * glassMask * isLit * archNight;
   }
 #endif`
+      )
+      .replace(
+        '#include <lights_fragment_end>',
+        `#include <lights_fragment_end>
+reflectedLight.indirectSpecular += archFresnelSkySpec;`
       );
+  };
+
+  const cacheKeyFn = function () {
+    return cacheKey + '_v75' + (this.normalMap ? '_N' : '') + (this.roughnessMap ? '_R' : '');
+  };
+  const protoClone = Object.getPrototypeOf(mat).clone;
+  const cloneFn = function () {
+    const cloned = protoClone.call(this);
+    cloned.onBeforeCompile = patchFn;
+    cloned.customProgramCacheKey = cacheKeyFn;
+    cloned._pbrUniforms = pbrUniforms;
+    cloned.clone = cloneFn;
+    return cloned;
   };
 
   mat.userData = mat.userData || {};
   mat.userData.facadePatch = true;
-  mat.userData.facadePatchOpts = opts;
-  mat.userData.pbrUniforms = pbrUniforms;
-  mat.onBeforeCompile = patchFn;
-  mat.customProgramCacheKey = function () {
-    return cacheKey + (this.normalMap ? '_N' : '') + (this.roughnessMap ? '_R' : '');
+  mat.userData.facadePatchOpts = {
+    cacheKey, tileW, tileH, roofScale, nightMode: iNightMode, cellsX, cellsY, planarOnly: Boolean(planarOnly)
   };
+  mat._pbrUniforms = pbrUniforms;
+  mat.onBeforeCompile = patchFn;
+  mat.customProgramCacheKey = cacheKeyFn;
+  mat.clone = cloneFn;
   return mat;
 }
 
@@ -5918,6 +6496,86 @@ function createPoolTexture(THREE) {
   return tex;
 }
 
+function createBusStopDisplayTexture(THREE) {
+  const c = document.createElement('canvas');
+  c.width = 128;
+  c.height = 192;
+  const g = c.getContext('2d');
+  if (g) {
+    g.fillStyle = '#071527';
+    g.fillRect(0, 0, 128, 192);
+
+    // Top bright cyan EV transit header bar
+    g.fillStyle = '#0ea5e9';
+    g.fillRect(6, 6, 116, 26);
+    g.fillStyle = '#e0f2fe';
+    g.fillRect(14, 14, 62, 10);
+    g.fillStyle = '#38bdf8';
+    g.fillRect(86, 14, 28, 10);
+
+    // Live route rows (E1, B8, M2) with glowing ETA pills
+    const rows = [
+      { y: 44, badge: '#06b6d4', eta: '#4ade80' },
+      { y: 82, badge: '#0ea5e9', eta: '#fbbf24' },
+      { y: 120, badge: '#38bdf8', eta: '#4ade80' }
+    ];
+    for (const r of rows) {
+      g.fillStyle = '#0f2540';
+      g.fillRect(8, r.y, 112, 28);
+      g.fillStyle = r.badge;
+      g.fillRect(12, r.y + 5, 24, 18);
+      g.fillStyle = '#cbd5e1';
+      g.fillRect(42, r.y + 8, 42, 5);
+      g.fillStyle = '#64748b';
+      g.fillRect(42, r.y + 17, 32, 4);
+      g.fillStyle = r.eta;
+      g.fillRect(92, r.y + 7, 22, 14);
+    }
+
+    // Bottom horizontal transit route diagram line + stop nodes
+    g.fillStyle = '#0284c7';
+    g.fillRect(14, 166, 100, 4);
+    for (let x = 18; x <= 110; x += 23) {
+      g.fillStyle = x === 41 ? '#fde047' : '#7dd3fc';
+      g.fillRect(x - 4, 163, 8, 10);
+    }
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+function createBusSignTexture(THREE) {
+  const c = document.createElement('canvas');
+  c.width = 64;
+  c.height = 64;
+  const g = c.getContext('2d');
+  if (g) {
+    g.fillStyle = '#0284c7';
+    g.fillRect(0, 0, 64, 64);
+    g.strokeStyle = '#e0f2fe';
+    g.lineWidth = 4;
+    g.strokeRect(4, 4, 56, 56);
+    // Bold white EV transit bus icon silhouette
+    g.fillStyle = '#f8fafc';
+    g.fillRect(14, 14, 36, 28);
+    g.fillStyle = '#0369a1';
+    g.fillRect(18, 18, 28, 12);
+    g.fillStyle = '#38bdf8';
+    g.fillRect(18, 34, 8, 5);
+    g.fillRect(38, 34, 8, 5);
+    g.fillStyle = '#f8fafc';
+    g.fillRect(18, 42, 6, 5);
+    g.fillRect(40, 42, 6, 5);
+    // Bright cyan EV strip along bottom
+    g.fillStyle = '#38bdf8';
+    g.fillRect(12, 51, 40, 4);
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
 // ==================== Main ArchitectureLibrary Class ====================
 class ArchitectureLibrary {
   constructor(THREE, glbProtos = {}, mats = {}) {
@@ -5927,6 +6585,9 @@ class ArchitectureLibrary {
     this.emissiveMaterials = [];
     this._pbrBindings = [];
     this._glbAbandonedCache = new WeakMap();
+    this._sharedArchUniforms = {
+      uArchNight: { value: 0.0 }
+    };
 
     this._initTexturesAndMaterials();
     this._initSculptedGeometries();
@@ -5985,6 +6646,15 @@ class ArchitectureLibrary {
     return source[key] || null;
   }
 
+  _hasExplicitNullKey(source, key) {
+    if (!source || !key) return false;
+    if (key in source && source[key] === null) return true;
+    if (source.textures && typeof source.textures === 'object' && !(source.textures instanceof Map)) {
+      if (key in source.textures && source.textures[key] === null) return true;
+    }
+    return false;
+  }
+
   // Hot-binds external Albedo + Normal + Roughness PBR textures onto all shared materials with ZERO scene rebuild!
   applyLoadedPBRTextures(texMap) {
     const src = texMap || globalThis.__ASSET_MGR;
@@ -6010,10 +6680,16 @@ class ArchitectureLibrary {
         || null;
 
       if (albedo) this.photoTex[k] = this._configureTexture(albedo, true);
-      if (norm) this.normTex[k] = this._configureTexture(norm, false);
-      else if (entry && !entry.isTexture && ('normalMap' in entry || 'norm' in entry)) this.normTex[k] = null;
-      if (rough) this.roughTex[k] = this._configureTexture(rough, false);
-      else if (entry && !entry.isTexture && ('roughnessMap' in entry || 'rough' in entry)) this.roughTex[k] = null;
+      if (norm) {
+        this.normTex[k] = this._configureTexture(norm, false);
+      } else if (entry || this._hasExplicitNullKey(src, `${k}_norm`) || this._hasExplicitNullKey(src, `${k}_normal`)) {
+        this.normTex[k] = null;
+      }
+      if (rough) {
+        this.roughTex[k] = this._configureTexture(rough, false);
+      } else if (entry || this._hasExplicitNullKey(src, `${k}_rough`) || this._hasExplicitNullKey(src, `${k}_roughness`)) {
+        this.roughTex[k] = null;
+      }
     }
 
     let updatedCount = 0;
@@ -6031,11 +6707,15 @@ class ArchitectureLibrary {
         mat.map = wMap;
         changed = true;
       }
-      if (wNorm && mat.normalMap !== wNorm) {
-        mat.normalMap = wNorm;
-        mat.normalScale = new THREE.Vector2(normalStrength, normalStrength);
-        changed = true;
-      } else if (!wNorm && mat.normalMap) {
+      if (wNorm) {
+        if (mat.normalMap !== wNorm) {
+          mat.normalMap = wNorm;
+          changed = true;
+        }
+        if (!mat.normalScale || mat.normalScale.x !== normalStrength || mat.normalScale.y !== normalStrength) {
+          mat.normalScale = new THREE.Vector2(normalStrength, normalStrength);
+        }
+      } else if (mat.normalMap) {
         mat.normalMap = null;
         changed = true;
       }
@@ -6051,7 +6731,7 @@ class ArchitectureLibrary {
         mat.roughness = fallbackRough;
       }
 
-      const u = mat.userData && mat.userData.pbrUniforms;
+      const u = mat._pbrUniforms || (mat.userData && mat.userData.pbrUniforms);
       if (u) {
         if (rMap && u.uArchRoofMap.value !== rMap) { u.uArchRoofMap.value = rMap; changed = true; }
         if (u.uArchRoofNormMap.value !== rNorm) { u.uArchRoofNormMap.value = rNorm; changed = true; }
@@ -6098,8 +6778,10 @@ class ArchitectureLibrary {
     this.texContainer = createContainerRibsTexture(THREE);
     this.texRunway = createRunwayTexture(THREE);
     this.texPool = createPoolTexture(THREE);
+    this.texBusDisplay = createBusStopDisplayTexture(THREE);
+    this.texBusSign = createBusSignTexture(THREE);
 
-    const makeWorldFacadeMat = (key, wallKey, roofKey, colorHex, rough, metal, patchCfg, normalStrength = 0.55) => {
+    const makeWorldFacadeMat = (key, wallKey, roofKey, colorHex, rough, metal, patchCfg, normalStrength = 0.95) => {
       const isLit = (patchCfg.nightMode || 0) > 0;
       const tex = this.photoTex[wallKey];
       const rTex = this.photoTex[roofKey] || tex;
@@ -6116,6 +6798,7 @@ class ArchitectureLibrary {
         roofTex: rTex,
         roofNormTex: this._flatNormalTex,
         roofRoughTex: this._neutralRoughTex,
+        nightUniform: this._sharedArchUniforms.uArchNight,
         ...patchCfg
       });
       this._pbrBindings.push({ mat: m, wallKey, roofKey, fallbackRough: rough, normalStrength });
@@ -6123,7 +6806,7 @@ class ArchitectureLibrary {
       return m;
     };
 
-    const makePlanarMat = (key, texKey, colorHex, rough, metal, scaleXZ, normalStrength = 0.55) => {
+    const makePlanarMat = (key, texKey, colorHex, rough, metal, scaleXZ, normalStrength = 0.95) => {
       const tex = this.photoTex[texKey];
       const m = new THREE.MeshStandardMaterial({
         color: colorHex,
@@ -6140,7 +6823,8 @@ class ArchitectureLibrary {
         roofRoughTex: this._neutralRoughTex,
         roofScale: scaleXZ,
         nightMode: 0,
-        planarOnly: true
+        planarOnly: true,
+        nightUniform: this._sharedArchUniforms.uArchNight
       });
       this._pbrBindings.push({ mat: m, wallKey: texKey, roofKey: texKey, fallbackRough: rough, normalStrength });
       return m;
@@ -6168,100 +6852,100 @@ class ArchitectureLibrary {
       contactAO,
 
       // Top-down world-space granite plaza paving, concrete roof membrane, green roof & gravity dam concrete
-      pavingPlaza: makePlanarMat('arch_planar_plaza_v2', 'paving_plaza', 0xffffff, 0.78, 0.05, 0.46),
-      pavingPlazaDusty: makePlanarMat('arch_planar_plaza_dusty_v2', 'paving_plaza', 0x8e9298, 0.90, 0.03, 0.46),
-      roofConcrete: makePlanarMat('arch_planar_roof_conc_v2', 'roof_concrete', 0xf1f5f9, 0.84, 0.04, 0.72),
-      roofGreen: makePlanarMat('arch_planar_roof_green_v2', 'roof_solar_green', 0xffffff, 0.82, 0.04, 0.78),
+      pavingPlaza: makePlanarMat('arch_planar_plaza_v2', 'paving_plaza', 0xffffff, 0.78, 0.05, 0.46, 0.95),
+      pavingPlazaDusty: makePlanarMat('arch_planar_plaza_dusty_v2', 'paving_plaza', 0x8e9298, 0.90, 0.03, 0.46, 0.95),
+      roofConcrete: makePlanarMat('arch_planar_roof_conc_v2', 'roof_concrete', 0xf1f5f9, 0.84, 0.04, 0.72, 0.95),
+      roofGreen: makePlanarMat('arch_planar_roof_green_v2', 'roof_solar_green', 0xffffff, 0.82, 0.04, 0.78, 0.95),
       damConcrete: makeWorldFacadeMat('arch_fac_dam_conc_v2', 'dam_concrete', 'roof_concrete', 0xd8dee6, 0.80, 0.06, {
         tileW: 0.85, tileH: 0.85, roofScale: 0.75, nightMode: 0, cellsX: 2, cellsY: 2
-      }, 0.65),
+      }, 1.10),
 
-      // Contemporary Grade-A Office & Commercial Curtain-Wall Facades (CH & O)
+      // Contemporary Grade-A Office & Commercial Curtain-Wall Facades (CH & O) — crisp 1.10 mullion relief
       cbdIceBlue: makeWorldFacadeMat('arch_fac_off_glass_ice_v2', 'office_glass', 'roof_concrete', 0xdceeff, 0.18, 0.38, {
         tileW: 0.64, tileH: 0.68, roofScale: 0.72, nightMode: 2, cellsX: 4, cellsY: 4
-      }),
+      }, 1.10),
       cbdSlateSilver: makeWorldFacadeMat('arch_fac_off_glass_sil_v2', 'office_glass', 'roof_concrete', 0xf1f5f9, 0.17, 0.42, {
         tileW: 0.64, tileH: 0.68, roofScale: 0.72, nightMode: 2, cellsX: 4, cellsY: 4
-      }),
+      }, 1.10),
       cbdDeepAzure: makeWorldFacadeMat('arch_fac_off_glass_az_v2', 'office_glass', 'roof_concrete', 0xbcd8f4, 0.19, 0.38, {
         tileW: 0.64, tileH: 0.68, roofScale: 0.72, nightMode: 2, cellsX: 4, cellsY: 4
-      }),
+      }, 1.10),
       cbdTealGlass: makeWorldFacadeMat('arch_fac_off_glass_tl_v2', 'office_glass', 'roof_concrete', 0xc4edea, 0.18, 0.36, {
         tileW: 0.64, tileH: 0.68, roofScale: 0.72, nightMode: 2, cellsX: 4, cellsY: 4
-      }),
+      }, 1.10),
       finStoneChampagne: makeWorldFacadeMat('arch_fac_off_stone_ch_v2', 'office_stone', 'roof_concrete', 0xfbf6ee, 0.52, 0.12, {
         tileW: 0.64, tileH: 0.68, roofScale: 0.72, nightMode: 3, cellsX: 4, cellsY: 4
-      }),
+      }, 0.95),
       finStoneSilver: makeWorldFacadeMat('arch_fac_off_stone_sl_v2', 'office_stone', 'roof_concrete', 0xe8eef5, 0.48, 0.16, {
         tileW: 0.64, tileH: 0.68, roofScale: 0.72, nightMode: 3, cellsX: 4, cellsY: 4
-      }),
+      }, 0.95),
 
       // Ground-Floor Luxury Retail Shopfront Podium (CL, RH, CH, O podiums)
       retailPodium: makeWorldFacadeMat('arch_fac_retail_pod_v2', 'retail_podium', 'roof_solar_green', 0xffffff, 0.38, 0.18, {
         tileW: 0.72, tileH: 0.36, roofScale: 0.78, nightMode: 4, cellsX: 4, cellsY: 1
-      }),
+      }, 0.95),
       retailPodiumConc: makeWorldFacadeMat('arch_fac_retail_podc_v2', 'retail_podium', 'roof_concrete', 0xf8fafc, 0.38, 0.18, {
         tileW: 0.72, tileH: 0.36, roofScale: 0.72, nightMode: 4, cellsX: 4, cellsY: 1
-      }),
+      }, 0.95),
 
       // Contemporary Chinese High-Rise Residential Facades (RH: res_beige & res_grey)
       condoWarmWhite: makeWorldFacadeMat('arch_fac_res_beige_w_v2', 'res_beige', 'roof_concrete', 0xffffff, 0.62, 0.06, {
         tileW: 0.64, tileH: 0.60, roofScale: 0.72, nightMode: 1, cellsX: 4, cellsY: 4
-      }),
+      }, 0.95),
       condoChampagne: makeWorldFacadeMat('arch_fac_res_beige_c_v2', 'res_beige', 'roof_concrete', 0xf5eadc, 0.64, 0.06, {
         tileW: 0.64, tileH: 0.60, roofScale: 0.72, nightMode: 1, cellsX: 4, cellsY: 4
-      }),
+      }, 0.95),
       condoWarmGrey: makeWorldFacadeMat('arch_fac_res_grey_g_v2', 'res_grey', 'roof_concrete', 0xf8fafc, 0.58, 0.08, {
         tileW: 0.64, tileH: 0.60, roofScale: 0.72, nightMode: 1, cellsX: 4, cellsY: 4
-      }),
+      }, 0.95),
       condoSandStone: makeWorldFacadeMat('arch_fac_res_grey_s_v2', 'res_grey', 'roof_concrete', 0xeee8df, 0.60, 0.08, {
         tileW: 0.64, tileH: 0.60, roofScale: 0.72, nightMode: 1, cellsX: 4, cellsY: 4
-      }),
+      }, 0.95),
 
       // Low-Density Villa / Townhouse Cream Plaster Facades (RL)
       villaCream: makeWorldFacadeMat('arch_fac_villa_cr_v2', 'villa_plaster', 'roof_concrete', 0xffffff, 0.72, 0.04, {
         tileW: 0.44, tileH: 0.34, roofScale: 0.64, nightMode: 5, cellsX: 2, cellsY: 2
-      }),
+      }, 0.95),
       villaSand: makeWorldFacadeMat('arch_fac_villa_sd_v2', 'villa_plaster', 'roof_concrete', 0xf3e7d8, 0.74, 0.04, {
         tileW: 0.44, tileH: 0.34, roofScale: 0.64, nightMode: 5, cellsX: 2, cellsY: 2
-      }),
+      }, 0.95),
       villaCool: makeWorldFacadeMat('arch_fac_villa_cl_v2', 'villa_plaster', 'roof_concrete', 0xeaeff5, 0.70, 0.05, {
         tileW: 0.44, tileH: 0.34, roofScale: 0.64, nightMode: 5, cellsX: 2, cellsY: 2
-      }),
+      }, 0.95),
 
-      // Industrial Cladding + Clerestory Strip Facades (I)
+      // Industrial Cladding + Clerestory Strip Facades (I) — crisp 1.10 corrugated rib relief
       indPanelBlue: makeWorldFacadeMat('arch_fac_ind_bl_v2', 'industrial_panel', 'roof_concrete', 0xdce8f5, 0.52, 0.32, {
         tileW: 0.60, tileH: 0.42, roofScale: 0.72, nightMode: 6, cellsX: 3, cellsY: 1
-      }),
+      }, 1.10),
       indPanelSilver: makeWorldFacadeMat('arch_fac_ind_sl_v2', 'industrial_panel', 'roof_concrete', 0xf4f7fb, 0.44, 0.38, {
         tileW: 0.60, tileH: 0.42, roofScale: 0.72, nightMode: 6, cellsX: 3, cellsY: 1
-      }),
+      }, 1.10),
       indPanelWarm: makeWorldFacadeMat('arch_fac_ind_wm_v2', 'industrial_panel', 'roof_concrete', 0xd8cec4, 0.60, 0.26, {
         tileW: 0.60, tileH: 0.42, roofScale: 0.72, nightMode: 6, cellsX: 3, cellsY: 1
-      }),
+      }, 1.10),
 
       // Dusty Desaturated Abandoned Versions of the Same PBR Textures (nightMode: 0)
       dustyCBD: makeWorldFacadeMat('arch_fac_dusty_cbd_v2', 'office_glass', 'roof_concrete', 0x8b929a, 0.88, 0.08, {
         tileW: 0.64, tileH: 0.68, roofScale: 0.72, nightMode: 0, cellsX: 4, cellsY: 4
-      }),
+      }, 1.10),
       dustyStoneFin: makeWorldFacadeMat('arch_fac_dusty_st_v2', 'office_stone', 'roof_concrete', 0x908d88, 0.90, 0.05, {
         tileW: 0.64, tileH: 0.68, roofScale: 0.72, nightMode: 0, cellsX: 4, cellsY: 4
-      }),
+      }, 0.95),
       dustyRetail: makeWorldFacadeMat('arch_fac_dusty_ret_v2', 'retail_podium', 'roof_concrete', 0x8a8e94, 0.90, 0.05, {
         tileW: 0.72, tileH: 0.36, roofScale: 0.72, nightMode: 0, cellsX: 4, cellsY: 1
-      }),
+      }, 0.95),
       dustyCondo: makeWorldFacadeMat('arch_fac_dusty_res_v2', 'res_beige', 'roof_concrete', 0x92908b, 0.90, 0.04, {
         tileW: 0.64, tileH: 0.60, roofScale: 0.72, nightMode: 0, cellsX: 4, cellsY: 4
-      }),
+      }, 0.95),
       dustyCondoGrey: makeWorldFacadeMat('arch_fac_dusty_resg_v2', 'res_grey', 'roof_concrete', 0x8d9196, 0.90, 0.04, {
         tileW: 0.64, tileH: 0.60, roofScale: 0.72, nightMode: 0, cellsX: 4, cellsY: 4
-      }),
+      }, 0.95),
       dustyVilla: makeWorldFacadeMat('arch_fac_dusty_vil_v2', 'villa_plaster', 'roof_concrete', 0x938f88, 0.92, 0.03, {
         tileW: 0.44, tileH: 0.34, roofScale: 0.64, nightMode: 0, cellsX: 2, cellsY: 2
-      }),
+      }, 0.95),
       dustyInd: makeWorldFacadeMat('arch_fac_dusty_ind_v2', 'industrial_panel', 'roof_concrete', 0x888e95, 0.90, 0.08, {
         tileW: 0.60, tileH: 0.42, roofScale: 0.72, nightMode: 0, cellsX: 3, cellsY: 1
-      }),
+      }, 1.10),
 
       // Architectural trims, concrete, metals & glass
       plazaStone: new THREE.MeshStandardMaterial({ color: 0xcbd5e1, roughness: 0.74, metalness: 0.05 }),
@@ -6281,6 +6965,39 @@ class ArchitectureLibrary {
         metalness: 0.38,
         transparent: true,
         opacity: 0.86
+      }),
+      balconyGlass: new THREE.MeshStandardMaterial({
+        color: 0x2b4e6e,
+        emissive: 0x10283d,
+        emissiveIntensity: 0.08,
+        roughness: 0.11,
+        metalness: 0.50,
+        transparent: true,
+        opacity: 0.74
+      }),
+      retailWarmGlow: new THREE.MeshStandardMaterial({
+        color: 0xffe6bd,
+        emissive: 0xffb347,
+        emissiveIntensity: 0.20,
+        roughness: 0.28,
+        metalness: 0.12
+      }),
+      busStopScreen: new THREE.MeshStandardMaterial({
+        color: 0xffffff,
+        map: this.texBusDisplay,
+        emissive: 0x38bdf8,
+        emissiveMap: this.texBusDisplay,
+        emissiveIntensity: 0.42,
+        roughness: 0.16,
+        metalness: 0.18
+      }),
+      busSign: new THREE.MeshStandardMaterial({
+        color: 0xffffff,
+        map: this.texBusSign,
+        emissive: 0x0ea5e9,
+        emissiveIntensity: 0.22,
+        roughness: 0.26,
+        metalness: 0.20
       }),
       cockpitGlass: new THREE.MeshStandardMaterial({ color: 0x111a2b, roughness: 0.09, metalness: 0.72 }),
 
@@ -6841,6 +7558,197 @@ class ArchitectureLibrary {
       [-0.212, 0.068]
     ], 0.156, 0.006);
 
+    // 10. v7.5 Architectural Micro-Detail Shared Pre-Merged Geometries (Balconies, Cornice Belts, Retail Canopies, Rooftop Kits & EV Bus Stop Shelter)
+    // 10a. 3-Floor Modular Protruding Residential Balcony Strip (unit X/Z, fixed architectural height 3 × 0.15)
+    const balcConcParts = [];
+    const balcGlassParts = [];
+    for (const ty of [-0.15, 0.0, 0.15]) {
+      for (const side of [-1, 1]) {
+        for (const bx of [-0.27, 0.27]) {
+          // Cantilevered concrete floor slab embedded slightly into facade (z ∈ [0.47, 0.61])
+          balcConcParts.push({ geo: box, px: bx, py: ty, pz: side * 0.542, sx: 0.32, sy: 0.018, sz: 0.140 });
+          // Outer architectural privacy partition fin
+          balcConcParts.push({ geo: box, px: bx + Math.sign(bx) * 0.152, py: ty + 0.036, pz: side * 0.540, sx: 0.018, sy: 0.064, sz: 0.132 });
+          // Top slim metallic coping rail over glass balustrade
+          balcConcParts.push({ geo: box, px: bx, py: ty + 0.061, pz: side * 0.602, sx: 0.312, sy: 0.008, sz: 0.018 });
+          // Tinted glass front balustrade & inner side return glass
+          balcGlassParts.push({ geo: box, px: bx, py: ty + 0.034, pz: side * 0.602, sx: 0.304, sy: 0.050, sz: 0.014 });
+          balcGlassParts.push({ geo: box, px: bx - Math.sign(bx) * 0.152, py: ty + 0.034, pz: side * 0.545, sx: 0.014, sy: 0.050, sz: 0.118 });
+        }
+      }
+    }
+    const balconyStrip = mergeParts(THREE, balcConcParts);
+    const balconyGlass = mergeParts(THREE, balcGlassParts);
+
+    // 10b. Sculpted 2-Stepped 4-Sided Horizontal Stone/Metal Cornice Belt Trim (unit X/Z, fixed height 0.036)
+    const corniceBelt = mergeParts(THREE, [
+      // Lower recessed drip soffit ring
+      { geo: box, px: 0, py: -0.010, pz: 0.494, sx: 1.028, sy: 0.015, sz: 0.044 },
+      { geo: box, px: 0, py: -0.010, pz: -0.494, sx: 1.028, sy: 0.015, sz: 0.044 },
+      { geo: box, px: 0.494, py: -0.010, pz: 0, sx: 0.044, sy: 0.015, sz: 0.944 },
+      { geo: box, px: -0.494, py: -0.010, pz: 0, sx: 0.044, sy: 0.015, sz: 0.944 },
+      // Upper projecting cornice coping cap
+      { geo: box, px: 0, py: 0.008, pz: 0.502, sx: 1.058, sy: 0.020, sz: 0.056 },
+      { geo: box, px: 0, py: 0.008, pz: -0.502, sx: 1.058, sy: 0.020, sz: 0.056 },
+      { geo: box, px: 0.502, py: 0.008, pz: 0, sx: 0.056, sy: 0.020, sz: 0.950 },
+      { geo: box, px: -0.502, py: 0.008, pz: 0, sx: 0.056, sy: 0.020, sz: 0.950 }
+    ]);
+
+    // 10c. Recessed Ground-Floor Commercial Shopfront Canopy (anchored at z=0, facing +Z, jambs seated at y=-0.215)
+    const retailCanopy = mergeParts(THREE, [
+      { geo: box, px: 0, py: 0.0, pz: 0.006, sx: 0.44, sy: 0.022, sz: 0.016 },
+      { geo: box, px: 0, py: -0.006, pz: 0.098, sx: 0.44, sy: 0.018, sz: 0.014 },
+      { geo: box, px: -0.21, py: -0.003, pz: 0.052, rx: 0.06, sx: 0.014, sy: 0.015, sz: 0.096 },
+      { geo: box, px: -0.07, py: -0.003, pz: 0.052, rx: 0.06, sx: 0.012, sy: 0.014, sz: 0.096 },
+      { geo: box, px: 0.07, py: -0.003, pz: 0.052, rx: 0.06, sx: 0.012, sy: 0.014, sz: 0.096 },
+      { geo: box, px: 0.21, py: -0.003, pz: 0.052, rx: 0.06, sx: 0.014, sy: 0.015, sz: 0.096 },
+      // Twin diagonal structural tension tie-rods back into podium wall
+      { geo: box, px: -0.15, py: 0.036, pz: 0.044, rx: 0.72, sx: 0.008, sy: 0.008, sz: 0.114 },
+      { geo: box, px: 0.15, py: 0.036, pz: 0.044, rx: 0.72, sx: 0.008, sy: 0.008, sz: 0.114 },
+      // Recessed storefront portal jamb pilasters
+      { geo: box, px: -0.206, py: -0.1075, pz: 0.008, sx: 0.020, sy: 0.215, sz: 0.024 },
+      { geo: box, px: 0.206, py: -0.1075, pz: 0.008, sx: 0.020, sy: 0.215, sz: 0.024 }
+    ]);
+    const retailCanopyGlass = mergeParts(THREE, [
+      { geo: box, px: 0, py: 0.004, pz: 0.052, rx: 0.06, sx: 0.408, sy: 0.007, sz: 0.088 }
+    ]);
+    const retailLintel = mergeParts(THREE, [
+      { geo: box, px: 0, py: -0.017, pz: 0.022, sx: 0.39, sy: 0.014, sz: 0.030 }
+    ]);
+
+    // 10d. Shared Pre-Merged Rooftop Mechanical & Sky-Garden Kits (all resting cleanly on local y = 0.000)
+    const rooftopHvacKit = mergeParts(THREE, [
+      // Mounting steel skids
+      { geo: box, px: 0, py: 0.006, pz: -0.042, sx: 0.185, sy: 0.012, sz: 0.014 },
+      { geo: box, px: 0, py: 0.006, pz: 0.042, sx: 0.185, sy: 0.012, sz: 0.014 },
+      // Primary chiller cabinet & stepped compressor module
+      { geo: box, px: -0.006, py: 0.044, pz: 0, sx: 0.162, sy: 0.068, sz: 0.104 },
+      { geo: box, px: 0.092, py: 0.031, pz: 0, sx: 0.040, sy: 0.044, sz: 0.072 },
+      // Twin cylindrical exhaust fan cowling shrouds
+      { geo: cyl16, px: -0.048, py: 0.087, pz: 0, sx: 0.062, sy: 0.022, sz: 0.062 },
+      { geo: cyl16, px: 0.036, py: 0.087, pz: 0, sx: 0.062, sy: 0.022, sz: 0.062 },
+      // Insulated refrigerant riser & elbow bridge
+      { geo: box, px: 0.086, py: 0.060, pz: 0.016, sx: 0.042, sy: 0.014, sz: 0.018 },
+      { geo: cyl16, px: 0.092, py: 0.054, pz: -0.016, sx: 0.016, sy: 0.028, sz: 0.016 }
+    ]);
+    const rooftopHvacDark = mergeParts(THREE, [
+      { geo: cyl16, px: -0.048, py: 0.096, pz: 0, sx: 0.048, sy: 0.008, sz: 0.048 },
+      { geo: cyl16, px: 0.036, py: 0.096, pz: 0, sx: 0.048, sy: 0.008, sz: 0.048 },
+      { geo: box, px: -0.006, py: 0.044, pz: 0.054, sx: 0.132, sy: 0.042, sz: 0.006 },
+      { geo: box, px: -0.006, py: 0.044, pz: -0.054, sx: 0.132, sy: 0.042, sz: 0.006 }
+    ]);
+
+    const rooftopPenthouse = mergeParts(THREE, [
+      { geo: box, px: -0.012, py: 0.068, pz: 0, sx: 0.185, sy: 0.136, sz: 0.148 },
+      { geo: box, px: -0.012, py: 0.142, pz: 0, sx: 0.204, sy: 0.014, sz: 0.166 },
+      { geo: box, px: 0.088, py: 0.052, pz: -0.01, sx: 0.056, sy: 0.104, sz: 0.092 },
+      { geo: box, px: 0.088, py: 0.108, pz: -0.01, sx: 0.066, sy: 0.010, sz: 0.102 }
+    ]);
+    const rooftopPenthouseLouvers = mergeParts(THREE, [
+      { geo: box, px: -0.012, py: 0.090, pz: 0.076, sx: 0.136, sy: 0.042, sz: 0.008 },
+      { geo: box, px: -0.012, py: 0.090, pz: -0.076, sx: 0.136, sy: 0.042, sz: 0.008 },
+      { geo: box, px: -0.106, py: 0.090, pz: 0, sx: 0.008, sy: 0.042, sz: 0.100 },
+      { geo: box, px: 0.088, py: 0.042, pz: 0.038, sx: 0.034, sy: 0.076, sz: 0.008 }
+    ]);
+
+    const rooftopGlassRail = mergeParts(THREE, [
+      { geo: box, px: 0, py: 0.028, pz: 0.455, sx: 0.90, sy: 0.048, sz: 0.012 },
+      { geo: box, px: 0, py: 0.028, pz: -0.455, sx: 0.90, sy: 0.048, sz: 0.012 },
+      { geo: box, px: 0.455, py: 0.028, pz: 0, sx: 0.012, sy: 0.048, sz: 0.89 },
+      { geo: box, px: -0.455, py: 0.028, pz: 0, sx: 0.012, sy: 0.048, sz: 0.89 }
+    ]);
+    const rooftopGlassRailPosts = mergeParts(THREE, [
+      { geo: box, px: 0, py: 0.054, pz: 0.455, sx: 0.92, sy: 0.008, sz: 0.018 },
+      { geo: box, px: 0, py: 0.054, pz: -0.455, sx: 0.92, sy: 0.008, sz: 0.018 },
+      { geo: box, px: 0.455, py: 0.054, pz: 0, sx: 0.018, sy: 0.008, sz: 0.91 },
+      { geo: box, px: -0.455, py: 0.054, pz: 0, sx: 0.018, sy: 0.008, sz: 0.91 },
+      { geo: box, px: -0.455, py: 0.028, pz: -0.455, sx: 0.018, sy: 0.056, sz: 0.018 },
+      { geo: box, px: 0.455, py: 0.028, pz: -0.455, sx: 0.018, sy: 0.056, sz: 0.018 },
+      { geo: box, px: -0.455, py: 0.028, pz: 0.455, sx: 0.018, sy: 0.056, sz: 0.018 },
+      { geo: box, px: 0.455, py: 0.028, pz: 0.455, sx: 0.018, sy: 0.056, sz: 0.018 }
+    ]);
+
+    const pergolaParts = [
+      { geo: box, px: -0.095, py: 0.050, pz: -0.062, sx: 0.014, sy: 0.100, sz: 0.014 },
+      { geo: box, px: 0.095, py: 0.050, pz: -0.062, sx: 0.014, sy: 0.100, sz: 0.014 },
+      { geo: box, px: -0.095, py: 0.050, pz: 0.062, sx: 0.014, sy: 0.100, sz: 0.014 },
+      { geo: box, px: 0.095, py: 0.050, pz: 0.062, sx: 0.014, sy: 0.100, sz: 0.014 },
+      { geo: box, px: -0.095, py: 0.100, pz: 0, sx: 0.016, sy: 0.014, sz: 0.144 },
+      { geo: box, px: 0.095, py: 0.100, pz: 0, sx: 0.016, sy: 0.014, sz: 0.144 },
+      // Raised planter box curbs flanking pergola
+      { geo: box, px: -0.128, py: 0.016, pz: 0, sx: 0.042, sy: 0.032, sz: 0.142 },
+      { geo: box, px: 0.128, py: 0.016, pz: 0, sx: 0.042, sy: 0.032, sz: 0.142 }
+    ];
+    for (const lz of [-0.058, -0.029, 0.0, 0.029, 0.058]) {
+      pergolaParts.push({ geo: box, px: 0, py: 0.107, pz: lz, sx: 0.214, sy: 0.008, sz: 0.012 });
+    }
+    const rooftopPergola = mergeParts(THREE, pergolaParts);
+    const rooftopPlanterGreens = mergeParts(THREE, [
+      { geo: box, px: -0.128, py: 0.040, pz: 0, sx: 0.034, sy: 0.028, sz: 0.132 },
+      { geo: box, px: 0.128, py: 0.040, pz: 0, sx: 0.034, sy: 0.028, sz: 0.132 },
+      { geo: treeCrown, px: -0.128, py: 0.060, pz: 0.042, sx: 0.24, sy: 0.24, sz: 0.24 },
+      { geo: treeCrown, px: 0.128, py: 0.060, pz: -0.042, sx: 0.24, sy: 0.24, sz: 0.24 }
+    ]);
+
+    // 10e. Modern Roadside EV Bus Stop Shelter (local y=0 base, facing +Z, W≈0.41, D≈0.16, H≈0.24)
+    const busCanopyShape = new THREE.Shape();
+    busCanopyShape.moveTo(-0.074, 0.190);
+    busCanopyShape.quadraticCurveTo(0.0, 0.218, 0.078, 0.200);
+    busCanopyShape.lineTo(0.078, 0.193);
+    busCanopyShape.quadraticCurveTo(0.0, 0.210, -0.074, 0.183);
+    busCanopyShape.closePath();
+    const busCanopyArc = new THREE.ExtrudeGeometry(busCanopyShape, { depth: 0.324, bevelEnabled: false });
+    busCanopyArc.translate(0, 0, -0.162);
+    busCanopyArc.rotateY(-Math.PI * 0.5);
+
+    const busStopGlass = mergeParts(THREE, [
+      { geo: busCanopyArc, px: -0.018, py: 0, pz: 0 },
+      { geo: box, px: -0.018, py: 0.114, pz: -0.056, sx: 0.282, sy: 0.132, sz: 0.008 }
+    ]);
+    busCanopyArc.dispose();
+
+    const busStopMetal = mergeParts(THREE, [
+      // Base mounting curb bar seated flush at y=0.000
+      { geo: box, px: -0.018, py: 0.004, pz: -0.048, sx: 0.312, sy: 0.008, sz: 0.038 },
+      // Twin brushed-silver cantilevered rear columns
+      { geo: box, px: -0.155, py: 0.098, pz: -0.056, sx: 0.018, sy: 0.196, sz: 0.018 },
+      { geo: box, px: 0.118, py: 0.098, pz: -0.056, sx: 0.018, sy: 0.196, sz: 0.018 },
+      // Cantilevered arched-roof steel support arms
+      { geo: box, px: -0.155, py: 0.196, pz: 0.002, rx: -0.08, sx: 0.016, sy: 0.012, sz: 0.144 },
+      { geo: box, px: 0.118, py: 0.196, pz: 0.002, rx: -0.08, sx: 0.016, sy: 0.012, sz: 0.144 },
+      // Rear glass windscreen mullions + front canopy drip fascia
+      { geo: box, px: -0.018, py: 0.182, pz: -0.056, sx: 0.290, sy: 0.010, sz: 0.014 },
+      { geo: box, px: -0.018, py: 0.044, pz: -0.056, sx: 0.290, sy: 0.010, sz: 0.014 },
+      { geo: box, px: -0.018, py: 0.196, pz: 0.077, sx: 0.326, sy: 0.010, sz: 0.008 },
+      // Left electronic route display cabinet frame & pedestal
+      { geo: box, px: -0.125, py: 0.106, pz: -0.036, sx: 0.068, sy: 0.152, sz: 0.022 },
+      { geo: box, px: -0.125, py: 0.018, pz: -0.036, sx: 0.046, sy: 0.036, sz: 0.018 },
+      // Metal bench legs seated at y=0.000
+      { geo: box, px: -0.045, py: 0.025, pz: -0.022, sx: 0.012, sy: 0.050, sz: 0.042 },
+      { geo: box, px: 0.088, py: 0.025, pz: -0.022, sx: 0.012, sy: 0.050, sz: 0.042 },
+      // Roadside vertical transit stop sign mast pole & base collar
+      { geo: box, px: 0.188, py: 0.118, pz: 0.018, sx: 0.014, sy: 0.236, sz: 0.014 },
+      { geo: cyl16, px: 0.188, py: 0.006, pz: 0.018, sx: 0.036, sy: 0.012, sz: 0.036 }
+    ]);
+
+    const busStopBench = mergeParts(THREE, [
+      { geo: box, px: 0.022, py: 0.052, pz: -0.018, sx: 0.176, sy: 0.012, sz: 0.046 },
+      { geo: box, px: 0.022, py: 0.084, pz: -0.040, rx: -0.14, sx: 0.176, sy: 0.036, sz: 0.010 }
+    ]);
+
+    const busStopDisplay = mergeParts(THREE, [
+      { geo: box, px: -0.125, py: 0.112, pz: -0.023, sx: 0.056, sy: 0.116, sz: 0.006 }
+    ]);
+
+    const busStopHeaderLed = mergeParts(THREE, [
+      { geo: box, px: -0.018, py: 0.203, pz: 0.079, sx: 0.304, sy: 0.006, sz: 0.006 },
+      { geo: box, px: -0.125, py: 0.176, pz: -0.024, sx: 0.058, sy: 0.008, sz: 0.008 }
+    ]);
+
+    const busStopSign = mergeParts(THREE, [
+      { geo: box, px: 0.188, py: 0.214, pz: 0.018, sx: 0.056, sy: 0.058, sz: 0.014 }
+    ]);
+
     this.geos = {
       box,
       aoQuad,
@@ -6856,6 +7764,26 @@ class ArchitectureLibrary {
       rectCornerFins,
       planters4,
       planters2,
+      balconyStrip,
+      balconyGlass,
+      corniceBelt,
+      retailCanopy,
+      retailCanopyGlass,
+      retailLintel,
+      rooftopHvacKit,
+      rooftopHvacDark,
+      rooftopPenthouse,
+      rooftopPenthouseLouvers,
+      rooftopGlassRail,
+      rooftopGlassRailPosts,
+      rooftopPergola,
+      rooftopPlanterGreens,
+      busStopMetal,
+      busStopGlass,
+      busStopBench,
+      busStopDisplay,
+      busStopHeaderLed,
+      busStopSign,
       cone8,
       sphere16,
       hemiDome,
@@ -6919,9 +7847,24 @@ class ArchitectureLibrary {
 
   setNightFactor(night) {
     const n = Math.max(0, Math.min(1, night));
+    if (this._sharedArchUniforms && this._sharedArchUniforms.uArchNight) {
+      this._sharedArchUniforms.uArchNight.value = n;
+    }
+
     const emi = n * 1.28;
     for (let i = 0; i < this.emissiveMaterials.length; i++) {
       this.emissiveMaterials[i].emissiveIntensity = emi;
+    }
+
+    // Subtle warm commercial storefront lintel & illuminated EV transit route board ramp at dusk/night
+    if (this.m.retailWarmGlow) {
+      this.m.retailWarmGlow.emissiveIntensity = 0.20 + n * 1.05;
+    }
+    if (this.m.busStopScreen) {
+      this.m.busStopScreen.emissiveIntensity = 0.42 + n * 1.08;
+    }
+    if (this.m.busSign) {
+      this.m.busSign.emissiveIntensity = 0.22 + n * 0.60;
     }
 
     // Scale vehicle headlights & ruby taillights brightly whenever night > 0.18
@@ -7006,12 +7949,111 @@ class ArchitectureLibrary {
     return pad;
   }
 
-  _addRooftopHVAC(grp, lx, ly, lz, ab = false) {
+  _addRooftopHVAC(grp, lx, ly, lz, ab = false, sc = 1.0, ry = 0) {
     const mat = ab ? this.m.abandoned : this.m.brushedSilver;
     const fanMat = ab ? this.m.abandonedRust : this.m.steelDark;
-    this._addMesh(grp, this.geos.box, mat, lx, ly + 0.042, lz, 0.16, 0.084, 0.11, true);
-    this._addMesh(grp, this.geos.cyl16, fanMat, lx - 0.038, ly + 0.087, lz, 0.055, 0.010, 0.055, false);
-    this._addMesh(grp, this.geos.cyl16, fanMat, lx + 0.038, ly + 0.087, lz, 0.055, 0.010, 0.055, false);
+    this._addMesh(grp, this.geos.rooftopHvacKit, mat, lx, ly, lz, sc, sc, sc, true, ry);
+    this._addMesh(grp, this.geos.rooftopHvacDark, fanMat, lx, ly, lz, sc, sc, sc, false, ry);
+  }
+
+  // Shared Pre-Merged 3D Cantilevered Retail Entrance Canopy & Warm Glowing Storefront Lintel
+  _addShopfrontCanopy(grp, cx, baseY, faceZ, sx = 1.0, ab = false, useMetal = false) {
+    const frameMat = ab ? this.m.abandoned : (useMetal ? this.m.brushedSilver : this.m.charcoalFrame);
+    const glassMat = ab ? this.m.abandonedRust : this.m.balconyGlass;
+    const canopyY = baseY + 0.215;
+    this._addMesh(grp, this.geos.retailCanopy, frameMat, cx, canopyY, faceZ, sx, 1.0, 1.0, true);
+    this._addMesh(grp, this.geos.retailCanopyGlass, glassMat, cx, canopyY, faceZ, sx, 1.0, 1.0, false);
+    if (!ab) {
+      this._addMesh(grp, this.geos.retailLintel, this.m.retailWarmGlow, cx, canopyY, faceZ, sx, 1.0, 1.0, false);
+    }
+  }
+
+  // Shared Pre-Merged 3D Protruding Concrete & Tinted-Glass Balcony Clusters for RH Towers (Lv.2-5)
+  _addBalconyBands(grp, cx, cz, w, d, tBase, shaftH, lv, ab = false) {
+    if (lv < 2 || shaftH < 1.15) return;
+    const slabMat = ab ? this.m.abandoned : this.m.parapetStone;
+    const glassMat = ab ? this.m.abandonedRust : this.m.balconyGlass;
+    const bandCount = lv === 2 ? 2 : (lv === 3 ? 3 : 4);
+    const minY = tBase + 0.42;
+    const maxY = tBase + shaftH - 0.34;
+    if (maxY <= minY) return;
+    for (let i = 0; i < bandCount; i++) {
+      const t = bandCount === 1 ? 0.5 : i / (bandCount - 1);
+      const by = minY + t * (maxY - minY);
+      this._addMesh(grp, this.geos.balconyStrip, slabMat, cx, by, cz, w, 1.0, d, true);
+      this._addMesh(grp, this.geos.balconyGlass, glassMat, cx, by, cz, w, 1.0, d, false);
+    }
+  }
+
+  // Curated Rooftop Mechanical & Sky-Garden Kit (HVAC chiller bank, elevator penthouse + louvers, glass parapet rail & pergola planters)
+  _addRooftopKit(grp, w, d, topY, level = 2, seed = 0, style = 'office', ab = false, cx = 0, cz = 0, keepCenterClear = false) {
+    const rw = Math.max(0.24, w);
+    const rd = Math.max(0.24, d);
+    const minSpan = Math.min(rw, rd);
+    const silverMat = ab ? this.m.abandoned : this.m.brushedSilver;
+    const stoneMat = ab ? this.m.abandoned : this.m.parapetStone;
+    const louverMat = ab ? this.m.abandonedRust : this.m.refugeLouvers;
+    const glassMat = ab ? this.m.abandonedRust : this.m.balconyGlass;
+    const pergolaMat = ab ? this.m.abandoned : (style === 'residential' || style === 'civic' ? this.m.teakDeck : this.m.charcoalFrame);
+    const greenMat = ab ? this.m.abandonedRust : this.m.lawn;
+    const rot90 = rd > rw * 1.15 ? Math.PI * 0.5 : 0;
+
+    // 1. Sleek Glass Perimeter Rooftop Parapet Railing on Lv.2-5 residential, commercial, office & civic roofs
+    if (level >= 2 && style !== 'industrial' && rw >= 0.30 && rd >= 0.28) {
+      this._addMesh(grp, this.geos.rooftopGlassRail, glassMat, cx, topY + 0.004, cz, rw, 1.0, rd, false);
+      this._addMesh(grp, this.geos.rooftopGlassRailPosts, silverMat, cx, topY + 0.004, cz, rw, 1.0, rd, false);
+    }
+
+    if (keepCenterClear) {
+      // Leave central helipad zone completely unobstructed; tuck compact twin-shroud HVAC unit in rear corner
+      const hvacSc = Math.max(0.48, Math.min(0.80, (minSpan * 0.34) / 0.12));
+      this._addRooftopHVAC(grp, cx - rw * 0.26, topY + 0.004, cz - rd * 0.24, ab, hvacSc, rot90);
+      return;
+    }
+
+    if (style === 'industrial') {
+      const hvacSc = Math.max(0.62, Math.min(1.05, (minSpan * 0.46) / 0.12));
+      this._addRooftopHVAC(grp, cx - rw * 0.22, topY + 0.004, cz - rd * 0.12, ab, hvacSc, rot90);
+      if (level >= 2 && rw >= 0.42) {
+        const phSc = Math.max(0.55, Math.min(0.95, (minSpan * 0.52) / 0.16));
+        this._addMesh(grp, this.geos.rooftopPenthouse, silverMat, cx + rw * 0.20, topY + 0.004, cz - rd * 0.08, phSc, phSc * 0.85, phSc, true, rot90);
+        this._addMesh(grp, this.geos.rooftopPenthouseLouvers, louverMat, cx + rw * 0.20, topY + 0.004, cz - rd * 0.08, phSc, phSc * 0.85, phSc, false, rot90);
+      }
+      return;
+    }
+
+    // Check if roof has ample span for side-by-side elevator penthouse + sky-garden pergola
+    const wantSkyGarden = !ab && level >= 2 && rw >= 0.38 && rd >= 0.28 && (style === 'residential' || style === 'commercial' || style === 'civic' || (style === 'office' && (seed % 2 === 0)));
+
+    if (wantSkyGarden) {
+      const phSc = Math.max(0.50, Math.min(0.88, Math.min(rw * 0.36 / 0.22, rd * 0.64 / 0.16)));
+      const pgSc = Math.max(0.48, Math.min(0.88, Math.min(rw * 0.40 / 0.26, rd * 0.64 / 0.15)));
+      const hvacSc = Math.max(0.48, Math.min(0.76, (minSpan * 0.34) / 0.11));
+
+      // Elevator machine-room penthouse + louvers on left half
+      this._addMesh(grp, this.geos.rooftopPenthouse, stoneMat, cx - rw * 0.20, topY + 0.004, cz - rd * 0.04, phSc, phSc, phSc, true);
+      this._addMesh(grp, this.geos.rooftopPenthouseLouvers, louverMat, cx - rw * 0.20, topY + 0.004, cz - rd * 0.04, phSc, phSc, phSc, false);
+      // Sky-garden timber/steel pergola & lush raised planters on sunlit right half
+      this._addMesh(grp, this.geos.rooftopPergola, pergolaMat, cx + rw * 0.18, topY + 0.004, cz + rd * 0.04, pgSc, pgSc, pgSc, true);
+      this._addMesh(grp, this.geos.rooftopPlanterGreens, greenMat, cx + rw * 0.18, topY + 0.004, cz + rd * 0.04, pgSc, pgSc, pgSc, true);
+      // Compact twin-fan HVAC chiller tucked cleanly beside penthouse if roof depth permits
+      if (rd >= 0.40) {
+        this._addRooftopHVAC(grp, cx - rw * 0.18, topY + 0.004, cz + rd * 0.24, ab, hvacSc);
+      }
+    } else {
+      const phSc = Math.max(0.52, Math.min(0.95, (minSpan * 0.54) / 0.16));
+      const hvacSc = Math.max(0.52, Math.min(0.92, (minSpan * 0.40) / 0.11));
+      if (level >= 2 || style === 'civic') {
+        const phX = rw >= 0.44 ? cx - rw * 0.14 : cx;
+        this._addMesh(grp, this.geos.rooftopPenthouse, stoneMat, phX, topY + 0.004, cz - rd * 0.06, phSc, phSc, phSc, true);
+        this._addMesh(grp, this.geos.rooftopPenthouseLouvers, louverMat, phX, topY + 0.004, cz - rd * 0.06, phSc, phSc, phSc, false);
+        if (rw >= 0.44) {
+          this._addRooftopHVAC(grp, cx + rw * 0.22, topY + 0.004, cz + rd * 0.06, ab, hvacSc, rot90);
+        }
+      } else {
+        this._addRooftopHVAC(grp, cx - rw * 0.12, topY + 0.004, cz - rd * 0.06, ab, hvacSc, rot90);
+      }
+    }
   }
 
   _placeGLB(grp, key, px, py, pz, sx, sy, sz, ab = false, ry = 0) {
@@ -7217,19 +8259,24 @@ class ArchitectureLibrary {
     const upperH = upperFloors * 0.17;
 
     this._addMesh(grp, this.geos.box, podMat, 0, baseY + podH * 0.5, -0.05, 0.76, podH, 0.62, true);
+    // 3D cantilevered steel-and-glass retail entrance awning + warm glowing storefront lintel + podium cornice belt
+    this._addShopfrontCanopy(grp, 0, baseY, 0.26, 1.18, ab, (v & 1) === 1);
+    this._addMesh(grp, this.geos.corniceBelt, trimMat, 0, baseY + podH - 0.008, -0.05, 0.76, 1.0, 0.62, true);
 
     const uBase = baseY + podH;
+    let roofW = 0.72, roofD = 0.56, roofCX = 0;
     if ((v & 1) === 0) {
       this._addMesh(grp, this.geos.box, upperMat, 0, uBase + upperH * 0.5, -0.07, 0.72, upperH, 0.56, true);
       this._addMesh(grp, this.geos.parapetFrame, trimMat, 0, uBase + upperH + 0.025, -0.07, 0.73, 0.05, 0.57, true);
     } else {
+      roofW = 0.56; roofCX = -0.08;
       this._addMesh(grp, this.geos.box, upperMat, -0.08, uBase + upperH * 0.5, -0.07, 0.56, upperH, 0.56, true);
       this._addMesh(grp, this.geos.box, upperMat, 0.18, uBase + (upperH * 0.66) * 0.5, -0.02, 0.34, upperH * 0.66, 0.48, true);
       this._addMesh(grp, this.geos.parapetFrame, trimMat, -0.08, uBase + upperH + 0.025, -0.07, 0.57, 0.05, 0.57, true);
     }
 
     const neonMat = ab ? this.m.abandonedRust : this.neonMats[(v + lv) % this.neonMats.length];
-    this._addMesh(grp, this.geos.box, neonMat, 0, baseY + 0.27, 0.265, 0.54, 0.032, 0.018, false);
+    this._addMesh(grp, this.geos.box, neonMat, 0, baseY + 0.295, 0.265, 0.54, 0.030, 0.018, false);
     this._addMesh(grp, this.geos.box, neonMat, 0.35, uBase + 0.16, 0.18, 0.020, 0.20, 0.065, false);
 
     if (!ab) {
@@ -7240,7 +8287,7 @@ class ArchitectureLibrary {
       }
     }
 
-    this._addRooftopHVAC(grp, -0.14, uBase + upperH + 0.01, -0.10, ab);
+    this._addRooftopKit(grp, roofW, roofD, uBase + upperH, lv, v, 'commercial', ab, roofCX, -0.07, false);
   }
 
   _buildCondoRH(grp, lv, v, ab) {
@@ -7250,12 +8297,12 @@ class ArchitectureLibrary {
     const wallMat = ab ? ((v & 1) ? this.m.dustyCondoGrey : this.m.dustyCondo) : facadeMats[v % facadeMats.length];
     const podMat = ab ? this.m.dustyRetail : this.m.retailPodium;
     const pilasterMat = ab ? this.m.abandoned : this.m.parapetStone;
-    const frameMat = ab ? this.m.abandonedRust : this.m.charcoalFrame;
 
     const baseY = 0.024;
     const podH = 0.36;
     this._addMesh(grp, this.geos.box, podMat, 0, baseY + podH * 0.5, 0.02, 0.80, podH, 0.72, true);
-    this._addMesh(grp, this.geos.box, frameMat, 0, baseY + 0.24, 0.41, 0.36, 0.022, 0.09, true);
+    this._addShopfrontCanopy(grp, 0, baseY, 0.38, 0.96, ab, false);
+    this._addMesh(grp, this.geos.corniceBelt, pilasterMat, 0, baseY + podH - 0.008, 0.02, 0.80, 1.0, 0.72, true);
 
     const floorsByLv = [0, 8, 13, 19, 25, 31];
     const nFloors = floorsByLv[Math.min(5, lv)];
@@ -7268,45 +8315,45 @@ class ArchitectureLibrary {
       this._addMesh(grp, this.geos.box, wallMat, 0, tBase + shaftH * 0.5, -0.02, 0.72, shaftH, 0.32, true);
       this._addMesh(grp, this.geos.box, wallMat, -0.20, tBase + sideH * 0.5, -0.02, 0.24, sideH, 0.40, true);
       this._addMesh(grp, this.geos.box, wallMat, 0.20, tBase + sideH * 0.5, -0.02, 0.24, sideH, 0.40, true);
+      // 3D protruding glass balconies spanning both flanking residential wings on Lv.2-5
+      this._addBalconyBands(grp, 0, -0.02, 0.68, 0.40, tBase, sideH, lv, ab);
 
       const topY = tBase + shaftH;
       this._addMesh(grp, this.geos.parapetFrame, pilasterMat, 0, topY + 0.038, -0.02, 0.73, 0.075, 0.33, true);
-      this._addMesh(grp, this.geos.box, pilasterMat, 0, topY + 0.085, -0.03, 0.20, 0.15, 0.15, true);
-      this._addMesh(grp, this.geos.box, frameMat, 0, topY + 0.165, -0.03, 0.22, 0.018, 0.17, false);
-      this._addMesh(grp, this.geos.cyl16, this.m.brushedSilver, 0.20, topY + 0.055, -0.04, 0.09, 0.10, 0.09, true);
-      this._addRooftopHVAC(grp, -0.20, topY + 0.005, -0.02, ab);
+      this._addRooftopKit(grp, 0.72, 0.32, topY, lv, v, 'residential', ab, 0, -0.02, false);
     } else if (plan === 1) {
       const northH = (nFloors - 2) * 0.15;
       this._addMesh(grp, this.geos.box, wallMat, 0, tBase + shaftH * 0.5, 0.06, 0.68, shaftH, 0.32, true);
       this._addMesh(grp, this.geos.box, wallMat, 0, tBase + northH * 0.5, -0.15, 0.32, northH, 0.42, true);
+      this._addBalconyBands(grp, 0, 0.06, 0.68, 0.32, tBase, shaftH, lv, ab);
 
       const topY = tBase + shaftH;
       this._addMesh(grp, this.geos.parapetFrame, pilasterMat, 0, topY + 0.038, 0.06, 0.69, 0.075, 0.33, true);
       this._addMesh(grp, this.geos.parapetFrame, pilasterMat, 0, tBase + northH + 0.032, -0.15, 0.33, 0.065, 0.43, true);
-      this._addMesh(grp, this.geos.box, pilasterMat, 0, topY + 0.088, 0.02, 0.20, 0.16, 0.16, true);
-      this._addMesh(grp, this.geos.cyl16, this.m.brushedSilver, -0.20, topY + 0.055, 0.06, 0.09, 0.10, 0.09, true);
-      this._addRooftopHVAC(grp, 0.20, topY + 0.005, 0.06, ab);
+      this._addRooftopKit(grp, 0.68, 0.32, topY, lv, v, 'residential', ab, 0, 0.06, false);
     } else if (plan === 2) {
       const wingH = (nFloors - 3) * 0.15;
       this._addMesh(grp, this.geos.box, wallMat, 0.02, tBase + shaftH * 0.5, -0.12, 0.68, shaftH, 0.32, true);
       this._addMesh(grp, this.geos.box, wallMat, -0.16, tBase + wingH * 0.5, 0.08, 0.32, wingH, 0.50, true);
+      this._addBalconyBands(grp, 0.02, -0.12, 0.68, 0.32, tBase, shaftH, lv, ab);
 
       const topY = tBase + shaftH;
       this._addMesh(grp, this.geos.parapetFrame, pilasterMat, 0.02, topY + 0.038, -0.12, 0.69, 0.075, 0.33, true);
       this._addMesh(grp, this.geos.parapetFrame, pilasterMat, -0.16, tBase + wingH + 0.032, 0.08, 0.33, 0.065, 0.51, true);
-      this._addMesh(grp, this.geos.box, pilasterMat, -0.12, topY + 0.085, -0.12, 0.19, 0.15, 0.15, true);
-      this._addMesh(grp, this.geos.cyl16, this.m.brushedSilver, 0.18, topY + 0.055, -0.12, 0.09, 0.10, 0.09, true);
+      this._addRooftopKit(grp, 0.68, 0.32, topY, lv, v, 'residential', ab, 0.02, -0.12, false);
     } else {
       const hB = Math.max(0.90, (nFloors - 4) * 0.15);
       this._addMesh(grp, this.geos.box, wallMat, -0.15, tBase + shaftH * 0.5, -0.06, 0.38, shaftH, 0.36, true);
       this._addMesh(grp, this.geos.box, wallMat, 0.16, tBase + hB * 0.5, 0.06, 0.36, hB, 0.36, true);
+      this._addBalconyBands(grp, -0.15, -0.06, 0.38, 0.36, tBase, shaftH, lv, ab);
+      this._addBalconyBands(grp, 0.16, 0.06, 0.36, 0.36, tBase, hB, lv, ab);
 
       const topA = tBase + shaftH;
       const topB = tBase + hB;
       this._addMesh(grp, this.geos.parapetFrame, pilasterMat, -0.15, topA + 0.035, -0.06, 0.39, 0.07, 0.37, true);
       this._addMesh(grp, this.geos.parapetFrame, pilasterMat, 0.16, topB + 0.035, 0.06, 0.37, 0.07, 0.37, true);
-      this._addMesh(grp, this.geos.box, pilasterMat, -0.15, topA + 0.075, -0.06, 0.16, 0.13, 0.14, true);
-      this._addMesh(grp, this.geos.cyl16, this.m.brushedSilver, 0.16, topB + 0.05, 0.06, 0.085, 0.095, 0.085, true);
+      this._addRooftopKit(grp, 0.38, 0.36, topA, lv, v, 'residential', ab, -0.15, -0.06, false);
+      this._addRooftopKit(grp, 0.36, 0.36, topB, Math.max(1, lv - 1), v + 1, 'residential', ab, 0.16, 0.06, false);
     }
   }
 
@@ -7315,14 +8362,18 @@ class ArchitectureLibrary {
 
     const isOffice = type === 'O';
     const metalMat = ab ? this.m.abandoned : this.m.brushedSilver;
+    const stoneTrimMat = ab ? this.m.abandoned : this.m.parapetStone;
     const darkBandMat = ab ? this.m.abandonedRust : this.m.refugeLouvers;
     const ledMat = ab ? this.m.abandoned : (isOffice ? this.m.ledLinearCyan : this.m.ledLinearWhite);
     const podMat = ab ? this.m.dustyRetail : this.m.retailPodium;
+    const roofStyle = isOffice ? 'office' : 'commercial';
 
     const baseY = 0.024;
     const podH = 0.36;
     this._addMesh(grp, this.geos.box, podMat, 0, baseY + podH * 0.5, 0, 0.80, podH, 0.76, true);
-    this._addMesh(grp, this.geos.box, metalMat, 0, baseY + 0.24, 0.41, 0.40, 0.024, 0.09, true);
+    // 3D cantilevered commercial/office lobby canopy + warm storefront lintel + podium cornice belt
+    this._addShopfrontCanopy(grp, 0, baseY, 0.38, 1.24, ab, true);
+    this._addMesh(grp, this.geos.corniceBelt, isOffice ? metalMat : stoneTrimMat, 0, baseY + podH - 0.008, 0, 0.80, 1.0, 0.76, true);
 
     const floorsByLv = [0, 8, 14, 21, 28, 35];
     const nFloors = floorsByLv[Math.min(5, lv)];
@@ -7335,17 +8386,23 @@ class ArchitectureLibrary {
     if (sil === 0) {
       const mat = ab ? this.m.dustyCBD : (isOffice ? this.m.cbdSlateSilver : this.m.cbdIceBlue);
       const w = 0.60, d = 0.56;
+      const midBandY = tBase + Math.floor(nFloors * 0.5) * 0.17;
       this._addMesh(grp, this.geos.box, mat, 0, tBase + shaftH * 0.5, -0.02, w, shaftH, d, true);
       this._addMesh(grp, this.geos.rectCornerFins, metalMat, 0, tBase + shaftH * 0.5, -0.02, w, shaftH, d, true);
-      this._addMesh(grp, this.geos.box, darkBandMat, 0, tBase + Math.floor(nFloors * 0.5) * 0.17, -0.02, w + 0.012, 0.065, d + 0.012, true);
+      this._addMesh(grp, this.geos.box, darkBandMat, 0, midBandY, -0.02, w + 0.012, 0.065, d + 0.012, true);
+      // 3D horizontal cornice stringcourse ledges framing refuge level & upper crown
+      this._addMesh(grp, this.geos.corniceBelt, metalMat, 0, midBandY + 0.042, -0.02, w, 1.0, d, true);
       if (lv >= 4) {
-        this._addMesh(grp, this.geos.box, darkBandMat, 0, tBase + Math.floor(nFloors * 0.78) * 0.17, -0.02, w + 0.012, 0.065, d + 0.012, true);
+        const hiBandY = tBase + Math.floor(nFloors * 0.78) * 0.17;
+        this._addMesh(grp, this.geos.box, darkBandMat, 0, hiBandY, -0.02, w + 0.012, 0.065, d + 0.012, true);
+        this._addMesh(grp, this.geos.corniceBelt, metalMat, 0, hiBandY + 0.042, -0.02, w, 1.0, d, true);
       }
 
       const topY = tBase + shaftH;
+      this._addMesh(grp, this.geos.corniceBelt, metalMat, 0, topY - 0.012, -0.02, w, 1.0, d, true);
       this._addMesh(grp, this.geos.parapetFrame, metalMat, 0, topY + 0.06, -0.02, w + 0.01, 0.12, d + 0.01, true);
       if (!ab) this._addMesh(grp, this.geos.parapetFrame, ledMat, 0, topY + 0.125, -0.02, w + 0.016, 0.016, d + 0.016, false);
-      this._addRooftopHVAC(grp, -0.14, topY + 0.005, -0.14, ab);
+      this._addRooftopKit(grp, w, d, topY, lv, v, roofStyle, ab, 0, -0.02, lv >= 4);
       helipadY = topY + 0.005;
       helipadX = 0.06; helipadZ = 0.04;
     } else if (sil === 1) {
@@ -7361,6 +8418,9 @@ class ArchitectureLibrary {
       const sbY = tBase + Math.floor(nFloors * 0.52) * 0.17;
       this._addMesh(grp, this.geos.box, ab ? this.m.dustyCBD : this.m.atriumGlass, 0, sbY, 0.005, 0.38, 0.10, 0.15, true, -0.46);
       this._addMesh(grp, this.geos.box, metalMat, 0, sbY - 0.055, 0.005, 0.39, 0.018, 0.16, true, -0.46);
+      // Structural skybridge cornice collars tying twin towers together
+      this._addMesh(grp, this.geos.corniceBelt, metalMat, -0.17, sbY - 0.052, -0.09, 0.36, 1.0, 0.40, true);
+      this._addMesh(grp, this.geos.corniceBelt, metalMat, 0.17, sbY - 0.052, 0.10, 0.36, 1.0, 0.40, true);
 
       const topA = tBase + hA;
       const topB = tBase + hB;
@@ -7370,7 +8430,10 @@ class ArchitectureLibrary {
         this._addMesh(grp, this.geos.parapetFrame, ledMat, -0.17, topA + 0.095, -0.09, 0.37, 0.015, 0.41, false);
         this._addMesh(grp, this.geos.parapetFrame, ledMat, 0.17, topB + 0.095, 0.10, 0.37, 0.015, 0.41, false);
       }
-      this._addRooftopHVAC(grp, 0.17, topB + 0.005, 0.10, ab);
+      this._addRooftopKit(grp, 0.36, 0.40, topB, lv, v, roofStyle, ab, 0.17, 0.10, false);
+      if (lv < 4) {
+        this._addRooftopKit(grp, 0.36, 0.40, topA, lv, v + 1, roofStyle, ab, -0.17, -0.09, false);
+      }
       helipadY = topA + 0.005;
       helipadX = -0.17; helipadZ = -0.09;
     } else if (sil === 2) {
@@ -7381,17 +8444,21 @@ class ArchitectureLibrary {
       const h1 = n1 * 0.17, h2 = n2 * 0.17, h3 = n3 * 0.17;
 
       this._addMesh(grp, this.geos.box, mat, 0, tBase + h1 * 0.5, 0, 0.68, h1, 0.64, true);
-      this._addMesh(grp, this.geos.parapetFrame, this.m.parapetStone, 0, tBase + h1 + 0.02, 0, 0.69, 0.04, 0.65, true);
+      this._addMesh(grp, this.geos.corniceBelt, stoneTrimMat, 0, tBase + h1 - 0.012, 0, 0.68, 1.0, 0.64, true);
+      this._addMesh(grp, this.geos.parapetFrame, stoneTrimMat, 0, tBase + h1 + 0.02, 0, 0.69, 0.04, 0.65, true);
 
       this._addMesh(grp, this.geos.box, mat, 0, tBase + h1 + h2 * 0.5, 0, 0.54, h2, 0.52, true);
-      this._addMesh(grp, this.geos.parapetFrame, this.m.parapetStone, 0, tBase + h1 + h2 + 0.02, 0, 0.55, 0.04, 0.53, true);
+      this._addMesh(grp, this.geos.corniceBelt, stoneTrimMat, 0, tBase + h1 + h2 - 0.012, 0, 0.54, 1.0, 0.52, true);
+      this._addMesh(grp, this.geos.parapetFrame, stoneTrimMat, 0, tBase + h1 + h2 + 0.02, 0, 0.55, 0.04, 0.53, true);
 
       this._addMesh(grp, this.geos.box, mat, 0, tBase + h1 + h2 + h3 * 0.5, 0, 0.42, h3, 0.42, true);
+      this._addMesh(grp, this.geos.corniceBelt, stoneTrimMat, 0, tBase + h1 + h2 + h3 - 0.012, 0, 0.42, 1.0, 0.42, true);
 
       const topY = tBase + h1 + h2 + h3;
       this._addMesh(grp, this.geos.parapetFrame, metalMat, 0, topY + 0.055, 0, 0.43, 0.11, 0.43, true);
       if (!ab) this._addMesh(grp, this.geos.parapetFrame, ledMat, 0, topY + 0.115, 0, 0.435, 0.015, 0.435, false);
-      this._addRooftopHVAC(grp, 0.20, tBase + h1 + 0.005, 0.18, ab);
+      this._addRooftopHVAC(grp, 0.20, tBase + h1 + 0.005, 0.18, ab, 0.72);
+      this._addRooftopKit(grp, 0.42, 0.42, topY, lv, v, roofStyle, ab, 0, 0, lv >= 4);
       helipadY = topY + 0.005;
       helipadX = 0; helipadZ = 0;
     } else {
@@ -7401,15 +8468,18 @@ class ArchitectureLibrary {
       const hLo = nLo * 0.17, hHi = nHi * 0.17;
 
       this._addMesh(grp, this.geos.box, mat, -0.025, tBase + hLo * 0.5, 0.015, 0.64, hLo, 0.58, true);
+      this._addMesh(grp, this.geos.corniceBelt, metalMat, -0.025, tBase + hLo - 0.010, 0.015, 0.64, 1.0, 0.58, true);
       this._addMesh(grp, this.geos.box, ab ? this.m.dustyCBD : this.m.atriumGlass, 0, tBase + hLo + 0.04, 0, 0.58, 0.08, 0.52, false);
       const hiBase = tBase + hLo + 0.08;
       this._addMesh(grp, this.geos.box, mat, 0.025, hiBase + hHi * 0.5, -0.015, 0.64, hHi, 0.58, true);
       this._addMesh(grp, this.geos.rectCornerFins, metalMat, 0.025, hiBase + hHi * 0.5, -0.015, 0.64, hHi, 0.58, true);
+      this._addMesh(grp, this.geos.corniceBelt, metalMat, 0.025, hiBase + 0.012, -0.015, 0.64, 1.0, 0.58, true);
 
       const topY = hiBase + hHi;
+      this._addMesh(grp, this.geos.corniceBelt, metalMat, 0.025, topY - 0.012, -0.015, 0.64, 1.0, 0.58, true);
       this._addMesh(grp, this.geos.parapetFrame, metalMat, 0.025, topY + 0.05, -0.015, 0.645, 0.10, 0.585, true);
       if (!ab) this._addMesh(grp, this.geos.parapetFrame, ledMat, 0.025, topY + 0.105, -0.015, 0.65, 0.015, 0.59, false);
-      this._addRooftopHVAC(grp, -0.14, topY + 0.005, -0.12, ab);
+      this._addRooftopKit(grp, 0.64, 0.58, topY, lv, v, roofStyle, ab, 0.025, -0.015, lv >= 4);
       helipadY = topY + 0.005;
       helipadX = 0.08; helipadZ = 0.05;
     }
@@ -7454,8 +8524,8 @@ class ArchitectureLibrary {
         this._addMesh(grp, this.geos.box, cMat, 0.20 * flip, baseY + 0.05, 0.27, 0.11, 0.09, 0.20, true);
 
         const topY = baseY + fabH + 0.02;
-        this._addRooftopHVAC(grp, -0.23, topY, -0.18, ab);
-        this._addRooftopHVAC(grp, -0.23, topY, 0.02, ab);
+        this._addRooftopHVAC(grp, -0.23, topY, -0.18, ab, 0.92);
+        this._addRooftopHVAC(grp, -0.23, topY, 0.02, ab, 0.92);
         if (!ab) {
           for (const pz of [-0.18, 0.02]) {
             const pv = this._addMesh(grp, this.geos.box, this.m.solarPanel, 0.14, topY + 0.03, pz, 0.38, 0.014, 0.14, false);
@@ -7473,7 +8543,7 @@ class ArchitectureLibrary {
         const c1 = ab ? this.m.abandonedRust : this.containerMats[(v + 1) % this.containerMats.length];
         this._addMesh(grp, this.geos.box, c1, 0.18 * flip, baseY + 0.05, 0.22, 0.11, 0.09, 0.20, true);
 
-        this._addRooftopHVAC(grp, -0.19 * flip, baseY + rdH + 0.005, 0.15, ab);
+        this._addRooftopKit(grp, 0.34, 0.30, baseY + rdH, lv, v, 'industrial', ab, -0.19 * flip, 0.15, false);
         if (!ab) {
           for (const px of [-0.20, 0.02, 0.24]) {
             const pv = this._addMesh(grp, this.geos.box, this.m.solarPanel, px * flip, baseY + hallH + 0.025, -0.13, 0.17, 0.014, 0.30, false);
@@ -7494,10 +8564,7 @@ class ArchitectureLibrary {
       this._addMesh(grp, this.geos.box, whMat, 0, baseY + whH * 0.5, -0.12, 0.76, whH, 0.48, true);
       this._addMesh(grp, this.geos.box, fascia, 0, baseY + whH + 0.016, -0.12, 0.775, 0.032, 0.495, false);
 
-      this._addRooftopHVAC(grp, -0.22 * flip, baseY + whH + 0.02, -0.14, ab);
-      for (const vx of [0.02, 0.22]) {
-        this._addMesh(grp, this.geos.cyl16, this.m.brushedSilver, vx * flip, baseY + whH + 0.045, -0.12, 0.07, 0.04, 0.07, true);
-      }
+      this._addRooftopKit(grp, 0.76, 0.48, baseY + whH + 0.02, lv, v, 'industrial', ab, 0, -0.12, false);
 
       this._addMesh(grp, this.geos.box, this.m.brushedSilver, 0, baseY + 0.19, 0.17, 0.68, 0.022, 0.13, true);
       const bayXs = [-0.22, 0.0, 0.22];
@@ -7941,6 +9008,8 @@ class ArchitectureLibrary {
   _buildFireStation(grp, ab, x, y0, z, rotRad, hooks) {
     this._addMesh(grp, this.geos.box, ab ? this.m.pavingPlazaDusty : this.m.pavingPlaza, 0, 0.015, 0, 0.92, 0.03, 0.92, false);
     this._addMesh(grp, this.geos.box, ab ? this.m.dustyStoneFin : this.m.finStoneSilver, -0.08, 0.27, -0.02, 0.64, 0.51, 0.58, true);
+    this._addMesh(grp, this.geos.corniceBelt, ab ? this.m.abandoned : this.m.parapetStone, -0.08, 0.518, -0.02, 0.64, 1.0, 0.58, true);
+    this._addRooftopKit(grp, 0.56, 0.52, 0.525, 2, 1, 'civic', ab, -0.10, -0.02, false);
     const redMat = ab ? this.m.abandonedRust : this.m.craneRed;
     for (const dx of [-0.26, -0.08, 0.10]) {
       this._addMesh(grp, this.geos.box, redMat, dx, 0.14, 0.28, 0.13, 0.22, 0.03, false);
@@ -7953,10 +9022,13 @@ class ArchitectureLibrary {
   _buildPoliceStation(grp, ab) {
     this._addZonedPlotPad(grp, ab, false);
     this._addMesh(grp, this.geos.box, ab ? this.m.dustyRetail : this.m.retailPodiumConc, 0, 0.20, 0, 0.76, 0.36, 0.68, true);
+    this._addMesh(grp, this.geos.corniceBelt, ab ? this.m.abandoned : this.m.brushedSilver, 0, 0.372, 0, 0.76, 1.0, 0.68, true);
+    this._addShopfrontCanopy(grp, 0, 0.024, 0.34, 0.92, ab, true);
     this._addMesh(grp, this.geos.box, ab ? this.m.dustyCBD : this.m.cbdIceBlue, 0, 0.38 + 0.51, -0.04, 0.62, 1.02, 0.52, true);
     if (!ab) {
       this._addMesh(grp, this.geos.parapetFrame, this.m.airlineBlue, 0, 1.43, -0.04, 0.63, 0.06, 0.53, true);
     }
+    this._addRooftopKit(grp, 0.62, 0.52, 1.40, 3, 2, 'civic', ab, 0, -0.04, true);
     this._addHelipad(grp, 0, 1.41, -0.04, 0.26, ab);
     this._addMesh(grp, this.geos.spireNeedle, this.m.brushedSilver, 0.20, 1.66, -0.18, 0.7, 0.50, 0.7, false);
   }
@@ -7969,12 +9041,18 @@ class ArchitectureLibrary {
 
     this._addMesh(grp, this.geos.box, ab ? this.m.dustyRetail : this.m.retailPodium, 0.04, 0.20, 0.12, 0.76, 0.36, 0.48, true);
     this._addMesh(grp, this.geos.box, red, 0.04, 0.18, 0.39, 0.34, 0.030, 0.10, true);
+    if (!ab) {
+      // Sunlit hospital podium sky-garden healing pergola & planters on front terrace
+      this._addMesh(grp, this.geos.rooftopPergola, this.m.teakDeck, 0.06, 0.384, 0.24, 0.82, 0.82, 0.78, true);
+      this._addMesh(grp, this.geos.rooftopPlanterGreens, this.m.lawn, 0.06, 0.384, 0.24, 0.82, 0.82, 0.78, true);
+    }
 
     const wardH = 1.70;
     this._addMesh(grp, this.geos.box, glass, -0.04, 0.024 + wardH * 0.5, -0.08, 0.68, wardH, 0.42, true);
     this._addMesh(grp, this.geos.box, white, -0.36, 0.024 + wardH * 0.5, -0.08, 0.06, wardH + 0.02, 0.44, true);
     this._addMesh(grp, this.geos.box, white, 0.28, 0.024 + wardH * 0.5, -0.08, 0.06, wardH + 0.02, 0.44, true);
     this._addMesh(grp, this.geos.parapetFrame, white, -0.04, 0.024 + wardH + 0.035, -0.08, 0.70, 0.07, 0.44, true);
+    this._addRooftopKit(grp, 0.68, 0.42, 0.024 + wardH, 3, 3, 'civic', ab, -0.04, -0.08, true);
 
     const crossMat = ab ? this.m.abandonedRust : this.m.beaconRed;
     this._addMesh(grp, this.geos.box, crossMat, -0.04, 1.44, 0.14, 0.22, 0.065, 0.025, false);
@@ -7990,10 +9068,12 @@ class ArchitectureLibrary {
     const hMain = 0.68;
     const hWing = 0.51;
     this._addMesh(grp, this.geos.box, mat, 0, 0.024 + hMain * 0.5, -0.14, 0.74, hMain, 0.36, true);
+    this._addMesh(grp, this.geos.corniceBelt, ab ? this.m.abandoned : this.m.parapetStone, 0, 0.024 + hMain - 0.010, -0.14, 0.74, 1.0, 0.36, true);
     this._addMesh(grp, this.geos.box, mat, -0.24, 0.024 + hWing * 0.5, 0.08, 0.26, hWing, 0.36, true);
     this._addMesh(grp, this.geos.parapetFrame, this.m.parapetStone, 0, 0.024 + hMain + 0.025, -0.14, 0.75, 0.05, 0.37, true);
     this._addMesh(grp, this.geos.box, ab ? this.m.abandoned : this.m.parapetStone, 0, 0.024 + hMain + 0.10, -0.14, 0.22, 0.16, 0.20, true);
     this._addMesh(grp, this.geos.taperPyr, ab ? this.m.abandonedRust : this.m.slateRoof, 0, 0.024 + hMain + 0.23, -0.14, 0.28, 0.11, 0.26, true, Math.PI * 0.25);
+    this._addRooftopKit(grp, 0.26, 0.36, 0.024 + hWing, 2, 0, 'civic', ab, -0.24, 0.08, false);
   }
 
   _buildPark(grp) {
@@ -8031,6 +9111,23 @@ class ArchitectureLibrary {
       this._addMesh(grp, this.geos.box, this.m.ledLinearCyan, 0, 0.52, 0.38, 0.86, 0.025, 0.035, false);
       this._addMesh(grp, this.geos.box, this.m.ledLinearCyan, 0, 0.52, -0.38, 0.86, 0.025, 0.035, false);
     }
+  }
+
+  // Modern Roadside EV Bus Stop Shelter (local y=0 base, facing +Z toward road centerline, W≈0.40, D≈0.16, H≈0.24, 6 shared draw calls)
+  createBusStopShelter() {
+    const THREE = this.THREE;
+    const grp = new THREE.Group();
+    grp.name = 'busStopShelter';
+
+    this._addMesh(grp, this.geos.busStopMetal, this.m.brushedSilver, 0, 0, 0, 1, 1, 1, true);
+    this._addMesh(grp, this.geos.busStopGlass, this.m.balconyGlass, 0, 0, 0, 1, 1, 1, true);
+    this._addMesh(grp, this.geos.busStopBench, this.m.teakDeck, 0, 0, 0, 1, 1, 1, true);
+    this._addMesh(grp, this.geos.busStopDisplay, this.m.busStopScreen, 0, 0, 0, 1, 1, 1, false);
+    this._addMesh(grp, this.geos.busStopHeaderLed, this.m.ledLinearCyan, 0, 0, 0, 1, 1, 1, false);
+    const signMesh = this._addMesh(grp, this.geos.busStopSign, this.m.busSign, 0, 0, 0, 1, 1, 1, true);
+    signMesh.name = 'busSign';
+
+    return grp;
   }
 
   // ==================== 4. True-Proportion 3D Road Vehicles, CR400 Train, Airliner & Cargo Ship ====================
@@ -8753,18 +9850,22 @@ const CATALOG = {
   ter_flatten: { id: 'ter_flatten', name: '平整山城台地', cost: 30, unlockPop: 0, unlockLevel: 1, icon: '📐', desc: '按起点海拔推平坡地，打造半山台地街区' },
   ter_spring:  { id: 'ter_spring',  name: '高山水源泉眼', cost: 1200, unlockPop: 450, unlockLevel: 4, icon: '⛲', desc: '在山顶引出天然活水源头，顺山谷奔流成河' },
 
-  // Multi-layer Roads, Viaducts, Ramps & Tunnels (Real upkeep pressure!)
-  road_1:      { id: 'road_1',      name: '双车道街道', cost: 35, bridgeCost: 110, upkeep: 1.1, unlockPop: 0, unlockLevel: 1, icon: '🛣️', desc: '基础地面街道（维护 ¥1.1/格，前期切勿盲目铺太长！）' },
-  road_2:      { id: 'road_2',      name: '四车道主干道', cost: 85, bridgeCost: 220, upkeep: 2.8, unlockPop: 350, unlockLevel: 3, icon: '🛤️', desc: '大容量主干道，跨水架斜拉桥（维护较高，需人口支撑）' },
-  road_elev:   { id: 'road_elev',   name: '高架快速路(+1层)', cost: 160, upkeep: 4.5, unlockPop: 450, unlockLevel: 5, icon: '🌉', desc: '二层立体高架桥！跨越地面拥堵路口、铁路与河流' },
-  road_ramp:   { id: 'road_ramp',   name: '高架上下匝道', cost: 110, upkeep: 2.2, unlockPop: 450, unlockLevel: 5, icon: '↗️', desc: '🛣️ 点击或直线拖拽1~3格建匝道：建在地面主干道上将自动生成【桥下不断流·两侧辅道 + 中央上下匝道】！' },
-  road_tunnel: { id: 'road_tunnel', name: '穿山公路隧道', cost: 190, upkeep: 4.8, unlockPop: 450, unlockLevel: 5, icon: '🏔️', desc: '贯穿陡峭山脉的地下公路隧道' },
+  // Multi-layer Roads, Viaducts, Ramps, One-Way Streets, Interchanges & Tunnels (Real upkeep pressure!)
+  road_1:              { id: 'road_1',              name: '双车道街道', cost: 35, bridgeCost: 110, upkeep: 1.1, unlockPop: 0, unlockLevel: 1, category: 'road', icon: '🛣️', desc: '基础地面街道（维护 ¥1.1/格，前期切勿盲目铺太长！）' },
+  road_oneway:         { id: 'road_oneway',         name: '单行快车道', cost: 28, bridgeCost: 95, upkeep: 1, unlockPop: 150, unlockLevel: 2, category: 'road', icon: '➡️', desc: '双车道单向快行街（按拖拽方向设定行车流向，消除对向顶牛！点击已建单行道可一键反向）' },
+  road_2:              { id: 'road_2',              name: '四车道主干道', cost: 85, bridgeCost: 220, upkeep: 2.8, unlockPop: 350, unlockLevel: 3, category: 'road', icon: '🛤️', desc: '大容量主干道，跨水架斜拉桥（维护较高，需人口支撑）' },
+  road_elev:           { id: 'road_elev',           name: '高架快速路(+1层)', cost: 160, upkeep: 4.5, unlockPop: 450, unlockLevel: 5, category: 'road', icon: '🌉', desc: '二层立体高架桥！跨越地面拥堵路口、铁路与河流' },
+  road_ramp:           { id: 'road_ramp',           name: '高架上下匝道', cost: 110, upkeep: 2.2, unlockPop: 450, unlockLevel: 5, category: 'road', icon: '↗️', desc: '🛣️ 点击或直线拖拽1~3格建匝道：建在地面主干道上将自动生成【桥下不断流·两侧辅道 + 中央上下匝道】！' },
+  road_tunnel:         { id: 'road_tunnel',         name: '穿山公路隧道', cost: 190, upkeep: 4.8, unlockPop: 450, unlockLevel: 5, category: 'road', icon: '🏔️', desc: '贯穿陡峭山脉的地下公路隧道' },
+  interchange_diamond: { id: 'interchange_diamond', name: '菱形互通立交', cost: 1600, upkeep: 18, unlockPop: 1900, unlockLevel: 5, category: 'road', icon: '🔀', desc: '一键建造 5×5 菱形互通立交（高架直跨 + 地面四车道下穿 + 4条无冲突上下匝道，支持旋转）' },
+  interchange_rbt:     { id: 'interchange_rbt',     name: '立体环岛立交', cost: 1850, upkeep: 20, unlockPop: 1900, unlockLevel: 5, category: 'road', icon: '🔁', desc: '一键建造 5×5 立体环岛立交（地面3×3四车道环岛 + 高架直跨中心 + 双向衔接匝道，支持旋转）' },
 
-  // Underground Metro & High-Speed Rail
-  metro_line:    { id: 'metro_line',    name: '地下地铁隧道', cost: 110, upkeep: 3.2, unlockPop: 1100, unlockLevel: 7, icon: '🟣', desc: '地底地铁轨道，无视地面建筑与山河阻隔' },
-  metro_station: { id: 'metro_station', name: '地铁站出入口', cost: 1800, upkeep: 55, unlockPop: 1100, unlockLevel: 7, icon: '🚇', desc: '连接地铁隧道，大幅缓解路面堵车并拉升商业地价' },
-  rail_track:    { id: 'rail_track',    name: '高速铁路轨道', cost: 135, bridgeCost: 260, upkeep: 3.6, unlockPop: 2200, unlockLevel: 8, icon: '🚄', desc: '双线无砟高铁轨道（跨河跨路自动架设特大桥）' },
-  hsr_station:   { id: 'hsr_station',   name: '高铁中央车站', cost: 4800, upkeep: 130, unlockPop: 2200, unlockLevel: 8, icon: '🚉', desc: '接通城际高铁干线，复兴号停靠带来大量客流与商业税收' },
+  // Bus Transit, Underground Metro & High-Speed Rail
+  bus_stop:      { id: 'bus_stop',      name: '智能公交站', cost: 160, upkeep: 12, unlockPop: 150, unlockLevel: 2, category: 'rail', icon: '🚏', desc: '建在地面街道/主干道上的智慧公交亭！建成2座及以上自动开通新能源公交专线分流私家车' },
+  metro_line:    { id: 'metro_line',    name: '地下地铁隧道', cost: 110, upkeep: 3.2, unlockPop: 1100, unlockLevel: 7, category: 'rail', icon: '🟣', desc: '地底地铁轨道，无视地面建筑与山河阻隔' },
+  metro_station: { id: 'metro_station', name: '地铁站出入口', cost: 1800, upkeep: 55, unlockPop: 1100, unlockLevel: 7, category: 'rail', icon: '🚇', desc: '连接地铁隧道，大幅缓解路面堵车并拉升商业地价' },
+  rail_track:    { id: 'rail_track',    name: '高速铁路轨道', cost: 135, bridgeCost: 260, upkeep: 3.6, unlockPop: 2200, unlockLevel: 8, category: 'rail', icon: '🚄', desc: '双线无砟高铁轨道（跨河跨路自动架设特大桥）' },
+  hsr_station:   { id: 'hsr_station',   name: '高铁中央车站', cost: 4800, upkeep: 130, unlockPop: 2200, unlockLevel: 8, category: 'rail', icon: '🚉', desc: '接通城际高铁干线，复兴号停靠带来大量客流与商业税收' },
 
   // 6 Authentic Cities: Skylines Zones (Zoning is free in CS1, road/pipe upkeep is the real cost!)
   zone_RL: { id: 'zone_RL', name: '低密住宅(别墅)', cost: 0, unlockPop: 0, unlockLevel: 1, icon: '🏡', desc: '花园独栋与洋房，厌恶工业污染与高税率' },
@@ -8874,7 +9975,7 @@ const MAYOR_LEVELS = [
     popReq: 180,
     xpReq: 220,
     reward: 4500,
-    summary: '解锁 🚒消防总署、🚓警察总局、🌳中央景观公园、🏦市政小额贷款'
+    summary: '解锁 🚒消防总署、🚓警察总局、🌳中央景观公园、➡️单行快车道、🚏智能公交站、🏦市政小额贷款'
   },
   {
     level: 3,
@@ -8898,7 +9999,7 @@ const MAYOR_LEVELS = [
     popReq: 1900,
     xpReq: 2100,
     reward: 15000,
-    summary: '解锁 🌉二层高架快速路、↗️高架上下匝道、🏔️穿山公路隧道、🏢高密住宅(RH)'
+    summary: '解锁 🌉二层高架快速路、↗️高架上下匝道、🔀菱形/环岛立交、🏔️穿山公路隧道、🏢高密住宅(RH)'
   },
   {
     level: 6,
@@ -9048,6 +10149,229 @@ const LOAN_OFFERS = [
   { id: 'loan_m', name: '城市基建发展债', unlockLevel: 4, principal: 45000, totalRepay: 54000, periodPay: 750, desc: '本金 ¥45,000（利率20%，每期还 ¥750）' },
   { id: 'loan_l', name: '超级工程建设国债', unlockLevel: 7, principal: 100000, totalRepay: 125000, periodPay: 1560, desc: '本金 ¥100,000（利率25%，每期还 ¥1,560）' }
 ];
+const POLICY_CATALOG = [
+  { id: 'greenEnergy',   icon: '🌳', name: '环保减排法',   desc: '工业污染 -35%，但工业税收 -6%' },
+  { id: 'freeHigherEd',  icon: '🎓', name: '免费高等教育', desc: '全市高学历率 +18%，办公/高科税收 +15%，维护 +¥220 + 人口×0.08' },
+  { id: 'freeTransit',   icon: '🚌', name: '免费公共交通', desc: '公交/地铁/高铁客流 +35%，路面车流 -22%，免除公共交通票价收入' },
+  { id: 'energySubsidy', icon: '⚡', name: '工业节能补贴', desc: '全市用电用水需求 -15%，维护 +¥180 + 建筑数×1.2' },
+  { id: 'bizTaxBreak',   icon: '📈', name: '招商引资减税', desc: '商/办/工需求 +28%，但商业与办公税收 -10%' }
+];
+const CIVIC_EVENTS = [
+  {
+    id: 'tech_hq_bid',
+    icon: '💻',
+    title: '科技巨头申请设立区域总部',
+    desc: '一家跨国人工智能集团希望在山河新城设立华东研发总部，正与市政府磋商落户方案与人才配套。',
+    choices: [
+      {
+        label: '批准专项优惠落户（-¥1,800）',
+        effectDesc: '办公与商业需求 +25%（持续3个月），市长经验 +80 XP',
+        apply(sim) {
+          if (sim.difficulty !== 'sandbox') sim.money -= 1800;
+          sim.applyTempDemandBoost(0.08, 0.25, 0.25, 3);
+          sim.addXP(80, '引进科技总部');
+        }
+      },
+      {
+        label: '坚持标准税率并要求公益配套（+¥1,200）',
+        effectDesc: '国库增收 +¥1,200，市民幸福度 +4（持续3个月），办公需求 +10%',
+        apply(sim) {
+          if (sim.difficulty !== 'sandbox') sim.money += 1200;
+          sim.applyTempDemandBoost(0, 0.05, 0.10, 3);
+          sim.applyTempHappinessBoost(4, 3);
+          sim.addXP(50, '规范招商签约');
+        }
+      },
+      {
+        label: '扶持本土高校与科创小微（开启免费高教）',
+        effectDesc: '启用【🎓 免费高等教育】政策，工业/科技需求 +18%（持续3个月）',
+        apply(sim) {
+          sim.policies.freeHigherEd = true;
+          sim.applyTempDemandBoost(0.05, 0.08, 0.18, 3);
+          sim.addXP(65, '本土科创扶持');
+        }
+      }
+    ]
+  },
+  {
+    id: 'riverfront_festival',
+    icon: '🎵',
+    title: '江滨国际音乐节筹办请示',
+    desc: '文旅协会申请沿滨江风光带举办为期一周的国际音乐节，预计吸引数万游客打卡，如何统筹预算与市民体验？',
+    choices: [
+      {
+        label: '市政补贴免费接驳盛大举办（-¥900）',
+        effectDesc: '市民幸福度 +8（持续3个月），商业需求 +22%，市长经验 +75 XP',
+        apply(sim) {
+          if (sim.difficulty !== 'sandbox') sim.money -= 900;
+          sim.applyTempDemandBoost(0.06, 0.22, 0, 3);
+          sim.applyTempHappinessBoost(8, 3);
+          sim.addXP(75, '成功举办江滨音乐节');
+        }
+      },
+      {
+        label: '引入商业冠名与门票分成（+¥2,400）',
+        effectDesc: '财政门票分成 +¥2,400，幸福度 +3（持续2个月），商业需求 +12%',
+        apply(sim) {
+          if (sim.difficulty !== 'sandbox') sim.money += 2400;
+          sim.applyTempDemandBoost(0, 0.12, 0, 2);
+          sim.applyTempHappinessBoost(3, 2);
+          sim.addXP(45, '商业音乐节收益');
+        }
+      },
+      {
+        label: '改办低噪音社区滨水艺术展（¥0）',
+        effectDesc: '零噪音扰民，零财政负担，幸福度 +4（持续2个月），经验 +50 XP',
+        apply(sim) {
+          sim.applyTempHappinessBoost(4, 2);
+          sim.addXP(50, '静谧文化惠民');
+        }
+      }
+    ]
+  },
+  {
+    id: 'drought_hydro_dispatch',
+    icon: '💧',
+    title: '上游枯水期水电联合调度',
+    desc: '水文气象台预警近期上游来水偏少，电网与水务调度中心提交了三套应急保供预案，请市长拍板。',
+    choices: [
+      {
+        label: '实施节水节能补贴保供（-¥1,500）',
+        effectDesc: '开启【⚡ 工业节能补贴】（水电需求 -15%），经验 +90 XP',
+        apply(sim) {
+          if (sim.difficulty !== 'sandbox') sim.money -= 1500;
+          sim.policies.energySubsidy = true;
+          sim.addXP(90, '枯水期节水调度');
+        }
+      },
+      {
+        label: '向周边省网紧急购电保民生（-¥2,200）',
+        effectDesc: '市民幸福度 +5（持续3个月），住宅需求 +15%，确保民生零停电',
+        apply(sim) {
+          if (sim.difficulty !== 'sandbox') sim.money -= 2200;
+          sim.applyTempDemandBoost(0.15, 0.05, 0, 3);
+          sim.applyTempHappinessBoost(5, 3);
+          sim.addXP(65, '跨区购电保民生');
+        }
+      },
+      {
+        label: '倡议工业企业错峰节能生产（+¥600）',
+        effectDesc: '财政节余 +¥600，工业需求短期 -10%（持续2个月），保障电网平稳',
+        apply(sim) {
+          if (sim.difficulty !== 'sandbox') sim.money += 600;
+          sim.applyTempDemandBoost(0, 0, -0.10, 2);
+          sim.addXP(40, '工业错峰调度');
+        }
+      }
+    ]
+  },
+  {
+    id: 'ev_bus_subsidy',
+    icon: '🚌',
+    title: '绿色新能源公交专项补贴',
+    desc: '省交通厅下发“绿色出行示范城”纯电公交采购补贴指标，市公交集团请求确定补贴使用方式。',
+    choices: [
+      {
+        label: '申领全额补贴并推行免费公交（+¥2,800）',
+        effectDesc: '获得补贴 +¥2,800，开启【🚌 免费公共交通】，幸福度 +6（持续3个月）',
+        apply(sim) {
+          if (sim.difficulty !== 'sandbox') sim.money += 2800;
+          sim.policies.freeTransit = true;
+          sim.applyTempHappinessBoost(6, 3);
+          sim.addXP(85, '绿色公交示范城');
+        }
+      },
+      {
+        label: '仅用于更新纯电车队保留票价（+¥1,600）',
+        effectDesc: '国库入账 +¥1,600，住宅需求 +12%（持续3个月），经验 +60 XP',
+        apply(sim) {
+          if (sim.difficulty !== 'sandbox') sim.money += 1600;
+          sim.applyTempDemandBoost(0.12, 0.08, 0, 3);
+          sim.addXP(60, '纯电公交升级');
+        }
+      }
+    ]
+  },
+  {
+    id: 'old_street_walkable',
+    icon: '🚶',
+    title: '老街区步行化微更新试点',
+    desc: '城市规划院提议将老城区核心街坊改造为低噪慢行街区并植入林荫口袋公园，重塑宜居烟火气。',
+    choices: [
+      {
+        label: '市政主导精品微更新（-¥1,400）',
+        effectDesc: '市民幸福度 +7（持续4个月），住宅/商业需求 +16%，经验 +100 XP',
+        apply(sim) {
+          if (sim.difficulty !== 'sandbox') sim.money -= 1400;
+          sim.applyTempDemandBoost(0.16, 0.16, 0, 4);
+          sim.applyTempHappinessBoost(7, 4);
+          sim.addXP(100, '老街区步行微更新');
+        }
+      },
+      {
+        label: '引入社会资本商业联合改造（+¥900）',
+        effectDesc: '财政入账 +¥900，商业需求 +18%（持续3个月），幸福度 +2',
+        apply(sim) {
+          if (sim.difficulty !== 'sandbox') sim.money += 900;
+          sim.applyTempDemandBoost(0.04, 0.18, 0, 3);
+          sim.applyTempHappinessBoost(2, 3);
+          sim.addXP(55, '政企联合街区更新');
+        }
+      }
+    ]
+  },
+  {
+    id: 'port_free_trade',
+    icon: '🚢',
+    title: '国际航运与跨境免税试点',
+    desc: '商务部拟将我市纳入区域跨境贸易与航运免税试点名单，大幅提升本地商业与制造外贸辐射力。',
+    choices: [
+      {
+        label: '高标准申报自贸免税枢纽（+¥3,200 专项）',
+        effectDesc: '财政专项支持 +¥3,200，商业与工业需求 +28%（持续4个月），经验 +120 XP',
+        apply(sim) {
+          if (sim.difficulty !== 'sandbox') sim.money += 3200;
+          sim.applyTempDemandBoost(0.08, 0.28, 0.28, 4);
+          sim.addXP(120, '国际自贸免税枢纽');
+        }
+      },
+      {
+        label: '稳妥推进保税物流与环保制造（+¥1,400）',
+        effectDesc: '国库入账 +¥1,400，开启【🌳 环保减排法】，商/工需求 +15%（持续3个月）',
+        apply(sim) {
+          if (sim.difficulty !== 'sandbox') sim.money += 1400;
+          sim.policies.greenEnergy = true;
+          sim.applyTempDemandBoost(0, 0.15, 0.15, 3);
+          sim.addXP(80, '绿色保税贸易试点');
+        }
+      }
+    ]
+  }
+];
+
+function createDefaultPolicies() {
+  return {
+    greenEnergy: false,
+    freeHigherEd: false,
+    freeTransit: false,
+    energySubsidy: false,
+    bizTaxBreak: false,
+    greenCity: false,
+    techBoost: false
+  };
+}
+
+function createEmptyTransitStats() {
+  return {
+    bus:   { stops: 0, riders: 0, revenue: 0, upkeep: 0, carsSaved: 0 },
+    metro: { stations: 0, riders: 0, revenue: 0, upkeep: 0, carsSaved: 0 },
+    hsr:   { stations: 0, riders: 0, revenue: 0, upkeep: 0, carsSaved: 0 },
+    totalRiders: 0,
+    totalRevenue: 0,
+    totalUpkeep: 0,
+    totalCarsSaved: 0
+  };
+}
 class CitySimulation {
   constructor(sfx) {
     this.sfx = sfx;
@@ -9073,11 +10397,24 @@ class CitySimulation {
     this.onLevelUp = null;
     this.onQuestComplete = null;
 
-    this.policies = {
-      freeTransit: false,
-      greenCity: false,
-      techBoost: false
-    };
+    // 15-Step Undo Stack
+    this.undoStack = [];
+    this._lastSculptUndoAt = 0;
+
+    // 5 Strategic City Policies (+ legacy compatibility flags)
+    this.policies = createDefaultPolicies();
+
+    // Deep Strategic Telemetry, History & Dynamic Civic Decisions
+    this.educatedRate = 0;
+    this.transitStats = createEmptyTransitStats();
+    this.lastTransitRevenue = 0;
+    this.history = [];
+    this.activeEvent = null;
+    this._eventMonthAccum = 0;
+    this._eventHistoryIdx = 0;
+    this.tempDemandBoost = { R: 0, C: 0, I: 0, monthsLeft: 0 };
+    this.tempHappinessBoost = 0;
+    this.tempHappinessMonths = 0;
 
     // Calm, realistic calendar & day-night flow!
     this.year = 2026;
@@ -9321,6 +10658,11 @@ class CitySimulation {
         this.emitToast('💰 资金不足：改建景观环岛需 ¥120');
         return { ok: false };
       }
+    }
+
+    this.pushUndoSnapshot('路口管制模式');
+
+    if (mode === 'roundabout' && !t.roundaboutPaid) {
       if (this.difficulty !== 'sandbox') this.money -= cost;
       t.roundaboutPaid = true;
     }
@@ -9335,6 +10677,682 @@ class CitySimulation {
       else if (this.sfx.tap) this.sfx.tap();
     }
     return { ok: true, cost };
+  }
+
+  // ==================== 15-Step Lightweight Undo Stack ====================
+  canUndo() {
+    return this.undoStack.length > 0;
+  }
+
+  get undoCount() {
+    return this.undoStack.length;
+  }
+
+  get lastUndoLabel() {
+    return this.undoStack.length > 0 ? this.undoStack[this.undoStack.length - 1].label : '';
+  }
+
+  pushUndoSnapshot(label = '城市操作') {
+    const N = this.grid.length;
+    const tiles = new Array(N);
+    for (let i = 0; i < N; i++) {
+      const t = this.grid[i];
+      const b = t.building;
+      tiles[i] = {
+        trees: t.trees,
+        waterSpring: t.waterSpring,
+        roadGround: t.roadGround,
+        roadBridge: t.roadBridge,
+        roadDir: typeof t.roadDir === 'number' ? t.roadDir : -1,
+        banTrucks: Boolean(t.banTrucks),
+        busStop: Boolean(t.busStop),
+        junctionMode: t.junctionMode || null,
+        roundaboutPaid: Boolean(t.roundaboutPaid),
+        roadElevated: t.roadElevated,
+        ramp: t.ramp,
+        rail: t.rail,
+        metro: t.metro,
+        pipe: t.pipe,
+        pipeBroken: t.pipeBroken,
+        pylon: t.pylon,
+        dam: t.dam,
+        damCrest: t.damCrest,
+        damOutputMW: t.damOutputMW,
+        damHealth: t.damHealth,
+        damStress: t.damStress,
+        zone: t.zone,
+        building: b ? { ...b } : null
+      };
+    }
+    if (this.undoStack.length >= 15) {
+      this.undoStack.shift();
+    }
+    this.undoStack.push({
+      label,
+      money: this.money,
+      corners: new Float32Array(this.corners),
+      waterDepth: new Float32Array(this.waterDepth),
+      waterPoll: new Float32Array(this.waterPoll),
+      tiles
+    });
+  }
+
+  undoLastAction() {
+    if (this.undoStack.length === 0) {
+      return { ok: false };
+    }
+    const snap = this.undoStack.pop();
+    const prevMoney = this.money;
+    this.money = snap.money;
+    this.corners.set(snap.corners);
+    this.waterDepth.set(snap.waterDepth);
+    this.waterPoll.set(snap.waterPoll);
+
+    const N = this.grid.length;
+    for (let i = 0; i < N; i++) {
+      const t = this.grid[i];
+      const s = snap.tiles[i];
+      t.trees = s.trees;
+      t.waterSpring = s.waterSpring;
+      t.roadGround = s.roadGround;
+      t.roadBridge = s.roadBridge;
+      t.roadDir = s.roadDir;
+      t.banTrucks = s.banTrucks;
+      t.busStop = s.busStop;
+      t.junctionMode = s.junctionMode;
+      t.roundaboutPaid = s.roundaboutPaid;
+      t.roadElevated = s.roadElevated;
+      t.ramp = s.ramp;
+      t.rail = s.rail;
+      t.metro = s.metro;
+      t.pipe = s.pipe;
+      t.pipeBroken = s.pipeBroken;
+      t.pylon = s.pylon;
+      t.dam = s.dam;
+      t.damCrest = s.damCrest;
+      t.damOutputMW = s.damOutputMW;
+      t.damHealth = s.damHealth;
+      t.damStress = s.damStress;
+      t.zone = s.zone;
+      t.building = s.building ? { ...s.building } : null;
+    }
+
+    if (this.waterPhysics && typeof this.waterPhysics.refreshCellElevations === 'function') {
+      this.waterPhysics.refreshCellElevations();
+    }
+    this.recomputeNetworksAndFields();
+    this.stepEconomy(false);
+    this.money = snap.money;
+    if (this.traffic && typeof this.traffic.refreshRoadGraph === 'function') {
+      this.traffic.refreshRoadGraph();
+    }
+    if (this.traffic && typeof this.traffic.revalidateVehicles === 'function') {
+      this.traffic.revalidateVehicles();
+    } else if (this.traffic && typeof this.traffic.revalidateActiveTransport === 'function') {
+      this.traffic.revalidateActiveTransport();
+    }
+    this.meshDirty = true;
+    if (this.sfx && this.sfx.tap) this.sfx.tap();
+
+    const moneyDelta = snap.money - prevMoney;
+    return { ok: true, label: snap.label, moneyDelta };
+  }
+
+  // ==================== One-Way Streets & Heavy-Truck Ban Actions ====================
+  flipOneWayDirection(x, z) {
+    const t = this.getTile(x, z);
+    if (!t || t.roadGround <= 0 || typeof t.roadDir !== 'number' || t.roadDir < 0) {
+      return { ok: false, count: 0 };
+    }
+    const oldDir = t.roadDir;
+    const newDir = oldDir ^ 1; // 0(N)<->1(S), 2(W)<->3(E)
+    const stepX = oldDir >= 2 ? 1 : 0;
+    const stepZ = oldDir < 2 ? 1 : 0;
+
+    const segment = [t];
+    for (const sign of [-1, 1]) {
+      let cx = x + stepX * sign;
+      let cz = z + stepZ * sign;
+      while (inBounds(cx, cz)) {
+        const nt = this.grid[idx(cx, cz)];
+        if (nt && nt.roadGround > 0 && !nt.dam && nt.roadDir === oldDir) {
+          segment.push(nt);
+          cx += stepX * sign;
+          cz += stepZ * sign;
+        } else {
+          break;
+        }
+      }
+    }
+
+    this.pushUndoSnapshot('反转单行方向');
+    for (let i = 0; i < segment.length; i++) {
+      segment[i].roadDir = newDir;
+    }
+
+    this.infraDirty = true;
+    this.recomputeNetworksAndFields();
+    if (this.traffic && typeof this.traffic.refreshRoadGraph === 'function') {
+      this.traffic.refreshRoadGraph();
+    }
+    if (this.sfx && this.sfx.tap) this.sfx.tap();
+    return { ok: true, dir: newDir, oldDir, count: segment.length };
+  }
+
+  toggleTruckBan(x, z) {
+    const t = this.getTile(x, z);
+    if (!t || t.roadGround < 1 || t.dam) {
+      return { ok: false, banTrucks: false, count: 0 };
+    }
+    const nextBan = !t.banTrucks;
+    const isPlainStreet = (tile) => Boolean(tile && tile.roadGround >= 1 && !tile.dam);
+    const getDeg = (gx, gz) => {
+      let d = 0;
+      if (isPlainStreet(this.getTile(gx + 1, gz))) d++;
+      if (isPlainStreet(this.getTile(gx - 1, gz))) d++;
+      if (isPlainStreet(this.getTile(gx, gz + 1))) d++;
+      if (isPlainStreet(this.getTile(gx, gz - 1))) d++;
+      return d;
+    };
+
+    const segment = [t];
+    const startDeg = getDeg(x, z);
+    if (startDeg > 0 && startDeg <= 2) {
+      const hasEW = isPlainStreet(this.getTile(x - 1, z)) || isPlainStreet(this.getTile(x + 1, z));
+      const hasNS = isPlainStreet(this.getTile(x, z - 1)) || isPlainStreet(this.getTile(x, z + 1));
+      if (hasEW !== hasNS) {
+        const stepX = hasEW ? 1 : 0;
+        const stepZ = hasNS ? 1 : 0;
+        for (const sign of [-1, 1]) {
+          let cx = x + stepX * sign;
+          let cz = z + stepZ * sign;
+          while (inBounds(cx, cz)) {
+            const nt = this.grid[idx(cx, cz)];
+            if (!isPlainStreet(nt)) break;
+            const ndeg = getDeg(cx, cz);
+            if (ndeg >= 3) break;
+            const nEW = isPlainStreet(this.getTile(cx - 1, cz)) || isPlainStreet(this.getTile(cx + 1, cz));
+            const nNS = isPlainStreet(this.getTile(cx, cz - 1)) || isPlainStreet(this.getTile(cx, cz + 1));
+            if (nEW && nNS) break; // Stop at 90-degree corner
+            segment.push(nt);
+            cx += stepX * sign;
+            cz += stepZ * sign;
+          }
+        }
+      }
+    }
+
+    this.pushUndoSnapshot(nextBan ? '街道禁行重卡' : '解除重卡禁行');
+    for (let i = 0; i < segment.length; i++) {
+      segment[i].banTrucks = nextBan;
+    }
+
+    this.recomputeNetworksAndFields();
+    if (this.traffic && typeof this.traffic.refreshRoadGraph === 'function') {
+      this.traffic.refreshRoadGraph();
+    }
+    this.infraDirty = true;
+    if (this.sfx && this.sfx.tap) this.sfx.tap();
+    return { ok: true, banTrucks: nextBan, count: segment.length };
+  }
+
+  // ==================== One-Tap 5x5 3D Interchange Presets ====================
+  _getInterchangeSpec(type, cx, cz, rot = 0) {
+    const r = rot & 1;
+    const mapUV = (u, v) => (r === 0 ? { x: cx + u, z: cz + v } : { x: cx + v, z: cz + u });
+    const specs = [];
+
+    if (type === 'interchange_diamond') {
+      // Elevated highway viaduct straight across v = 0, u = -2..+2
+      // Orthogonal ground 4-lane avenue u = 0, v = -2..+2
+      // 4 conflict-free bridgehead ramps at (u = +-1, v = +-1)
+      // 2 parallel flanking ground slip-connectors at v = +-2, u = +-1
+      for (let u = -2; u <= 2; u++) {
+        const p = mapUV(u, 0);
+        specs.push({
+          x: p.x,
+          z: p.z,
+          role: u === 0 ? 'overpass_crossing' : 'viaduct',
+          roadGround: u === 0 ? 2 : 0,
+          roadElevated: 1,
+          ramp: false,
+          junctionMode: 'signal'
+        });
+      }
+      for (const v of [-2, -1, 1, 2]) {
+        const p = mapUV(0, v);
+        specs.push({
+          x: p.x,
+          z: p.z,
+          role: 'avenue',
+          roadGround: 2,
+          roadElevated: 0,
+          ramp: false,
+          junctionMode: Math.abs(v) === 2 ? 'yield' : 'signal'
+        });
+      }
+      for (const u of [-1, 1]) {
+        for (const v of [-1, 1]) {
+          const pr = mapUV(u, v);
+          specs.push({
+            x: pr.x,
+            z: pr.z,
+            role: 'ramp',
+            roadGround: 1,
+            roadElevated: 1,
+            ramp: true,
+            junctionMode: 'signal'
+          });
+          const ps = mapUV(u, v * 2);
+          specs.push({
+            x: ps.x,
+            z: ps.z,
+            role: 'slip',
+            roadGround: 1,
+            roadElevated: 0,
+            ramp: false,
+            junctionMode: 'signal'
+          });
+        }
+      }
+      return specs;
+    }
+
+    if (type === 'interchange_rbt') {
+      // 3x3 ground 4-lane roundabout ring: max(|u|, |v|) === 1
+      // Center (0, 0): open island underneath elevated overpass
+      // Elevated overpass straight across v = 0, u = -2..+2
+      // Cross arterial spokes at (0, -2) and (0, +2)
+      // 2 symmetric conflict-free bridgehead ramps at (-2, -1) and (+2, +1) with slip roads at (-2,-2)/(-1,-2) & (+2,+2)/(+1,+2)
+      for (let u = -2; u <= 2; u++) {
+        const p = mapUV(u, 0);
+        const onRing = Math.abs(u) === 1;
+        specs.push({
+          x: p.x,
+          z: p.z,
+          role: onRing ? 'roundabout_crossing' : 'viaduct',
+          roadGround: onRing ? 2 : 0,
+          roadElevated: 1,
+          ramp: false,
+          junctionMode: onRing ? 'roundabout' : 'signal'
+        });
+      }
+      for (const v of [-1, 1]) {
+        for (let u = -1; u <= 1; u++) {
+          const p = mapUV(u, v);
+          specs.push({
+            x: p.x,
+            z: p.z,
+            role: 'roundabout',
+            roadGround: 2,
+            roadElevated: 0,
+            ramp: false,
+            junctionMode: 'roundabout'
+          });
+        }
+      }
+      for (const v of [-2, 2]) {
+        const p = mapUV(0, v);
+        specs.push({
+          x: p.x,
+          z: p.z,
+          role: 'avenue',
+          roadGround: 2,
+          roadElevated: 0,
+          ramp: false,
+          junctionMode: 'yield'
+        });
+      }
+      // West-North ramp & slip connector
+      const r1 = mapUV(-2, -1);
+      specs.push({ x: r1.x, z: r1.z, role: 'ramp', roadGround: 1, roadElevated: 1, ramp: true, junctionMode: 'signal' });
+      const s1a = mapUV(-2, -2);
+      specs.push({ x: s1a.x, z: s1a.z, role: 'slip', roadGround: 1, roadElevated: 0, ramp: false, junctionMode: 'signal' });
+      const s1b = mapUV(-1, -2);
+      specs.push({ x: s1b.x, z: s1b.z, role: 'slip', roadGround: 1, roadElevated: 0, ramp: false, junctionMode: 'signal' });
+      // East-South ramp & slip connector
+      const r2 = mapUV(2, 1);
+      specs.push({ x: r2.x, z: r2.z, role: 'ramp', roadGround: 1, roadElevated: 1, ramp: true, junctionMode: 'signal' });
+      const s2a = mapUV(2, 2);
+      specs.push({ x: s2a.x, z: s2a.z, role: 'slip', roadGround: 1, roadElevated: 0, ramp: false, junctionMode: 'signal' });
+      const s2b = mapUV(1, 2);
+      specs.push({ x: s2b.x, z: s2b.z, role: 'slip', roadGround: 1, roadElevated: 0, ramp: false, junctionMode: 'signal' });
+      return specs;
+    }
+
+    return null;
+  }
+
+  previewInterchange(type, cx, cz, rot = 0) {
+    const item = CATALOG[type];
+    const cost = this.difficulty === 'sandbox' ? 0 : (item?.cost || 1600);
+    const specs = this._getInterchangeSpec(type, cx, cz, rot);
+    if (!specs) {
+      return { valid: false, reason: '未知立交预设类型', cost, tiles: [] };
+    }
+    const tiles = specs.map((s) => ({ x: s.x, z: s.z, role: s.role }));
+
+    if (!this.isToolUnlocked(type)) {
+      return {
+        valid: false,
+        reason: `需升至市长等级 Lv.${item?.unlockLevel || 5} 解锁【${item?.name || type}】`,
+        cost,
+        tiles
+      };
+    }
+
+    // Validate full 5x5 bounding box is inside map & free of deep water / protected structures
+    for (let dz = -2; dz <= 2; dz++) {
+      for (let dx = -2; dx <= 2; dx++) {
+        const x = cx + dx;
+        const z = cz + dz;
+        if (!inBounds(x, z)) {
+          return { valid: false, reason: '5×5 立交范围超出地图边界', cost, tiles };
+        }
+      }
+    }
+
+    for (let i = 0; i < specs.length; i++) {
+      const s = specs[i];
+      const ti = idx(s.x, s.z);
+      const t = this.grid[ti];
+      if (!t) {
+        return { valid: false, reason: '立交超出边界', cost, tiles };
+      }
+      if (this.waterDepth[ti] > 0.25) {
+        return { valid: false, reason: '深水区域无法直接修建地面互通立交', cost, tiles };
+      }
+      if (t.dam || t.roadGround === 3 || t.rail === 2) {
+        return { valid: false, reason: '不可覆盖大坝或城际干线边境出入口', cost, tiles };
+      }
+      if (t.building && !BUILDING_NAMES[t.building.type]) {
+        return { valid: false, reason: '立交区域内存在市政设施或地标建筑，请先避让或拆除', cost, tiles };
+      }
+      const { slope } = this.getTileMinMaxElev(s.x, s.z);
+      if (slope > 1.15) {
+        return { valid: false, reason: '地形过于陡峭，请先用平整工具修整台地', cost, tiles };
+      }
+    }
+
+    return { valid: true, reason: '', cost, tiles };
+  }
+
+  placeInterchange(type, cx, cz, rot = 0, free = false) {
+    if (!free && !this.isToolUnlocked(type)) {
+      if (this.sfx) this.sfx.error();
+      this.emitToast(`🔒 需升至市长等级 Lv.${CATALOG[type]?.unlockLevel || 5} 解锁【${CATALOG[type]?.name}】！`);
+      return { ok: false, reason: 'locked' };
+    }
+
+    const savedUnlock = this.unlockAll;
+    if (free) this.unlockAll = true;
+    const preview = this.previewInterchange(type, cx, cz, rot);
+    this.unlockAll = savedUnlock;
+
+    if (!preview.valid) {
+      if (!free) {
+        if (this.sfx) this.sfx.error();
+        this.emitToast(`⚠️ 无法建造立交：${preview.reason}`);
+      }
+      return { ok: false, reason: preview.reason };
+    }
+
+    const cost = free ? 0 : preview.cost;
+    if (!free && this.difficulty !== 'sandbox' && this.money < cost) {
+      if (this.sfx) this.sfx.error();
+      this.emitToast(`💰 国库资金不足（建造【${CATALOG[type]?.name}】需 ¥${cost.toLocaleString()}）`);
+      return { ok: false, reason: 'insufficient_funds' };
+    }
+
+    if (!free) {
+      this.pushUndoSnapshot(CATALOG[type]?.name || '立体立交');
+    }
+    if (!free && this.difficulty !== 'sandbox') {
+      this.money -= cost;
+    }
+
+    // Gently grade 5x5 interchange pad toward center elevation for crisp viaduct & ramp geometry
+    const targetH = this.getTileElev(cx, cz);
+    for (let czC = Math.max(0, cz - 2); czC <= Math.min(CORNER_STRIDE - 1, cz + 3); czC++) {
+      for (let cxC = Math.max(0, cx - 2); cxC <= Math.min(CORNER_STRIDE - 1, cx + 3); cxC++) {
+        if (czC >= GRID_SIZE - 1 && (Math.abs(cxC - 22.5) <= 1.6 || Math.abs(cxC - 8.5) <= 1.6)) continue;
+        const ci = cIdx(cxC, czC);
+        const curH = this.corners[ci];
+        if (curH > 0.02) {
+          this.corners[ci] = curH + (targetH - curH) * 0.72;
+        }
+      }
+    }
+
+    const specs = this._getInterchangeSpec(type, cx, cz, rot);
+    for (let i = 0; i < specs.length; i++) {
+      const s = specs[i];
+      const t = this.grid[idx(s.x, s.z)];
+      t.zone = null;
+      t.building = null;
+      t.pylon = false;
+      t.trees = 0;
+      t.roadDir = -1;
+      t.banTrucks = false;
+      t.busStop = false;
+      t.roadGround = s.roadGround;
+      t.roadBridge = s.roadGround > 0 && this.isWaterTile(s.x, s.z);
+      t.roadElevated = s.roadElevated;
+      t.ramp = Boolean(s.ramp);
+      t.junctionMode = s.junctionMode || 'signal';
+      t.roundaboutPaid = s.junctionMode === 'roundabout';
+    }
+
+    if (this.waterPhysics && typeof this.waterPhysics.refreshCellElevations === 'function') {
+      this.waterPhysics.refreshCellElevations();
+    }
+
+    const prevSuppress = this._suppressPromotions;
+    if (free) this._suppressPromotions = true;
+    this.recomputeNetworksAndFields();
+    this._suppressPromotions = prevSuppress;
+
+    if (this.traffic && typeof this.traffic.refreshRoadGraph === 'function') {
+      this.traffic.refreshRoadGraph();
+    }
+    this.meshDirty = true;
+
+    if (!free) {
+      if (this.sfx && this.sfx.road) this.sfx.road();
+      this.addXP(65, CATALOG[type]?.name || '立体立交');
+      this.checkMayorQuests();
+      this.emitToast(`✨ 已落成 5×5【${CATALOG[type]?.name}】，立体车流无缝立交分流！`);
+    }
+
+    return { ok: true, cost, tiles: preview.tiles };
+  }
+
+  // ==================== Rush-Hour Tidal Traffic Period Helper ====================
+  getTrafficPeriodInfo() {
+    const p = ((this.dayProgress % 1) + 1) % 1;
+    if (p >= 0.29 && p <= 0.40) {
+      return { id: 'morning_rush', icon: '🌅', label: '早高峰通勤', mult: 2.1, commuteBias: 'to_work' };
+    }
+    if (p >= 0.48 && p <= 0.60) {
+      return { id: 'midday', icon: '☀️', label: '午间商贸潮', mult: 1.4, commuteBias: 'commercial' };
+    }
+    if (p >= 0.71 && p <= 0.83) {
+      return { id: 'evening_rush', icon: '🌆', label: '晚高峰返家', mult: 2.1, commuteBias: 'to_home' };
+    }
+    if (p >= 0.94 || p < 0.21) {
+      return { id: 'late_night', icon: '🌙', label: '深夜静谧', mult: 0.35, commuteBias: 'quiet' };
+    }
+    return { id: 'normal', icon: '🌤️', label: '平峰顺畅', mult: 1.0, commuteBias: 'balanced' };
+  }
+
+  // ==================== Strategic Policies, History & Civic Decisions ====================
+  togglePolicy(key) {
+    if (!key || !(key in this.policies)) return { ok: false };
+    this.policies[key] = !this.policies[key];
+    this.recomputeNetworksAndFields();
+    this.stepEconomy(false);
+    if (this.traffic && typeof this.traffic.refreshModalSplitDemand === 'function') {
+      this.traffic.refreshModalSplitDemand();
+    }
+    if (this.sfx && this.sfx.tap) this.sfx.tap();
+    return { ok: true, key, active: this.policies[key] };
+  }
+
+  applyTempDemandBoost(dR = 0, dC = 0, dI = 0, months = 3) {
+    this.tempDemandBoost = {
+      R: Math.max(-0.35, Math.min(0.45, (this.tempDemandBoost?.R || 0) + dR)),
+      C: Math.max(-0.35, Math.min(0.45, (this.tempDemandBoost?.C || 0) + dC)),
+      I: Math.max(-0.35, Math.min(0.45, (this.tempDemandBoost?.I || 0) + dI)),
+      monthsLeft: Math.max(this.tempDemandBoost?.monthsLeft || 0, months)
+    };
+  }
+
+  applyTempHappinessBoost(delta = 0, months = 3) {
+    this.tempHappinessBoost = Math.max(-15, Math.min(18, (this.tempHappinessBoost || 0) + delta));
+    this.tempHappinessMonths = Math.max(this.tempHappinessMonths || 0, months);
+  }
+
+  getAverageCongestion() {
+    let sum = 0;
+    let cnt = 0;
+    for (let i = 0; i < this.grid.length; i++) {
+      const t = this.grid[i];
+      if (t.roadGround > 0) {
+        sum += t.congestion || 0;
+        cnt++;
+      }
+    }
+    return cnt > 0 ? Math.round((sum / cnt) * 100) : 0;
+  }
+
+  recordHistorySnapshot() {
+    const label = `${this.year}-${String(this.month).padStart(2, '0')}`;
+    this.history.push({
+      label,
+      pop: this.population || 0,
+      netIncome: this.netIncome || 0,
+      tax: this.lastTaxIncome || 0,
+      upkeep: this.lastUpkeep || 0,
+      happiness: this.happiness || 75,
+      avgCongestion: this.getAverageCongestion(),
+      educatedRate: this.educatedRate || 0,
+      transitRiders: this.transitStats?.totalRiders || 0
+    });
+    while (this.history.length > 24) {
+      this.history.shift();
+    }
+  }
+
+  seedBaselineHistory(months = 6) {
+    this.history = [];
+    const basePop = this.population || 0;
+    const baseNet = this.netIncome || 0;
+    const baseTax = this.lastTaxIncome || 0;
+    const baseUpk = this.lastUpkeep || 0;
+    const baseHap = this.happiness || 75;
+    const baseCong = this.getAverageCongestion();
+    const baseEdu = this.educatedRate || 0;
+    const baseRid = this.transitStats?.totalRiders || 0;
+
+    for (let offset = months - 1; offset >= 0; offset--) {
+      let m = this.month - offset;
+      let y = this.year;
+      while (m <= 0) {
+        m += 12;
+        y -= 1;
+      }
+      const frac = months > 1 ? 0.72 + (0.28 * (months - 1 - offset)) / (months - 1) : 1.0;
+      const wave = Math.sin(offset * 1.15) * 0.04;
+      this.history.push({
+        label: `${y}-${String(m).padStart(2, '0')}`,
+        pop: Math.max(0, Math.round(basePop * frac)),
+        netIncome: Math.round(baseNet * (0.85 + 0.15 * frac + wave)),
+        tax: Math.max(0, Math.round(baseTax * (frac + wave))),
+        upkeep: Math.max(0, Math.round(baseUpk * (0.90 + 0.10 * frac))),
+        happiness: Math.max(5, Math.min(100, Math.round(baseHap - offset * 0.6))),
+        avgCongestion: Math.max(0, Math.min(100, Math.round(baseCong * (0.82 + 0.18 * frac)))),
+        educatedRate: Math.max(0, Math.min(100, Math.round(baseEdu * (0.85 + 0.15 * frac)))),
+        transitRiders: Math.max(0, Math.round(baseRid * frac))
+      });
+    }
+  }
+
+  _onMonthRollover() {
+    this.recordHistorySnapshot();
+
+    if (this.tempDemandBoost && this.tempDemandBoost.monthsLeft > 0) {
+      this.tempDemandBoost.monthsLeft--;
+      if (this.tempDemandBoost.monthsLeft <= 0) {
+        this.tempDemandBoost = { R: 0, C: 0, I: 0, monthsLeft: 0 };
+      }
+    }
+    if (this.tempHappinessMonths > 0) {
+      this.tempHappinessMonths--;
+      if (this.tempHappinessMonths <= 0) {
+        this.tempHappinessBoost = 0;
+        this.tempHappinessMonths = 0;
+      }
+    }
+  }
+
+  triggerSampleEvent(eventId = null) {
+    let def = null;
+    if (eventId) {
+      def = CIVIC_EVENTS.find((e) => e.id === eventId) || null;
+    }
+    if (!def) {
+      def = CIVIC_EVENTS[this._eventHistoryIdx % CIVIC_EVENTS.length];
+      this._eventHistoryIdx++;
+    }
+    this.activeEvent = {
+      id: def.id,
+      icon: def.icon,
+      title: def.title,
+      desc: def.desc,
+      choices: def.choices.map((c) => ({ label: c.label, effectDesc: c.effectDesc }))
+    };
+    this.latestChirp = {
+      user: '@市政府办公厅',
+      text: `📜 市政决策待批示：${def.icon}【${def.title}】，请市长审阅并拍板！`,
+      mood: 'info'
+    };
+    return this.activeEvent;
+  }
+
+  resolveCivicEvent(choiceIdx) {
+    if (!this.activeEvent) return { ok: false };
+    const def = CIVIC_EVENTS.find((e) => e.id === this.activeEvent.id);
+    if (!def || choiceIdx < 0 || choiceIdx >= def.choices.length) {
+      return { ok: false };
+    }
+    const choice = def.choices[choiceIdx];
+    const eventId = def.id;
+    const eventTitle = def.title;
+
+    choice.apply(this);
+
+    this.activeEvent = null;
+    this._eventMonthAccum = 0;
+    this.latestChirp = {
+      user: '@市政决策快讯',
+      text: `✅ 市长已批复【${eventTitle}】→「${choice.label}」(${choice.effectDesc})`,
+      mood: 'good'
+    };
+
+    this.recomputeNetworksAndFields();
+    this.stepEconomy(false);
+    if (this.traffic && typeof this.traffic.refreshModalSplitDemand === 'function') {
+      this.traffic.refreshModalSplitDemand();
+    }
+    if (this.sfx && this.sfx.milestone) this.sfx.milestone();
+
+    return {
+      ok: true,
+      eventId,
+      choiceIdx,
+      choiceLabel: choice.label,
+      effectDesc: choice.effectDesc
+    };
   }
 
   onTripGridlockTimeout(v) {
@@ -9648,7 +11666,7 @@ class CitySimulation {
     return { found, poll: found ? bestPoll : 0 };
   }
 
-  sculptTerrain(tx, tz, mode, flattenTarget = null) {
+  sculptTerrain(tx, tz, mode, flattenTarget = null, isStrokeStart = false) {
     if (!inBounds(tx, tz)) return false;
     if (!this.isToolUnlocked(mode)) {
       this.emitToast(`🔒 需升至市长等级 Lv.${CATALOG[mode]?.unlockLevel || 1} 解锁【${CATALOG[mode]?.name}】！`);
@@ -9662,6 +11680,7 @@ class CitySimulation {
     }
 
     if (mode === 'ter_spring') {
+      this.pushUndoSnapshot(CATALOG.ter_spring?.name || '高山水源泉眼');
       const t = this.getTile(tx, tz);
       t.waterSpring = t.waterSpring > 0 ? 0 : 0.56;
       if (t.waterSpring > 0) {
@@ -9675,6 +11694,12 @@ class CitySimulation {
       if (this.sfx) this.sfx.pipe();
       this.meshDirty = true;
       return true;
+    }
+
+    const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    const pushedUndo = Boolean(isStrokeStart) || (now - (this._lastSculptUndoAt || 0) > 600);
+    if (pushedUndo) {
+      this.pushUndoSnapshot(CATALOG[mode]?.name || '地形重塑');
     }
 
     const R = 2.8;
@@ -9718,6 +11743,7 @@ class CitySimulation {
     }
 
     if (modified) {
+      if (pushedUndo) this._lastSculptUndoAt = now;
       this.money -= cost;
       for (const [ti, oldE] of preElev.entries()) {
         const txCell = ti % GRID_SIZE;
@@ -9735,6 +11761,8 @@ class CitySimulation {
       if (this.traffic && typeof this.traffic.refreshRoadGraph === 'function') {
         this.traffic.refreshRoadGraph();
       }
+    } else if (pushedUndo && this.undoStack.length > 0) {
+      this.undoStack.pop();
     }
     return modified;
   }
@@ -9888,14 +11916,54 @@ class CitySimulation {
     return false;
   }
 
-  estimateAction(toolId, tiles) {
+  _inferOneWayDirs(tiles, opts = null) {
+    const dirFromDelta = (dx, dz) => {
+      if (Math.abs(dx) >= Math.abs(dz)) return dx >= 0 ? 3 : 2;
+      return dz >= 0 ? 1 : 0;
+    };
+    const dirs = new Int8Array(tiles.length);
+    if (tiles.length === 1) {
+      let d = 3;
+      if (opts && typeof opts.dir === 'number' && opts.dir >= 0 && opts.dir <= 3) {
+        d = opts.dir;
+      } else {
+        const p = tiles[0];
+        for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const nt = this.getTile(p.x + dx, p.z + dz);
+          if (nt && nt.roadGround > 0 && typeof nt.roadDir === 'number' && nt.roadDir >= 0) {
+            d = nt.roadDir;
+            break;
+          }
+        }
+      }
+      dirs[0] = d;
+      return dirs;
+    }
+    for (let k = 0; k < tiles.length; k++) {
+      if (k < tiles.length - 1) {
+        dirs[k] = dirFromDelta(tiles[k + 1].x - tiles[k].x, tiles[k + 1].z - tiles[k].z);
+      } else {
+        dirs[k] = dirFromDelta(tiles[k].x - tiles[k - 1].x, tiles[k].z - tiles[k - 1].z);
+      }
+    }
+    return dirs;
+  }
+
+  estimateAction(toolId, tiles, opts = null) {
     let cost = 0;
     const validTiles = [];
     if (!this.isToolUnlocked(toolId)) {
       return { cost: 0, validTiles: [], lockedLevel: CATALOG[toolId]?.unlockLevel || 1 };
     }
+    if ((toolId === 'interchange_diamond' || toolId === 'interchange_rbt') && tiles && tiles.length > 0) {
+      const prev = this.previewInterchange(toolId, tiles[0].x, tiles[0].z, opts?.rot || 0);
+      return { cost: prev.valid ? prev.cost : 0, validTiles: prev.valid ? prev.tiles : [] };
+    }
 
-    for (const pos of tiles) {
+    const oneWayDirs = toolId === 'road_oneway' ? this._inferOneWayDirs(tiles, opts) : null;
+
+    for (let k = 0; k < tiles.length; k++) {
+      const pos = tiles[k];
       const t = this.getTile(pos.x, pos.z);
       if (!t) continue;
       const wet = this.isWaterTile(pos.x, pos.z);
@@ -9906,8 +11974,20 @@ class CitySimulation {
         if (t.roadGround === 3 || t.dam) continue;
         if (slope > 0.72 && !wet) continue;
         if (t.building && !BUILDING_NAMES[t.building.type]) continue;
-        if (t.roadGround === target && (!wet || t.roadBridge)) continue;
+        if (t.roadGround === target && (typeof t.roadDir !== 'number' || t.roadDir < 0) && (!wet || t.roadBridge)) continue;
         cost += wet ? CATALOG[toolId].bridgeCost : CATALOG[toolId].cost;
+        validTiles.push(pos);
+      } else if (toolId === 'road_oneway') {
+        if (t.roadGround === 3 || t.dam) continue;
+        if (slope > 0.72 && !wet) continue;
+        if (t.building && !BUILDING_NAMES[t.building.type]) continue;
+        const targetDir = oneWayDirs[k];
+        if (t.roadGround === 1 && t.roadDir === targetDir && (!wet || t.roadBridge)) continue;
+        cost += wet ? CATALOG.road_oneway.bridgeCost : CATALOG.road_oneway.cost;
+        validTiles.push({ x: pos.x, z: pos.z, dir: targetDir });
+      } else if (toolId === 'bus_stop') {
+        if (t.roadGround < 1 || t.roadGround === 3 || t.roadGround === 4 || t.dam || t.ramp || t.busStop) continue;
+        cost += CATALOG.bus_stop.cost;
         validTiles.push(pos);
       } else if (toolId === 'road_elev') {
         if (t.roadElevated === 1 || t.dam) continue;
@@ -9956,7 +12036,7 @@ class CitySimulation {
         if (t.zone) validTiles.push(pos);
       } else if (toolId === 'bulldoze') {
         if (t.roadGround === 3 || t.rail === 2) continue;
-        if (t.roadGround > 0 || t.roadElevated > 0 || t.ramp || t.rail > 0 || t.dam || t.pylon || t.building || t.zone) {
+        if (t.roadGround > 0 || t.roadElevated > 0 || t.ramp || t.rail > 0 || t.dam || t.pylon || t.building || t.zone || t.busStop) {
           cost += CATALOG.bulldoze.cost;
           validTiles.push(pos);
         }
@@ -9987,7 +12067,11 @@ class CitySimulation {
     return { cost, validTiles };
   }
 
-  applyTool(toolId, tiles, free = false) {
+  applyTool(toolId, tiles, free = false, opts = null) {
+    if ((toolId === 'interchange_diamond' || toolId === 'interchange_rbt') && tiles && tiles.length > 0) {
+      return this.placeInterchange(toolId, tiles[0].x, tiles[0].z, opts?.rot || 0, free);
+    }
+
     if (!free && !this.isToolUnlocked(toolId)) {
       if (this.sfx) this.sfx.error();
       this.emitToast(`🔒 需升至市长等级 Lv.${CATALOG[toolId]?.unlockLevel || 1} 解锁【${CATALOG[toolId]?.name}】！`);
@@ -9996,7 +12080,7 @@ class CitySimulation {
 
     const savedUnlock = this.unlockAll;
     if (free) this.unlockAll = true;
-    const { cost, validTiles } = this.estimateAction(toolId, tiles);
+    const { cost, validTiles } = this.estimateAction(toolId, tiles, opts);
     this.unlockAll = savedUnlock;
 
     if (validTiles.length === 0) {
@@ -10006,6 +12090,8 @@ class CitySimulation {
         this.emitToast('☢️ 核裂变发电站必须建在河岸或海湾陆地上（2格内有冷却水）！');
       } else if (!free && toolId === 'seaport') {
         this.emitToast('🚢 深水集装箱海港必须建在海湾或深水河岸陆地上（2格内有水域）！');
+      } else if (!free && toolId === 'bus_stop') {
+        this.emitToast('🚏 智能公交站必须建在普通地面街道或主干道上（不可建在隧道/大坝/匝道上）！');
       }
       return { ok: false };
     }
@@ -10014,6 +12100,10 @@ class CitySimulation {
       if (this.sfx) this.sfx.error();
       this.emitToast(`💰 国库资金不足（需 ¥${cost.toLocaleString()}）！可前往【📊 财政】申请市政贷款`);
       return { ok: false };
+    }
+
+    if (!free) {
+      this.pushUndoSnapshot(CATALOG[toolId]?.name || toolId);
     }
 
     if (!free && this.difficulty !== 'sandbox') {
@@ -10159,7 +12249,7 @@ class CitySimulation {
       }
     };
 
-    if (toolId === 'road_1' || toolId === 'road_2' || toolId === 'road_ramp' || toolId === 'rail_track') {
+    if (toolId === 'road_1' || toolId === 'road_2' || toolId === 'road_oneway' || toolId === 'road_ramp' || toolId === 'rail_track') {
       gradeSmoothPath(validTiles);
     }
 
@@ -10169,11 +12259,22 @@ class CitySimulation {
 
       if (toolId === 'road_1' || toolId === 'road_2') {
         t.roadGround = toolId === 'road_1' ? 1 : 2;
+        t.roadDir = -1;
         t.roadBridge = this.isWaterTile(pos.x, pos.z);
         t.zone = null;
         t.building = null;
         t.pylon = false;
         t.trees = 0;
+      } else if (toolId === 'road_oneway') {
+        t.roadGround = 1;
+        t.roadDir = typeof pos.dir === 'number' ? pos.dir : 3;
+        t.roadBridge = this.isWaterTile(pos.x, pos.z);
+        t.zone = null;
+        t.building = null;
+        t.pylon = false;
+        t.trees = 0;
+      } else if (toolId === 'bus_stop') {
+        t.busStop = true;
       } else if (toolId === 'road_elev') {
         t.roadElevated = 1;
         if (t.building && BUILDING_NAMES[t.building.type]) t.building = null;
@@ -10182,6 +12283,8 @@ class CitySimulation {
         t.trees = 0;
       } else if (toolId === 'road_ramp') {
         if (t.roadGround === 0) t.roadGround = 2;
+        t.roadDir = -1;
+        t.busStop = false;
         t.roadElevated = 1;
         t.ramp = true;
         t.zone = null;
@@ -10204,6 +12307,8 @@ class CitySimulation {
         }
       } else if (toolId === 'road_tunnel') {
         t.roadGround = 4;
+        t.roadDir = -1;
+        t.busStop = false;
         t.trees = 0;
       } else if (toolId === 'metro_line') {
         t.metro = true;
@@ -10222,6 +12327,9 @@ class CitySimulation {
         t.damHealth = 100;
         t.damStress = 0;
         t.roadGround = 2;
+        t.roadDir = -1;
+        t.banTrucks = false;
+        t.busStop = false;
         t.zone = null;
         t.building = null;
         t.trees = 0;
@@ -10244,10 +12352,16 @@ class CitySimulation {
           // Smart Layer-Priority Bulldoze: remove elevated viaduct/ramp FIRST, preserving ground street/rail!
           t.roadElevated = 0;
           t.ramp = false;
+        } else if (t.busStop && t.roadGround > 0) {
+          // Remove roadside bus stop shelter first, preserving the underlying street!
+          t.busStop = false;
         } else {
           if (t.roadGround !== 3) {
             t.roadGround = 0;
             t.roadBridge = false;
+            t.roadDir = -1;
+            t.banTrucks = false;
+            t.busStop = false;
             t.junctionMode = null;
             t.roundaboutPaid = false;
           }
@@ -10325,7 +12439,7 @@ class CitySimulation {
     this._suppressPromotions = prevSuppress;
     if (gradedAny) this.terrainDirty = true;
     if (
-      toolId.startsWith('road_') || toolId === 'rail_track' || toolId === 'water_pipe' ||
+      toolId.startsWith('road_') || toolId === 'bus_stop' || toolId === 'rail_track' || toolId === 'water_pipe' ||
       toolId === 'metro_line' || toolId === 'power_line' || toolId === 'hydro_dam'
     ) {
       this.infraDirty = true;
@@ -10344,6 +12458,13 @@ class CitySimulation {
       if (toolId === 'hsr_station' || toolId === 'metro_station') this.infraDirty = true;
     }
 
+    if (
+      (toolId.startsWith('road_') || toolId === 'bus_stop' || toolId === 'bulldoze' || toolId === 'hydro_dam' || toolId === 'rail_track' || toolId === 'metro_line') &&
+      this.traffic && typeof this.traffic.refreshRoadGraph === 'function'
+    ) {
+      this.traffic.refreshRoadGraph();
+    }
+
     if (!free && this.sfx) {
       if (toolId.startsWith('road_')) this.sfx.road();
       else if (toolId === 'water_pipe' || toolId === 'metro_line') this.sfx.pipe();
@@ -10355,11 +12476,13 @@ class CitySimulation {
 
     if (!free) {
       if (
-        toolId === 'road_1' || toolId === 'road_2' || toolId === 'road_elev' ||
+        toolId === 'road_1' || toolId === 'road_2' || toolId === 'road_oneway' || toolId === 'road_elev' ||
         toolId === 'road_ramp' || toolId === 'road_tunnel' || toolId === 'water_pipe' ||
         toolId === 'metro_line' || toolId === 'rail_track' || toolId === 'power_pylon'
       ) {
         this.addXP(validTiles.length * 1, toolId);
+      } else if (toolId === 'bus_stop') {
+        this.addXP(validTiles.length * 15, '智能公交站');
       } else if (toolId === 'hydro_dam') {
         this.addXP(validTiles.length * 40, '水力发电大坝');
       } else if (!toolId.startsWith('zone_') && toolId !== 'dezone' && !toolId.startsWith('bulldoze') && CATALOG[toolId]) {
@@ -10417,7 +12540,9 @@ class CitySimulation {
     const svcMult = this.budgets.service / 100;
     const pwrMult = this.budgets.power / 100;
     const wtrMult = this.budgets.water / 100;
+    const energyDemMult = this.policies.energySubsidy ? 0.85 : 1.0;
 
+    let activeBusStops = 0;
     for (let i = 0; i < N; i++) {
       const t = this.grid[i];
       const elev = this.getTileElev(t.x, t.z);
@@ -10426,11 +12551,15 @@ class CitySimulation {
       t.watered = false;
       t.outsideConnected = false;
       t.pollution = 0;
+      t.noise = 0;
       t.serviceScore = 0;
       t.education = 0;
       t.crimeSafety = 0;
       t.fireSafety = 0;
       t.landValue = 22 + (nearW.found && nearW.poll <= 0.35 ? 14 : 0) + (elev > 0.7 && elev < 2.0 ? 9 : 0);
+      if (t.busStop && t.roadGround >= 1 && t.roadGround !== 3 && t.roadGround !== 4 && !t.dam && !t.ramp) {
+        activeBusStops++;
+      }
     }
 
     // ==================== PHASE A: Power Generation & HV Power Grid BFS ====================
@@ -10488,7 +12617,7 @@ class CitySimulation {
       while (head < pQueue.length) {
         const ci = pQueue[head++];
         const ct = this.grid[ci];
-        const need = this.getBuildingStats(ct.building).power || 0;
+        const need = (this.getBuildingStats(ct.building).power || 0) * energyDemMult;
 
         if (pUsed + need <= totalPowerOut) {
           ct.powered = true;
@@ -10632,7 +12761,7 @@ class CitySimulation {
       }
     }
 
-    // ==================== PHASE B: Powered Water/Sewage/Waste & Road-Reachable Civic Services ====================
+    // ==================== PHASE B: Powered Water/Sewage/Waste, Acoustic Noise & Road-Reachable Civic Services ====================
     const waterNodes = [];
     let totalWaterOut = 0;
     let totalSewageCap = 0;
@@ -10644,6 +12773,22 @@ class CitySimulation {
       for (let x = 0; x < GRID_SIZE; x++) {
         const t = this.grid[idx(x, z)];
         if (t.roadGround === 2) this.addRadialField(x, z, 3, 5, 0, 0, 0, 0, 0);
+
+        // Acoustic Noise Map: roads, viaducts, highways (truck-ban cuts road noise by 55%!) & forest buffers
+        if (t.roadGround === 3 || t.roadElevated > 0) {
+          this.addNoiseField(x, z, 3, 26);
+        }
+        if (t.roadGround >= 1 && t.roadGround !== 4) {
+          let rdNoise = (t.roadGround >= 2 ? 12 : 6) + 30 * (t.congestion || 0);
+          if (t.banTrucks) rdNoise *= 0.45; // -55% heavy truck acoustic noise reduction!
+          this.addNoiseField(x, z, t.roadGround >= 2 ? 3 : 2, rdNoise);
+        }
+        if (t.trees > 0) {
+          this.addNoiseField(x, z, 2, -(4 + t.trees * 2));
+        }
+        if (activeBusStops >= 2 && t.busStop && t.roadGround >= 1 && t.roadGround !== 3 && t.roadGround !== 4 && !t.dam && !t.ramp) {
+          this.addRadialField(x, z, 4, 6, 0, 10, 0, 0, 0);
+        }
 
         const b = t.building;
         if (!b) continue;
@@ -10659,6 +12804,7 @@ class CitySimulation {
         if (b.type === 'power_plant') {
           if (operational && this.findRoadAccess(x, z)) {
             this.addRadialField(x, z, 6, -18, 36, 0, 0, 0, 0);
+            this.addNoiseField(x, z, 4, 24);
           }
         } else if (b.type === 'solar_plant') {
           if (operational && t.powered) {
@@ -10673,8 +12819,12 @@ class CitySimulation {
           if (operational && t.powered && hasRd) {
             totalTrashCap += CATALOG.waste_plant.trashCap * svcMult;
           }
-          const wPol = Math.round(16 * (this.policies.greenCity ? 0.5 : 1.0));
+          const wPolMult = (this.policies.greenEnergy ? 0.75 : 1.0) * (this.policies.greenCity ? 0.65 : 1.0);
+          const wPol = Math.round(16 * Math.max(0.45, wPolMult));
           this.addRadialField(x, z, 5, -10, wPol, (operational && t.powered && hasRd) ? 14 * svcMult : 0, 0, 0, 0);
+          if (operational && t.powered && hasRd) {
+            this.addNoiseField(x, z, 4, 20);
+          }
         } else if (b.type === 'water_pump') {
           if (operational && t.powered) {
             const nw = this.hasNearbyWater(x, z, 2);
@@ -10726,6 +12876,7 @@ class CitySimulation {
           }
         } else if (b.type === 'park') {
           this.addRadialField(x, z, 7, 24, -8, 18, 0, 0, 0);
+          this.addNoiseField(x, z, 5, -22);
         } else if (b.type === 'metro_station') {
           if (operational && t.powered) {
             this.addRadialField(x, z, 9, 22, 0, 24, 0, 0, 0);
@@ -10739,11 +12890,13 @@ class CitySimulation {
           if (operational && t.powered && this.hasNearbyWater(x, z, 2).found) {
             landmarkBonus += 0.10;
             this.addRadialField(x, z, 10, 12, 8, 20, 0, 0, 0);
+            this.addNoiseField(x, z, 5, 28);
           }
         } else if (b.type === 'airport') {
           if (operational && t.powered) {
             landmarkBonus += 0.16;
             this.addRadialField(x, z, 14, 22, 6, 26, 0, 0, 0);
+            this.addNoiseField(x, z, 9, 55);
           }
         } else if (b.type === 'amusement_park') {
           if (operational && t.powered) {
@@ -10761,24 +12914,33 @@ class CitySimulation {
             this.addRadialField(x, z, 18, 38, 0, 34, 0, 0, 0);
           }
         } else if (b.type === 'I' && !b.underConstruction) {
-          const pol = Math.round((22 + b.level * 7) * (this.policies.greenCity ? 0.55 : 1.0));
+          const greenPolMult = (this.policies.greenEnergy ? 0.65 : 1.0) * (this.policies.greenCity ? 0.65 : 1.0);
+          const pol = Math.round((22 + b.level * 7) * Math.max(0.45, greenPolMult));
           this.addRadialField(x, z, 6, -Math.round(pol * 0.55), pol, 0, 0, 0, 0);
+          this.addNoiseField(x, z, 5, 42);
         }
       }
     }
 
-    if (this.policies.greenCity) {
-      for (let i = 0; i < N; i++) this.grid[i].landValue = Math.min(100, this.grid[i].landValue + 7);
+    if (this.policies.greenCity || this.policies.greenEnergy) {
+      const lvBoost = this.policies.greenCity ? 7 : 3;
+      for (let i = 0; i < N; i++) this.grid[i].landValue = Math.min(100, this.grid[i].landValue + lvBoost);
     }
 
     for (let i = 0; i < N; i++) {
       const t = this.grid[i];
       t.pollution = Math.max(0, Math.min(100, t.pollution));
+      t.noise = Math.round(Math.max(0, Math.min(100, t.noise || 0)));
       t.serviceScore = Math.max(0, Math.min(100, t.serviceScore));
       t.fireSafety = Math.max(0, Math.min(100, t.fireSafety));
       t.education = Math.max(0, Math.min(100, t.education || 0));
       t.crimeSafety = Math.max(0, Math.min(100, t.crimeSafety || 0));
-      t.landValue = Math.max(5, Math.min(100, t.landValue - t.pollution * 0.45));
+      let lv = t.landValue - t.pollution * 0.45;
+      const isResTile = t.zone === 'RL' || t.zone === 'RH' || t.building?.type === 'RL' || t.building?.type === 'RH';
+      if (isResTile && t.noise > 55) {
+        lv -= (t.noise - 55) * 0.45;
+      }
+      t.landValue = Math.max(5, Math.min(100, lv));
     }
 
     // Underground Water Pipe BFS + 4-Tile Coverage
@@ -10838,7 +13000,7 @@ class CitySimulation {
       for (let i = 0; i < N; i++) {
         if (!covered[i]) continue;
         const t = this.grid[i];
-        const need = this.getBuildingStats(t.building).water || 0;
+        const need = (this.getBuildingStats(t.building).water || 0) * energyDemMult;
         if (wUsed + need <= totalWaterOut) {
           t.watered = true;
           wUsed += need;
@@ -10855,6 +13017,8 @@ class CitySimulation {
     let jobs = 0;
     let happySum = 0;
     let resCount = 0;
+    let eduWeightedSum = 0;
+    let eduPopWeight = 0;
     let sickCount = 0;
     let abandoned = 0;
     let hasSeaport = false;
@@ -10873,8 +13037,8 @@ class CitySimulation {
         continue;
       }
       const st = this.getBuildingStats(b);
-      totalPDemand += st.power;
-      totalWDemand += st.water;
+      totalPDemand += st.power * energyDemMult;
+      totalWDemand += st.water * energyDemMult;
 
       const active = t.powered && t.watered && !b.flooded && !(b.fire > 0.3);
       pop += active ? st.pop : Math.round(st.pop * 0.25);
@@ -10913,7 +13077,8 @@ class CitySimulation {
     const wonderHappyBoost =
       (hasAmusementPark ? 4 : 0) +
       (hasStadium ? 3 : 0) +
-      (this.matchDayBoostTimer > 0 ? 8 : 0);
+      (this.matchDayBoostTimer > 0 ? 8 : 0) +
+      (this.tempHappinessBoost || 0);
 
     for (let i = 0; i < N; i++) {
       const t = this.grid[i];
@@ -10954,7 +13119,12 @@ class CitySimulation {
       else if (b.trashPiled && (b.type === 'RL' || b.type === 'RH')) sickCount += Math.round(st.pop * 0.20);
 
       if ((b.type === 'RL' || b.type === 'RH') && !b.underConstruction) {
+        const popW = Math.max(1, st.pop);
+        eduWeightedSum += (t.education || 0) * popW;
+        eduPopWeight += popW;
+
         let h = 56 + t.landValue * 0.26 + t.serviceScore * 0.25 - t.pollution * 0.65 - (this.taxRate - 9) * 3.8 + wonderHappyBoost;
+        if (t.noise > 55) h -= (t.noise - 55) * 0.48;
         if (!t.powered) h -= 32;
         if (!t.watered) h -= 32;
         if (b.sick) h -= 38;
@@ -10968,6 +13138,9 @@ class CitySimulation {
       }
     }
 
+    const baseEduRate = eduPopWeight > 0 ? (eduWeightedSum / eduPopWeight) : 0;
+    this.educatedRate = Math.round(Math.max(0, Math.min(100, baseEduRate + (this.policies.freeHigherEd ? 18 : 0))));
+
     this.population = pop;
     if (pop > this.maxPopReached) this.maxPopReached = pop;
     this.jobsTotal = jobs;
@@ -10978,7 +13151,7 @@ class CitySimulation {
     const workforce = Math.round(pop * 0.58);
     this.unemploymentPct = workforce > 0 ? Math.max(0, Math.round(((workforce - jobs) / workforce) * 100)) : 0;
 
-    // Strict RCI Demand sensitive to Taxes, Unemployment, Goods & Happiness!
+    // Strict RCI Demand sensitive to Taxes, Unemployment, Goods, Happiness, Policies & Civic Decisions!
     const taxPenalty = this.taxRate > 11 ? (this.taxRate - 11) * 0.14 : (9 - this.taxRate) * 0.04;
     const workerNeed = (jobs - workforce + 35) / Math.max(100, workforce + 60);
     const cJobs = this.countZoneJobs(['CL', 'CH']);
@@ -10988,10 +13161,12 @@ class CitySimulation {
     // Commercial needs BOTH population shoppers AND industrial goods supply!
     const shopperGap = (pop * 0.35 + 20 - cJobs) / Math.max(80, pop * 0.4 + 50);
     const indGap = (workforce * 0.52 + 25 - ioJobs) / Math.max(80, workforce * 0.5 + 50);
+    const bizBoost = this.policies.bizTaxBreak ? 0.28 : 0;
+    const tdb = this.tempDemandBoost || { R: 0, C: 0, I: 0 };
 
-    this.demand.R = Math.max(0.0, Math.min(1.0, 0.45 + workerNeed * 0.65 + taxPenalty + (this.happiness - 65) * 0.008));
-    this.demand.C = Math.max(0.0, Math.min(1.0, 0.35 + shopperGap * 0.68 + taxPenalty + landmarkBonus));
-    this.demand.I = Math.max(0.0, Math.min(1.0, 0.40 + indGap * 0.68 + taxPenalty + (this.policies.techBoost ? 0.10 : 0)));
+    this.demand.R = Math.max(0.0, Math.min(1.0, 0.45 + workerNeed * 0.65 + taxPenalty + (this.happiness - 65) * 0.008 + (tdb.R || 0)));
+    this.demand.C = Math.max(0.0, Math.min(1.0, 0.35 + shopperGap * 0.68 + taxPenalty + landmarkBonus + bizBoost + (tdb.C || 0)));
+    this.demand.I = Math.max(0.0, Math.min(1.0, 0.40 + indGap * 0.68 + taxPenalty + (this.policies.techBoost ? 0.10 : 0) + bizBoost + (tdb.I || 0)));
 
     while (
       this.milestoneIdx + 1 < MILESTONES.length &&
@@ -11016,8 +13191,8 @@ class CitySimulation {
     return sum;
   }
 
-  propagateServiceAlongRoads(startRx, startRz, maxSteps, dLandVal, dService, dFire, dEdu, dCrime) {
-    if (!inBounds(startRx, startRz) || maxSteps <= 0) return;
+  _computeRoadServiceCoverage(startRx, startRz, maxSteps) {
+    if (!inBounds(startRx, startRz) || maxSteps <= 0) return [];
     const N = this.grid.length;
     if (!this._svcDistG || this._svcDistG.length !== N) {
       this._svcDistG = new Float32Array(N);
@@ -11032,7 +13207,7 @@ class CitySimulation {
 
     const startIdx = idx(startRx, startRz);
     const startTile = this.grid[startIdx];
-    if (!startTile || (startTile.roadGround <= 0 && startTile.roadElevated <= 0)) return;
+    if (!startTile || (startTile.roadGround <= 0 && startTile.roadElevated <= 0)) return [];
 
     const q = [];
     const reachedGround = [];
@@ -11136,16 +13311,152 @@ class CitySimulation {
       }
     }
 
+    const results = new Array(touchedTargets.length);
     for (let k = 0; k < touchedTargets.length; k++) {
       const ti = touchedTargets[k];
       const f = bestFalloff[ti];
       bestFalloff[ti] = 0;
-      const t = this.grid[ti];
+      results[k] = { ti, x: ti % GRID_SIZE, z: (ti / GRID_SIZE) | 0, falloff: f };
+    }
+    return results;
+  }
+
+  propagateServiceAlongRoads(startRx, startRz, maxSteps, dLandVal, dService, dFire, dEdu, dCrime) {
+    const cov = this._computeRoadServiceCoverage(startRx, startRz, maxSteps);
+    for (let k = 0; k < cov.length; k++) {
+      const c = cov[k];
+      const f = c.falloff;
+      const t = this.grid[c.ti];
       t.landValue += dLandVal * f;
       t.serviceScore += dService * f;
       t.fireSafety += dFire * f;
       t.education = (t.education || 0) + dEdu * f;
       t.crimeSafety = (t.crimeSafety || 0) + dCrime * f;
+    }
+  }
+
+  previewServiceCoverage(toolId, x, z) {
+    const label = CATALOG[toolId]?.name || toolId || '';
+    if (!inBounds(x, z)) {
+      return { tiles: [], affectedBuildings: 0, roadConnected: false, label };
+    }
+    const svcMult = (this.budgets?.service || 100) / 100;
+    const roadTools = {
+      fire_station: 12,
+      police_station: 13,
+      hospital: 14,
+      school: 15,
+      waste_plant: 10
+    };
+    const radialTools = {
+      park: 7,
+      metro_station: 9,
+      amusement_park: 14,
+      stadium: 15
+    };
+
+    const tiles = [];
+    let roadConnected = false;
+
+    if (toolId in roadTools) {
+      const acc = this.findRoadAccess(x, z);
+      roadConnected = Boolean(acc);
+      if (acc) {
+        const r = Math.round(roadTools[toolId] * svcMult);
+        const cov = this._computeRoadServiceCoverage(acc.rx, acc.rz, r * 1.45);
+        for (let i = 0; i < cov.length; i++) {
+          const c = cov[i];
+          tiles.push({
+            x: c.x,
+            z: c.z,
+            strength: Math.max(0.15, Math.min(1.0, c.falloff))
+          });
+        }
+      }
+    } else if (toolId === 'bus_stop') {
+      const t = this.getTile(x, z);
+      roadConnected = Boolean(t && t.roadGround >= 1 && t.roadGround !== 3 && t.roadGround !== 4 && !t.dam && !t.ramp);
+      if (roadConnected) {
+        const cov = this._computeRoadServiceCoverage(x, z, 6.5);
+        for (let i = 0; i < cov.length; i++) {
+          const c = cov[i];
+          tiles.push({
+            x: c.x,
+            z: c.z,
+            strength: Math.max(0.15, Math.min(1.0, c.falloff))
+          });
+        }
+      }
+    } else if (toolId === 'power_pylon') {
+      roadConnected = true;
+      const rad = 6;
+      const r2 = rad * rad;
+      const minX = Math.max(0, x - rad);
+      const maxX = Math.min(GRID_SIZE - 1, x + rad);
+      const minZ = Math.max(0, z - rad);
+      const maxZ = Math.min(GRID_SIZE - 1, z + rad);
+      for (let gz = minZ; gz <= maxZ; gz++) {
+        for (let gx = minX; gx <= maxX; gx++) {
+          const d2 = (gx - x) * (gx - x) + (gz - z) * (gz - z);
+          if (d2 > r2) continue;
+          const falloff = 1 - Math.sqrt(d2) / (rad + 0.5);
+          tiles.push({
+            x: gx,
+            z: gz,
+            strength: Math.max(0.15, Math.min(1.0, falloff))
+          });
+        }
+      }
+    } else if (toolId in radialTools) {
+      roadConnected = Boolean(this.findRoadAccess(x, z));
+      const rad = radialTools[toolId];
+      const r2 = rad * rad;
+      const minX = Math.max(0, x - rad);
+      const maxX = Math.min(GRID_SIZE - 1, x + rad);
+      const minZ = Math.max(0, z - rad);
+      const maxZ = Math.min(GRID_SIZE - 1, z + rad);
+      for (let gz = minZ; gz <= maxZ; gz++) {
+        for (let gx = minX; gx <= maxX; gx++) {
+          const d2 = (gx - x) * (gx - x) + (gz - z) * (gz - z);
+          if (d2 > r2) continue;
+          const falloff = 1 - Math.sqrt(d2) / (rad + 0.5);
+          tiles.push({
+            x: gx,
+            z: gz,
+            strength: Math.max(0.15, Math.min(1.0, falloff))
+          });
+        }
+      }
+    } else {
+      return { tiles: [], affectedBuildings: 0, roadConnected: false, label };
+    }
+
+    let affectedBuildings = 0;
+    for (let i = 0; i < tiles.length; i++) {
+      const pt = tiles[i];
+      if (pt.x === x && pt.z === z) continue;
+      const b = this.grid[idx(pt.x, pt.z)].building;
+      if (b && !b.abandoned) affectedBuildings++;
+    }
+
+    return { tiles, affectedBuildings, roadConnected, label };
+  }
+
+  addNoiseField(cx, cz, radius, delta) {
+    if (radius <= 0 || delta === 0) return;
+    const r2 = radius * radius;
+    const minX = Math.max(0, cx - radius);
+    const maxX = Math.min(GRID_SIZE - 1, cx + radius);
+    const minZ = Math.max(0, cz - radius);
+    const maxZ = Math.min(GRID_SIZE - 1, cz + radius);
+
+    for (let z = minZ; z <= maxZ; z++) {
+      for (let x = minX; x <= maxX; x++) {
+        const d2 = (x - cx) * (x - cx) + (z - cz) * (z - cz);
+        if (d2 > r2) continue;
+        const falloff = 1 - Math.sqrt(d2) / (radius + 0.5);
+        this.grid[idx(x, z)].noise += delta * falloff;
+      }
     }
   }
 
@@ -11230,6 +13541,16 @@ class CitySimulation {
           this.month = 1;
           this.year++;
         }
+        this._onMonthRollover();
+      }
+    }
+
+    // Dynamic Civic Decision Event Timer (~2.5 in-game months when pop >= 120)
+    if (this.population >= 120 && !this.activeEvent) {
+      this._eventMonthAccum = (this._eventMonthAccum || 0) + simDt / (30 * 4.5);
+      if (this._eventMonthAccum >= 2.5) {
+        this._eventMonthAccum = 0;
+        this.triggerSampleEvent();
       }
     }
 
@@ -11587,7 +13908,8 @@ class CitySimulation {
       else if (roadCong > 0.78 && (b.type === 'CL' || b.type === 'CH' || b.type === 'I')) problem = '道路严重瘫痪导致断货倒闭';
       else if (severeLaborShortage && (b.type === 'I' || b.type === 'CL' || b.type === 'CH') && Math.random() < 0.45) problem = '住宅人口不足引发严重用工荒';
       else if (severeGoodsShortage && (b.type === 'CL' || b.type === 'CH') && Math.random() < 0.35) problem = '缺乏工业区供货导致商场断货';
-      else if (b.type === 'O' && (t.education || 0) < 18) problem = '缺乏大学高学历人才写字楼空置';
+      else if (b.type === 'O' && (t.education || 0) < 18 && this.educatedRate < 28) problem = '缺乏大学高学历人才写字楼空置';
+      else if (b.type === 'I' && b.level >= 4 && this.educatedRate < 28 && Math.random() < 0.35) problem = '缺乏高学历研发人才高科厂减产';
 
       if (problem && this.difficulty !== 'sandbox') {
         b.distress = (b.distress || 0) + 1;
@@ -11614,13 +13936,14 @@ class CitySimulation {
 
       b.rot = acc.rot;
       // High-density Lv.3+ requires Education + Healthcare/Service + Low Congestion!
-      if ((b.type === 'RH' || b.type === 'CH' || b.type === 'O') && b.level >= 2 && (t.education || 0) < 20) continue;
+      if ((b.type === 'RH' || b.type === 'CH' || b.type === 'O') && b.level >= 2 && (t.education || 0) < 20 && this.educatedRate < 40) continue;
 
       const aveBonus = acc.roadType >= 2 ? 10 : 0;
-      const eduBonus = (t.education || 0) * 0.22;
+      const eduBonus = (t.education || 0) * 0.22 + ((b.type === 'O' || (b.type === 'I' && b.level >= 3)) && this.educatedRate >= 60 ? 10 : 0);
+      const noisePen = ((b.type === 'RL' || b.type === 'RH') && (t.noise || 0) > 55) ? ((t.noise - 55) * 0.35) : 0;
       const score = (b.type === 'I')
         ? 18 + t.serviceScore * 0.65 + eduBonus + aveBonus - roadCong * 28
-        : t.landValue * 0.62 + t.serviceScore * 0.48 + eduBonus + aveBonus - t.pollution * 0.55 - roadCong * 25;
+        : t.landValue * 0.62 + t.serviceScore * 0.48 + eduBonus + aveBonus - t.pollution * 0.55 - noisePen - roadCong * 25;
 
       const thresholds = [0, 28, 46, 64, 80];
       const needed = thresholds[b.level] || 78;
@@ -11648,12 +13971,19 @@ class CitySimulation {
     if (changed) this.buildingDirty = true;
   }
 
-  stepEconomy() {
+  stepEconomy(applyCash = true) {
     let infraUpkeep = 0;
     let pwrUpkeep = 0;
     let wtrUpkeep = 0;
     let svcUpkeep = 0;
     let grossTax = 0;
+    let activeBuildings = 0;
+
+    const busStopCoords = [];
+    const metroStationCoords = [];
+    let hsrStationCount = 0;
+    let metroTrackCount = 0;
+    let railTrackCount = 0;
 
     const workforce = Math.round(this.population * 0.58);
     // Labor efficiency: if you over-zone C/I without enough R workers, factories & shops run half-empty!
@@ -11661,26 +13991,60 @@ class CitySimulation {
     const seaportTradeMult = this.hasSeaport ? 1.12 : 1.0;
     const airportTradeMult = this.hasAirport ? 1.15 : 1.0;
 
+    // Education -> High-Tech Office & Industry Productivity Multiplier
+    let highTechEduMult = 1.0;
+    if (this.educatedRate >= 60) {
+      highTechEduMult = 1.12 + ((this.educatedRate - 60) / 40) * 0.10; // up to +22%
+    } else if (this.educatedRate < 28) {
+      highTechEduMult = 0.72; // -28% efficiency penalty
+    } else {
+      highTechEduMult = 0.85 + ((this.educatedRate - 28) / 32) * 0.25;
+    }
+
+    const greenIndTaxMult = this.policies.greenEnergy ? 0.94 : 1.0;      // -6% ind tax
+    const higherEdTechMult = this.policies.freeHigherEd ? 1.15 : 1.0;    // +15% office/tech tax
+    const bizBreakMult = this.policies.bizTaxBreak ? 0.90 : 1.0;         // -10% commercial/office tax
+
     for (let i = 0; i < this.grid.length; i++) {
       const t = this.grid[i];
-      if (t.roadGround === 1) infraUpkeep += CATALOG.road_1.upkeep;
-      else if (t.roadGround === 2) infraUpkeep += CATALOG.road_2.upkeep;
-      else if (t.roadGround === 4) infraUpkeep += CATALOG.road_tunnel.upkeep;
+      if (t.roadGround === 1) {
+        infraUpkeep += (typeof t.roadDir === 'number' && t.roadDir >= 0) ? CATALOG.road_oneway.upkeep : CATALOG.road_1.upkeep;
+      } else if (t.roadGround === 2) {
+        infraUpkeep += CATALOG.road_2.upkeep;
+      } else if (t.roadGround === 4) {
+        infraUpkeep += CATALOG.road_tunnel.upkeep;
+      }
       if (t.roadElevated > 0) infraUpkeep += CATALOG.road_elev.upkeep;
       if (t.ramp) infraUpkeep += CATALOG.road_ramp.upkeep;
-      if (t.rail === 1) infraUpkeep += CATALOG.rail_track.upkeep;
-      if (t.metro) infraUpkeep += CATALOG.metro_line.upkeep;
+      if (t.rail === 1) {
+        infraUpkeep += CATALOG.rail_track.upkeep;
+        railTrackCount++;
+      }
+      if (t.metro) {
+        infraUpkeep += CATALOG.metro_line.upkeep;
+        metroTrackCount++;
+      }
       if (t.pipe) infraUpkeep += CATALOG.water_pipe.upkeep;
       if (t.pylon) infraUpkeep += CATALOG.power_pylon.upkeep;
       if (t.dam) pwrUpkeep += CATALOG.hydro_dam.upkeep * 0.35;
+      if (t.busStop && t.roadGround >= 1 && t.roadGround !== 3 && t.roadGround !== 4 && !t.dam && !t.ramp) {
+        svcUpkeep += CATALOG.bus_stop.upkeep;
+        busStopCoords.push({ x: t.x, z: t.z });
+      }
 
       const b = t.building;
       if (!b || b.underConstruction || b.abandoned) continue;
+      activeBuildings++;
 
       const u = CATALOG[b.type]?.upkeep || 0;
       if (b.type === 'power_wind' || b.type === 'power_plant' || b.type === 'solar_plant' || b.type === 'nuclear_plant') pwrUpkeep += u;
       else if (b.type === 'water_pump' || b.type === 'sewage_out' || b.type === 'water_treat') wtrUpkeep += u;
       else if (u > 0) svcUpkeep += u;
+
+      if (t.powered && !b.flooded && !(b.fire > 0.2)) {
+        if (b.type === 'metro_station') metroStationCoords.push({ x: t.x, z: t.z });
+        else if (b.type === 'hsr_station') hsrStationCount++;
+      }
 
       if (!t.powered || !t.watered || b.flooded || b.fire > 0.2) continue;
 
@@ -11690,11 +14054,15 @@ class CitySimulation {
 
       if (b.type === 'RL') grossTax += (2.4 + b.level * 2.8) * sickPenalty;
       else if (b.type === 'RH') grossTax += (5.8 + b.level * 6.5) * sickPenalty;
-      else if (b.type === 'CL') grossTax += (3.2 + b.level * 3.6) * laborEff * congPenalty * seaportTradeMult * airportTradeMult;
-      else if (b.type === 'CH') grossTax += (7.5 + b.level * 8.2) * laborEff * congPenalty * seaportTradeMult * airportTradeMult;
-      else if (b.type === 'I')  grossTax += (3.8 + b.level * 4.2) * laborEff * congPenalty * seaportTradeMult;
-      else if (b.type === 'O')  grossTax += (6.5 + b.level * 7.2) * laborEff * airportTradeMult;
-      else if (b.type === 'landmark') grossTax += 85;
+      else if (b.type === 'CL') grossTax += (3.2 + b.level * 3.6) * laborEff * congPenalty * seaportTradeMult * airportTradeMult * bizBreakMult;
+      else if (b.type === 'CH') grossTax += (7.5 + b.level * 8.2) * laborEff * congPenalty * seaportTradeMult * airportTradeMult * bizBreakMult;
+      else if (b.type === 'I') {
+        const isHighTech = b.level >= 4;
+        const indMult = greenIndTaxMult * (isHighTech ? highTechEduMult * higherEdTechMult : 1.0);
+        grossTax += (3.8 + b.level * 4.2) * laborEff * congPenalty * seaportTradeMult * indMult;
+      } else if (b.type === 'O') {
+        grossTax += (6.5 + b.level * 7.2) * laborEff * airportTradeMult * highTechEduMult * higherEdTechMult * bizBreakMult;
+      } else if (b.type === 'landmark') grossTax += 85;
       else if (b.type === 'hsr_station') grossTax += 58;
       else if (b.type === 'airport') grossTax += 95;
       else if (b.type === 'seaport' && this.hasNearbyWater(t.x, t.z, 2).found) grossTax += 65;
@@ -11702,32 +14070,114 @@ class CitySimulation {
       else if (b.type === 'amusement_park') grossTax += 48;
     }
 
+    // ==================== Live Public Transit Ridership & P&L Telemetry ====================
+    const freeTransitMult = this.policies.freeTransit ? 1.35 : 1.0;
+    const svcBudgetRatio = this.budgets.service / 100;
+
+    let busCatchment = 0;
+    let metroCatchment = 0;
+    if (busStopCoords.length >= 2 || metroStationCoords.length >= 2) {
+      for (let i = 0; i < this.grid.length; i++) {
+        const t = this.grid[i];
+        const b = t.building;
+        if (!b || b.abandoned || b.underConstruction) continue;
+        const st = this.getBuildingStats(b);
+        const weight = (st.pop || 0) + (st.jobs || 0);
+        if (weight <= 0) continue;
+
+        if (busStopCoords.length >= 2) {
+          for (let k = 0; k < busStopCoords.length; k++) {
+            const bs = busStopCoords[k];
+            if (Math.abs(t.x - bs.x) + Math.abs(t.z - bs.z) <= 6) {
+              busCatchment += weight;
+              break;
+            }
+          }
+        }
+        if (metroStationCoords.length >= 2) {
+          for (let k = 0; k < metroStationCoords.length; k++) {
+            const ms = metroStationCoords[k];
+            if (Math.abs(t.x - ms.x) + Math.abs(t.z - ms.z) <= 9) {
+              metroCatchment += weight;
+              break;
+            }
+          }
+        }
+      }
+    }
+
+    const busStops = busStopCoords.length;
+    const busUpkeep = Math.round(busStops * CATALOG.bus_stop.upkeep * svcBudgetRatio);
+    const busRiders = busStops >= 2
+      ? Math.round((busStops * 18 + busCatchment * 0.28) * Math.min(1.65, 0.65 + busStops * 0.14) * freeTransitMult)
+      : 0;
+    const busRevenue = this.policies.freeTransit ? 0 : Math.round(busRiders * 0.24);
+    const busCarsSaved = Math.round(busRiders * 0.42);
+
+    const metroStations = metroStationCoords.length;
+    const metroUpkeep = Math.round(metroStations * CATALOG.metro_station.upkeep * svcBudgetRatio + metroTrackCount * CATALOG.metro_line.upkeep);
+    const metroRiders = metroStations >= 2
+      ? Math.round((metroStations * 55 + metroCatchment * 0.48) * Math.min(2.0, 0.75 + metroStations * 0.18) * freeTransitMult)
+      : 0;
+    const metroRevenue = this.policies.freeTransit ? 0 : Math.round(metroRiders * 0.34);
+    const metroCarsSaved = Math.round(metroRiders * 0.58);
+
+    const hsrUpkeep = Math.round(hsrStationCount * CATALOG.hsr_station.upkeep * svcBudgetRatio + railTrackCount * CATALOG.rail_track.upkeep);
+    const hsrRiders = hsrStationCount >= 1
+      ? Math.round((hsrStationCount * 90 + (this.population + this.jobsTotal) * 0.12) * Math.min(1.8, 0.8 + hsrStationCount * 0.25) * freeTransitMult)
+      : 0;
+    const hsrRevenue = this.policies.freeTransit ? 0 : Math.round(hsrRiders * 0.45);
+    const hsrCarsSaved = Math.round(hsrRiders * 0.35);
+
+    const totalRiders = busRiders + metroRiders + hsrRiders;
+    const totalTransitRevenue = busRevenue + metroRevenue + hsrRevenue;
+    const totalTransitUpkeep = busUpkeep + metroUpkeep + hsrUpkeep;
+    const totalCarsSaved = busCarsSaved + metroCarsSaved + hsrCarsSaved;
+
+    this.transitStats = {
+      bus:   { stops: busStops, riders: busRiders, revenue: busRevenue, upkeep: busUpkeep, carsSaved: busCarsSaved },
+      metro: { stations: metroStations, riders: metroRiders, revenue: metroRevenue, upkeep: metroUpkeep, carsSaved: metroCarsSaved },
+      hsr:   { stations: hsrStationCount, riders: hsrRiders, revenue: hsrRevenue, upkeep: hsrUpkeep, carsSaved: hsrCarsSaved },
+      totalRiders,
+      totalRevenue: totalTransitRevenue,
+      totalUpkeep: totalTransitUpkeep,
+      totalCarsSaved
+    };
+
     // Department budget scaling
     const totalDeptUpkeep =
       infraUpkeep +
       pwrUpkeep * (this.budgets.power / 100) +
       wtrUpkeep * (this.budgets.water / 100) +
-      svcUpkeep * (this.budgets.service / 100);
+      svcUpkeep * svcBudgetRatio;
 
     let policyCost = 0;
     if (this.policies.freeTransit) policyCost += 25 + this.population * 0.018;
+    if (this.policies.freeHigherEd) policyCost += 220 + this.population * 0.08;
+    if (this.policies.energySubsidy) policyCost += 180 + activeBuildings * 1.2;
     if (this.policies.greenCity) policyCost += 20 + this.population * 0.014;
     if (this.policies.techBoost) policyCost += 28 + this.jobsTotal * 0.018;
 
     // Loan repayments
     let loanPay = 0;
-    for (let i = this.activeLoans.length - 1; i >= 0; i--) {
-      const ln = this.activeLoans[i];
-      const pay = Math.min(ln.remaining, ln.periodPay);
-      ln.remaining -= pay;
-      loanPay += pay;
-      if (ln.remaining <= 0) {
-        this.latestChirp = {
-          user: '@市政财政局',
-          text: `🎉 债券【${ln.name}】已全额结清，财政利息负担解除！`,
-          mood: 'good'
-        };
-        this.activeLoans.splice(i, 1);
+    if (applyCash) {
+      for (let i = this.activeLoans.length - 1; i >= 0; i--) {
+        const ln = this.activeLoans[i];
+        const pay = Math.min(ln.remaining, ln.periodPay);
+        ln.remaining -= pay;
+        loanPay += pay;
+        if (ln.remaining <= 0) {
+          this.latestChirp = {
+            user: '@市政财政局',
+            text: `🎉 债券【${ln.name}】已全额结清，财政利息负担解除！`,
+            mood: 'good'
+          };
+          this.activeLoans.splice(i, 1);
+        }
+      }
+    } else {
+      for (let i = 0; i < this.activeLoans.length; i++) {
+        loanPay += Math.min(this.activeLoans[i].remaining, this.activeLoans[i].periodPay);
       }
     }
 
@@ -11737,11 +14187,12 @@ class CitySimulation {
     const totalUpkeep = Math.round(totalDeptUpkeep + policyCost);
 
     this.lastTaxIncome = taxIncome;
+    this.lastTransitRevenue = totalTransitRevenue;
     this.lastUpkeep = totalUpkeep;
     this.lastLoanPay = loanPay;
-    this.netIncome = taxIncome - totalUpkeep - loanPay;
+    this.netIncome = taxIncome + totalTransitRevenue - totalUpkeep - loanPay;
 
-    if (this.difficulty !== 'sandbox') {
+    if (applyCash && this.difficulty !== 'sandbox') {
       this.money += this.netIncome;
       if (this.money < -3000) {
         this.latestChirp = {
@@ -11992,7 +14443,21 @@ class CitySimulation {
           hasUtilityOrSanitationIssue = true;
         }
 
-        // 4. Economy & Operating Distress Warnings (deduplicated from utility/sanitation)
+        // 4. High-Tech Workforce Education Shortage (educatedRate < 28% on O or I Lv.4+)
+        if (this.educatedRate < 28 && (b.type === 'O' || (b.type === 'I' && b.level >= 4))) {
+          categories.economy.push({
+            category: 'economy',
+            icon: '🎓',
+            title: `🎓 缺乏高学历人才（${bName}）`,
+            reason: `当前全市高学历率仅 ${this.educatedRate}%（低于 28%），办公区与高科工业效率 -28%`,
+            actionTip: '在住宅区连通道路旁增建通电的【市立理工大学】，或在财政政策面板开启【🎓 免费高等教育】',
+            x,
+            z,
+            severity: 3
+          });
+        }
+
+        // 5. Economy & Operating Distress Warnings (deduplicated from utility/sanitation)
         if (!hasUtilityOrSanitationIssue && (b.distress > 0 || b.abandonReason)) {
           const reason = b.abandonReason || '周边经营环境恶化';
           let tip = '改善周边道路交通、降低税率或补充市政服务设施';
@@ -12033,6 +14498,16 @@ class CitySimulation {
   }
 
   clearAllAbandoned() {
+    let hasAny = false;
+    for (let i = 0; i < this.grid.length; i++) {
+      if (this.grid[i].building && this.grid[i].building.abandoned) {
+        hasAny = true;
+        break;
+      }
+    }
+    if (hasAny) {
+      this.pushUndoSnapshot('清理废弃建筑');
+    }
     let cleared = 0;
     let cost = 0;
     for (let i = 0; i < this.grid.length; i++) {
@@ -12051,7 +14526,7 @@ class CitySimulation {
       }
       if (this.sfx && this.sfx.bulldoze) this.sfx.bulldoze();
       this.recomputeNetworksAndFields();
-      this.stepEconomy();
+      this.stepEconomy(false);
       this.buildingDirty = true;
     }
     return { cleared, cost };
@@ -12086,6 +14561,12 @@ class CitySimulation {
     }
     if (b.type === 'nuclear_plant' && !this.hasNearbyWater(t.x, t.z, 2).found) return '☢️ 缺少冷却水源！核裂变电站2格内必须有河水或海水才能发电';
     if (b.type === 'seaport' && !this.hasNearbyWater(t.x, t.z, 2).found) return '🚢 航道干涸！海港2格内必须紧邻海湾或深水河道才能靠泊货轮';
+    if ((b.type === 'O' || (b.type === 'I' && b.level >= 4)) && this.educatedRate < 28) {
+      return `🎓 缺乏高学历人才（全市高学历率 ${this.educatedRate}% < 28%，效率 -28%）！请建【市立理工大学】或开启【免费高等教育】`;
+    }
+    if ((b.type === 'RL' || b.type === 'RH') && (t.noise || 0) > 55) {
+      return `🔊 周边声学噪音过高（${t.noise} dB）拖累幸福度与地价！建议在临街道路开启【禁行重卡】或增建【中央景观公园】隔音`;
+    }
     if (b.abandonReason) return `⚠️ 经营预警：${b.abandonReason}（持续恶化将导致荒废倒闭！）`;
     if (b.underConstruction) return '🏗️ 塔吊正在施工中...';
     if (!BUILDING_NAMES[b.type]) return CATALOG[b.type]?.desc || '';
@@ -12109,6 +14590,13 @@ class CitySimulation {
     this.taxRate = 9;
     this.budgets = { power: 90, water: 90, service: 100 };
     this.activeLoans = [];
+    this.undoStack = [];
+    this._lastSculptUndoAt = 0;
+    this.activeEvent = null;
+    this._eventMonthAccum = 0;
+    this.tempDemandBoost = { R: 0, C: 0, I: 0, monthsLeft: 0 };
+    this.tempHappinessBoost = 0;
+    this.tempHappinessMonths = 0;
     this.mayorLevel = 1;
     this.mayorXP = 0;
     this.gridlockTimeouts = 0;
@@ -12126,7 +14614,7 @@ class CitySimulation {
       text: '🎓 欢迎来到新手建城教学！请跟随左上角《📋 建城指引》从第 1 步修筑街道开始规划吧！',
       mood: 'info'
     };
-    this.policies = { freeTransit: false, greenCity: false, techBoost: false };
+    this.policies = createDefaultPolicies();
 
     const world = generateWorld(seed);
     this.corners = world.corners;
@@ -12136,6 +14624,7 @@ class CitySimulation {
     if (this.waterPhysics) this.waterPhysics.refreshCellElevations();
     this.recomputeNetworksAndFields();
     this.stepEconomy();
+    this.seedBaselineHistory(6);
     this.meshDirty = true;
   }
 
@@ -12294,6 +14783,13 @@ class CitySimulation {
     this.taxRate = 9;
     this.budgets = { power: 80, water: 80, service: 100 }; // Smart frugal startup budget!
     this.activeLoans = [];
+    this.undoStack = [];
+    this._lastSculptUndoAt = 0;
+    this.activeEvent = null;
+    this._eventMonthAccum = 0;
+    this.tempDemandBoost = { R: 0, C: 0, I: 0, monthsLeft: 0 };
+    this.tempHappinessBoost = 0;
+    this.tempHappinessMonths = 0;
     this._suppressPromotions = true;
     this.mayorLevel = 1;
     this.mayorXP = 95;
@@ -12312,7 +14808,7 @@ class CitySimulation {
       text: '听说新市长上任了！期待我们的山河新城早日通上地铁和高铁🚄',
       mood: 'info'
     };
-    this.policies = { freeTransit: false, greenCity: false, techBoost: false };
+    this.policies = createDefaultPolicies();
 
     const world = generateWorld(seed);
     this.corners = world.corners;
@@ -12398,6 +14894,7 @@ class CitySimulation {
     this._suppressPromotions = false;
     this.syncCompletedQuestsSilent();
     this.stepEconomy();
+    this.seedBaselineHistory(6);
     this.meshDirty = true;
   }
 
@@ -12411,6 +14908,13 @@ class CitySimulation {
     this.taxRate = 9;
     this.budgets = { power: 80, water: 80, service: 90 };
     this.activeLoans = [];
+    this.undoStack = [];
+    this._lastSculptUndoAt = 0;
+    this.activeEvent = null;
+    this._eventMonthAccum = 0;
+    this.tempDemandBoost = { R: 0, C: 0, I: 0, monthsLeft: 0 };
+    this.tempHappinessBoost = 0;
+    this.tempHappinessMonths = 0;
     this.mayorLevel = 1;
     this.mayorXP = 0;
     this.gridlockTimeouts = 0;
@@ -12428,7 +14932,7 @@ class CitySimulation {
       text: '听说新市长上任了！期待我们的山河新城早日通上地铁和高铁🚄',
       mood: 'info'
     };
-    this.policies = { freeTransit: false, greenCity: false, techBoost: false };
+    this.policies = createDefaultPolicies();
 
     const world = generateWorld(seed);
     this.corners = world.corners;
@@ -12438,6 +14942,8 @@ class CitySimulation {
     if (this.waterPhysics) this.waterPhysics.refreshCellElevations();
     this.recomputeNetworksAndFields();
     this.stepEconomy();
+    this.history = [];
+    this.recordHistorySnapshot();
     this.meshDirty = true;
   }
 
@@ -12452,6 +14958,13 @@ class CitySimulation {
     this.taxRate = 9;
     this.budgets = { power: 110, water: 110, service: 110 };
     this.activeLoans = [];
+    this.undoStack = [];
+    this._lastSculptUndoAt = 0;
+    this.activeEvent = null;
+    this._eventMonthAccum = 0;
+    this.tempDemandBoost = { R: 0, C: 0, I: 0, monthsLeft: 0 };
+    this.tempHappinessBoost = 0;
+    this.tempHappinessMonths = 0;
     this.mayorLevel = 10;
     this.mayorXP = 15000;
     this.gridlockTimeouts = 0;
@@ -12463,7 +14976,13 @@ class CitySimulation {
     this.stadiumTimer = 0;
     this.matchDayBoostTimer = 0;
     this.chirpTimer = 0;
-    this.policies = { freeTransit: true, greenCity: true, techBoost: true };
+    this.policies = Object.assign(createDefaultPolicies(), {
+      freeTransit: true,
+      greenEnergy: true,
+      freeHigherEd: true,
+      greenCity: true,
+      techBoost: true
+    });
 
     const world = generateWorld(this.seed);
     this.corners = world.corners;
@@ -12776,17 +15295,26 @@ class CitySimulation {
       }
     }
 
+    // Place 6 EV Bus Stops along showcase avenues so live EV buses shuttle between stops immediately!
+    for (const bs of [
+      { x: 15, z: 38 }, { x: 22, z: 38 }, { x: 32, z: 38 },
+      { x: 15, z: 44 }, { x: 29, z: 44 }, { x: 22, z: 32 }
+    ]) {
+      this.applyTool('bus_stop', [bs], true);
+    }
+
     this.milestoneIdx = MILESTONES.length - 1;
     this.recomputeNetworksAndFields();
     this._suppressPromotions = false;
     this.stepEconomy();
+    this.seedBaselineHistory(6);
     this.stepChirper();
     this.meshDirty = true;
   }
 
   toJSON() {
     return {
-      v: 3,
+      v: 4,
       seed: this.seed,
       cityName: this.cityName,
       difficulty: this.difficulty,
@@ -12796,6 +15324,11 @@ class CitySimulation {
       budgets: this.budgets,
       activeLoans: this.activeLoans,
       policies: this.policies,
+      educatedRate: this.educatedRate,
+      tempDemandBoost: this.tempDemandBoost,
+      tempHappinessBoost: this.tempHappinessBoost,
+      tempHappinessMonths: this.tempHappinessMonths,
+      history: Array.isArray(this.history) ? this.history.slice(-24) : [],
       year: this.year,
       month: this.month,
       day: this.day,
@@ -12812,6 +15345,9 @@ class CitySimulation {
       tiles: this.grid.map((t) => ({
         rg: t.roadGround || undefined,
         rb: t.roadBridge ? 1 : undefined,
+        rd: (typeof t.roadDir === 'number' && t.roadDir >= 0) ? t.roadDir : undefined,
+        bt: t.banTrucks ? 1 : undefined,
+        bs: t.busStop ? 1 : undefined,
         jm: t.junctionMode || undefined,
         rbp: t.roundaboutPaid ? 1 : undefined,
         re: t.roadElevated || undefined,
@@ -12842,10 +15378,14 @@ class CitySimulation {
   }
 
   fromJSON(data) {
-    if (!data || data.v !== 3 || !Array.isArray(data.tiles) || data.tiles.length !== GRID_SIZE * GRID_SIZE) {
+    if (!data || (data.v !== 3 && data.v !== 4) || !Array.isArray(data.tiles) || data.tiles.length !== GRID_SIZE * GRID_SIZE) {
       return false;
     }
     this._suppressPromotions = true;
+    this.undoStack = [];
+    this._lastSculptUndoAt = 0;
+    this.activeEvent = null;
+    this._eventMonthAccum = 0;
     this.seed = data.seed || 2026;
     this.cityName = data.cityName || '山河天际市';
     this.difficulty = data.difficulty || 'hardcore';
@@ -12854,7 +15394,14 @@ class CitySimulation {
     this.taxRate = data.taxRate || 9;
     this.budgets = Object.assign({ power: 100, water: 100, service: 100 }, data.budgets || {});
     this.activeLoans = Array.isArray(data.activeLoans) ? data.activeLoans : [];
-    this.policies = Object.assign({ freeTransit: false, greenCity: false, techBoost: false }, data.policies || {});
+    this.policies = Object.assign(createDefaultPolicies(), data.policies || {});
+    this.educatedRate = typeof data.educatedRate === 'number' ? data.educatedRate : 0;
+    this.tempDemandBoost = data.tempDemandBoost
+      ? Object.assign({ R: 0, C: 0, I: 0, monthsLeft: 0 }, data.tempDemandBoost)
+      : { R: 0, C: 0, I: 0, monthsLeft: 0 };
+    this.tempHappinessBoost = typeof data.tempHappinessBoost === 'number' ? data.tempHappinessBoost : 0;
+    this.tempHappinessMonths = typeof data.tempHappinessMonths === 'number' ? data.tempHappinessMonths : 0;
+    this.history = Array.isArray(data.history) ? data.history.slice(-24) : [];
     this.year = data.year || 2026;
     this.month = data.month || 3;
     this.day = data.day || 1;
@@ -12889,6 +15436,9 @@ class CitySimulation {
       const t = this.grid[i];
       t.roadGround = s.rg || 0;
       t.roadBridge = s.rb !== undefined ? Boolean(s.rb) : (Boolean(s.rg === 1 || s.rg === 2) && this.waterDepth[i] > 0.08);
+      t.roadDir = typeof s.rd === 'number' ? s.rd : -1;
+      t.banTrucks = Boolean(s.bt);
+      t.busStop = Boolean(s.bs);
       t.junctionMode = s.jm || null;
       t.roundaboutPaid = Boolean(s.rbp || s.jm === 'roundabout');
       t.roadElevated = s.re || 0;
@@ -12931,13 +15481,16 @@ class CitySimulation {
     if (typeof data.guideStep !== 'number') {
       this.syncCompletedQuestsSilent();
     }
-    this.stepEconomy();
+    this.stepEconomy(false);
+    if (this.history.length === 0) {
+      this.seedBaselineHistory(6);
+    }
     this.meshDirty = true;
     return true;
   }
 }
 
-Object.assign(__M, { CATALOG, BUILDING_NAMES, MILESTONES, MAYOR_LEVELS, MAYOR_QUESTS, LOAN_OFFERS, CitySimulation });
+Object.assign(__M, { CATALOG, BUILDING_NAMES, MILESTONES, MAYOR_LEVELS, MAYOR_QUESTS, LOAN_OFFERS, POLICY_CATALOG, CIVIC_EVENTS, CitySimulation });
 })();
 
 // ====== MODULE: traffic.js ======
@@ -12972,6 +15525,10 @@ class TrafficManager {
     this.trains = [];      // HSR multi-car bullet trains & underground metro trains!
     this.aircraft = [];    // 3D Wide-body Airliners approaching/landing/climbing at airports!
     this.ships = [];       // 3D Cargo Container Ships sailing SE Sea Bay <-> Seaport!
+    this.busStops = [];    // Active roadside EV bus stop tiles collected during refreshRoadGraph!
+    this.pedestrians = []; // Lightweight sidewalk pedestrians (<= 240, pure data, zero Three.js dependency)
+    this._pedRoadPool = [];
+    this._pedSpawnTimer = 0;
     this.spawnTimer = 0;
     this.trainTimer = 0;
     this.fireTimer = 0;
@@ -12999,13 +15556,16 @@ class TrafficManager {
       rawCarDemand: 0,
       targetRoadVehicles: 0,
       metroSharePct: 0,
+      busSharePct: 0,
       transitPolicyPct: 0,
       walkSharePct: 0,
       seaportFreightPct: 0,
       activeCommuters: 0,
       activeFreight: 0,
       activeService: 0,
-      gridlockTimeouts: 0
+      activeTransit: 0,
+      gridlockTimeouts: 0,
+      trafficPeriod: null
     };
   }
 
@@ -13014,6 +15574,10 @@ class TrafficManager {
     this.trains.length = 0;
     this.aircraft.length = 0;
     this.ships.length = 0;
+    this.busStops.length = 0;
+    this.pedestrians.length = 0;
+    this._pedRoadPool.length = 0;
+    this._pedSpawnTimer = 0;
     this.aircraftTimer = 0;
     this.shipTimer = 2.0;
     this.modalTimer = 0;
@@ -13025,13 +15589,16 @@ class TrafficManager {
     this.modalSplit.rawCarDemand = 0;
     this.modalSplit.targetRoadVehicles = 0;
     this.modalSplit.metroSharePct = 0;
+    this.modalSplit.busSharePct = 0;
     this.modalSplit.transitPolicyPct = 0;
     this.modalSplit.walkSharePct = 0;
     this.modalSplit.seaportFreightPct = 0;
     this.modalSplit.activeCommuters = 0;
     this.modalSplit.activeFreight = 0;
     this.modalSplit.activeService = 0;
+    this.modalSplit.activeTransit = 0;
     this.modalSplit.gridlockTimeouts = 0;
+    this.modalSplit.trafficPeriod = null;
   }
 
   findVehicleNearWorld(wx, wz, maxDist = 0.58) {
@@ -13088,15 +15655,18 @@ class TrafficManager {
     let commuters = 0;
     let freight = 0;
     let service = 0;
+    let transit = 0;
     for (let i = 0; i < this.vehicles.length; i++) {
       const v = this.vehicles[i];
       if (v.tripType === 'freight') freight++;
       else if (v.tripType === 'service') service++;
+      else if (v.tripType === 'transit' || v.kind === 'bus') transit++;
       else commuters++;
     }
     this.modalSplit.activeCommuters = commuters;
     this.modalSplit.activeFreight = freight;
     this.modalSplit.activeService = service;
+    this.modalSplit.activeTransit = transit;
   }
 
   refreshModalSplitDemand() {
@@ -13109,12 +15679,48 @@ class TrafficManager {
     let walkableR = 0;
     let poweredMetro = 0;
     let activeSeaports = 0;
+    let activeBusStops = 0;
+
+    this._pedRoadPool.length = 0;
+    const pedAttractorTypes = new Set([
+      'RL', 'RH', 'CL', 'CH', 'O', 'park', 'metro_station', 'hsr_station',
+      'stadium', 'amusement_park', 'school', 'hospital', 'landmark'
+    ]);
 
     for (let i = 0; i < grid.length; i++) {
       const t = grid[i];
-      if (!hasAnyRoad && (this.isGroundRoadPassable(t) || t.roadElevated > 0)) {
+      const passGround = this.isGroundRoadPassable(t);
+      if (!hasAnyRoad && (passGround || t.roadElevated > 0)) {
         hasAnyRoad = true;
       }
+      if (t.busStop && passGround && !t.dam && !t.ramp && t.roadGround !== 3 && t.roadGround !== 4) {
+        activeBusStops++;
+      }
+
+      // Collect sidewalk pedestrian spawn candidates near populated zones, parks, bus stops & rail stations
+      if (passGround && (t.roadGround === 1 || t.roadGround === 2) && !t.dam && !t.ramp) {
+        let pedHotspot = Boolean(t.busStop);
+        if (!pedHotspot) {
+          for (let dz = -2; dz <= 2 && !pedHotspot; dz++) {
+            const nz = t.z + dz;
+            if (nz < 0 || nz >= GRID_SIZE) continue;
+            const span = 2 - Math.abs(dz);
+            for (let dx = -span; dx <= span; dx++) {
+              const nx = t.x + dx;
+              if (nx < 0 || nx >= GRID_SIZE) continue;
+              const nb = grid[idx(nx, nz)].building;
+              if (nb && !nb.abandoned && !nb.underConstruction && !nb.flooded && pedAttractorTypes.has(nb.type)) {
+                pedHotspot = true;
+                break;
+              }
+            }
+          }
+        }
+        if (pedHotspot) {
+          this._pedRoadPool.push({ x: t.x, z: t.z });
+        }
+      }
+
       const b = t.building;
       if (!b || b.underConstruction || b.abandoned || b.flooded) continue;
 
@@ -13165,19 +15771,35 @@ class TrafficManager {
       metroSharePct = Math.min(48, Math.round(Math.min(1, poweredMetro / neededStations) * 48));
     }
 
-    const transitPolicyPct = this.sim.policies?.freeTransit ? 20 : 0;
+    const freeTransit = Boolean(this.sim.policies?.freeTransit);
+    const busSharePct = activeBusStops >= 2
+      ? Math.min(26, Math.round((6 + activeBusStops * 3.2) * (freeTransit ? 1.35 : 1.0)))
+      : 0;
+
+    // Free Public Transit policy reduces private road car traffic volume by -22%!
+    const transitPolicyPct = freeTransit ? 22 : 0;
     const seaportFreightPct = (this.sim.hasSeaport || activeSeaports > 0) ? 35 : 0;
 
+    const period = typeof this.sim.getTrafficPeriodInfo === 'function'
+      ? this.sim.getTrafficPeriodInfo()
+      : { id: 'normal', icon: '🌤️', label: '平峰顺畅', mult: 1.0, commuteBias: 'balanced' };
+
+    const modalReduction = Math.min(0.68, (walkSharePct + metroSharePct + busSharePct) * 0.0075);
+    const freeTransitMult = freeTransit ? 0.78 : 1.0; // Exact -22% road volume reduction!
+    const baseTarget = rawDemand * (1 - modalReduction) * freeTransitMult;
+    const minFleet = activeBusStops >= 2 ? 4 : 3;
     const targetRoadVehicles = hasAnyRoad
-      ? Math.max(4, Math.min(165, Math.round(rawDemand * (1 - (walkSharePct + metroSharePct + transitPolicyPct) * 0.0085))))
+      ? Math.max(minFleet, Math.min(185, Math.round(baseTarget * (period.mult || 1.0))))
       : 0;
 
     this.modalSplit.rawCarDemand = rawDemand;
     this.modalSplit.targetRoadVehicles = targetRoadVehicles;
     this.modalSplit.walkSharePct = walkSharePct;
     this.modalSplit.metroSharePct = metroSharePct;
+    this.modalSplit.busSharePct = busSharePct;
     this.modalSplit.transitPolicyPct = transitPolicyPct;
     this.modalSplit.seaportFreightPct = seaportFreightPct;
+    this.modalSplit.trafficPeriod = period;
     this.refreshActiveModalCounts();
   }
 
@@ -13191,12 +15813,26 @@ class TrafficManager {
     return !(wd > 0.28);
   }
 
+  isGroundStepAllowedByOneWay(curT, nxtT, stepDir) {
+    // stepDir: 0=N(-Z), 1=S(+Z), 2=W(-X), 3=E(+X); oppDir = stepDir ^ 1
+    if (!curT || !nxtT) return false;
+    const oppDir = stepDir ^ 1;
+    if (typeof curT.roadDir === 'number' && curT.roadDir >= 0 && curT.roadDir === oppDir) {
+      return false;
+    }
+    if (typeof nxtT.roadDir === 'number' && nxtT.roadDir >= 0 && nxtT.roadDir === oppDir) {
+      return false;
+    }
+    return true;
+  }
+
   computeRoadSignature() {
     const grid = this.sim.grid;
     let h = 2166136261 >>> 0;
     for (let i = 0; i < grid.length; i++) {
       const t = grid[i];
       const flooded = t.roadGround > 0 && !this.isGroundRoadPassable(t);
+      const dirBits = ((typeof t.roadDir === 'number' ? t.roadDir : -1) + 1) & 7;
       const code =
         (t.roadGround & 7) |
         ((t.roadElevated & 3) << 3) |
@@ -13205,7 +15841,10 @@ class TrafficManager {
         (t.metro ? 128 : 0) |
         (t.dam ? 256 : 0) |
         (t.roadBridge ? 512 : 0) |
-        (flooded ? 1024 : 0);
+        (flooded ? 1024 : 0) |
+        (dirBits << 11) |
+        (t.banTrucks ? 16384 : 0) |
+        (t.busStop ? 32768 : 0);
       h ^= code;
       h = Math.imul(h, 16777619) >>> 0;
     }
@@ -13224,9 +15863,23 @@ class TrafficManager {
   buildRampAndDegreeGraph() {
     const grid = this.sim.grid;
     this.rampMeta.clear();
+    this.busStops.length = 0;
     if (!grid || !grid.length) return;
 
     const N = GRID_SIZE * GRID_SIZE;
+    for (let i = 0; i < N; i++) {
+      const t = grid[i];
+      if (t.busStop && this.isGroundRoadPassable(t) && !t.dam && !t.ramp && t.roadGround !== 3 && t.roadGround !== 4) {
+        this.busStops.push({
+          rx: t.x,
+          rz: t.z,
+          bx: t.x,
+          bz: t.z,
+          building: null,
+          portalName: `智能公交站 (${t.x},${t.z})`
+        });
+      }
+    }
     const visitedRamp = new Uint8Array(N);
     const isValidRampTile = (t) => Boolean(t && t.ramp && t.roadElevated > 0 && this.isGroundRoadPassable(t));
 
@@ -13443,6 +16096,16 @@ class TrafficManager {
         if (tile.ramp !== true && nextTile.ramp !== true) return false;
       }
 
+      // Strict one-way enforcement on ground-to-ground road steps
+      if (!node.onRamp && !nextNode.onRamp && node.layer === 0 && nextNode.layer === 0) {
+        const dx = nextNode.x - node.x;
+        const dz = nextNode.z - node.z;
+        if (Math.abs(dx) + Math.abs(dz) === 1) {
+          const stepDir = dx === 1 ? 3 : (dx === -1 ? 2 : (dz === 1 ? 1 : 0));
+          if (!this.isGroundStepAllowedByOneWay(tile, nextTile, stepDir)) return false;
+        }
+      }
+
       if (node.onRamp || nextNode.onRamp) {
         this.ensureRampGraphFresh();
         const dx = nextNode.x - node.x;
@@ -13499,8 +16162,16 @@ class TrafficManager {
 
   isVehiclePathValidAhead(v) {
     if (!v || !v.path || v.seg >= v.path.length - 1) return false;
+    const isHeavyTruck = v.kind === 'truck' || v.kind === 'garbagetruck';
     for (let k = v.seg; k < v.path.length - 1; k++) {
       if (!this.isValidRoadStep(v.path[k], v.path[k + 1])) return false;
+      if (isHeavyTruck && k + 1 < v.path.length - 1) {
+        const nxt = v.path[k + 1];
+        if (nxt.layer === 0 && !nxt.onRamp) {
+          const nt = this.sim.getTile(nxt.x, nxt.z);
+          if (nt && nt.banTrucks === true) return false;
+        }
+      }
     }
     return true;
   }
@@ -13574,6 +16245,15 @@ class TrafficManager {
       const base1 = stdOffFor(p1, t1);
       const blend = Math.max(0, (clampedT - 0.45) / 0.55);
       return rampOff + (base1 - rampOff) * (blend * blend * (3 - 2 * blend));
+    }
+
+    const isOneWayPair =
+      p0.layer === 0 && p1.layer === 0 &&
+      t0 && t1 &&
+      typeof t0.roadDir === 'number' && t0.roadDir >= 0 &&
+      typeof t1.roadDir === 'number' && t1.roadDir >= 0;
+    if (isOneWayPair) {
+      return v.laneSlot === 1 ? 0.18 : -0.16;
     }
 
     const isMultiLane =
@@ -13684,13 +16364,14 @@ class TrafficManager {
 
     const startOnRamp = Boolean(cur.onRamp);
     const startLayer = cur.layer || 0;
-    let newPath = this.findRoadPath(cur.x, cur.z, last.x, last.z, startOnRamp, startLayer);
+    const isHeavyTruck = v.kind === 'truck' || v.kind === 'garbagetruck';
+    let newPath = this.findRoadPath(cur.x, cur.z, last.x, last.z, startOnRamp, startLayer, isHeavyTruck);
     if ((!newPath || newPath.length < 2) && v.kind === 'firetruck' && v.fireTargetIdx !== undefined) {
       const bt = this.sim.grid[v.fireTargetIdx];
       if (bt && bt.building && bt.building.fire > 0 && typeof this.sim.findRoadAccess === 'function') {
         const altAcc = this.sim.findRoadAccess(bt.x, bt.z);
         if (altAcc) {
-          newPath = this.findRoadPath(cur.x, cur.z, altAcc.rx, altAcc.rz, startOnRamp, startLayer);
+          newPath = this.findRoadPath(cur.x, cur.z, altAcc.rx, altAcc.rz, startOnRamp, startLayer, false);
         }
       }
     }
@@ -13881,7 +16562,19 @@ class TrafficManager {
       }
     }
 
+    for (let i = this.pedestrians.length - 1; i >= 0; i--) {
+      const p = this.pedestrians[i];
+      const pt = this.sim.getTile(p.tx, p.tz);
+      if (!pt || !(pt.roadGround === 1 || pt.roadGround === 2) || !this.isGroundRoadPassable(pt) || pt.dam || pt.ramp) {
+        this.pedestrians.splice(i, 1);
+      }
+    }
+
     this.purgeInvalidShipsAndAircraft();
+  }
+
+  revalidateVehicles() {
+    return this.revalidateActiveTransport();
   }
 
   refreshRoadGraph(precomputedSig = null) {
@@ -13906,6 +16599,9 @@ class TrafficManager {
       cost = 0.78 + (nt.congestion || 0) * 1.8;
     } else if (nt.roadGround === 2) {
       cost = 0.82 + (nt.congestion || 0) * 2.4;
+    } else if (typeof nt.roadDir === 'number' && nt.roadDir >= 0) {
+      // Express one-way street: faster flow & lower friction than two-way street!
+      cost = 0.94 + (nt.congestion || 0) * 2.4;
     } else {
       cost = 1.18 + (nt.congestion || 0) * 3.2;
     }
@@ -13920,7 +16616,8 @@ class TrafficManager {
   }
 
   // 3-State Travel-Time Dijkstra (0..N-1 ground, N..2N-1 viaduct, 2N..3N-1 sloped ramp; zero len=0 hops!)
-  findRoadPath(sx, sz, ex, ez, startOnRamp = false, startLayer = 0) {
+  // Enforces strict one-way streets (roadDir >= 0) and optional heavy-truck ban avoidance (avoidTruckBan)
+  findRoadPath(sx, sz, ex, ez, startOnRamp = false, startLayer = 0, avoidTruckBan = false) {
     if (!inBounds(sx, sz) || !inBounds(ex, ez)) return null;
     if (sx === ex && sz === ez && !startOnRamp && startLayer === 0) return null;
 
@@ -14045,6 +16742,11 @@ class TrafficManager {
           const ni = idx(nx, nz);
           const nt = grid[ni];
 
+          // Enforce strict one-way street direction on ground steps
+          if (!this.isGroundStepAllowedByOneWay(ct, nt, d)) continue;
+          // Enforce heavy-truck ban on intermediate tiles (allow only if ni is the final destination itself)
+          if (avoidTruckBan && nt.banTrucks === true && ni !== eIdx) continue;
+
           if (!nt.ramp) {
             if (this.isGroundRoadPassable(nt)) {
               relax(ni, curCost + this.groundStepCost(nt, ni), cur);
@@ -14143,7 +16845,8 @@ class TrafficManager {
             const nt = grid[ni];
             if (Math.abs(crm.lowFrac) < 1e-5) {
               const nrm = nt.ramp ? this.rampMeta.get(ni) : null;
-              if (this.isGroundRoadPassable(nt) && (!nt.ramp || nrm?.throughGround)) {
+              const truckOk = !(avoidTruckBan && nt.banTrucks === true && ni !== eIdx);
+              if (truckOk && this.isGroundStepAllowedByOneWay(ct, nt, ld) && this.isGroundRoadPassable(nt) && (!nt.ramp || nrm?.throughGround)) {
                 relax(ni, curCost + this.groundStepCost(nt, ni), cur);
               }
             } else if (nt.ramp && this.rampMeta.has(ni)) {
@@ -14332,6 +17035,7 @@ class TrafficManager {
   }
 
   trySpawnVehicle() {
+    this.ensureRampGraphFresh();
     if (this.modalSplit.rawCarDemand === 0) {
       this.refreshModalSplitDemand();
     }
@@ -14343,6 +17047,62 @@ class TrafficManager {
       0
     );
     if (nonEmergencyCount >= maxCars) return;
+
+    const freeTransit = Boolean(this.sim.policies?.freeTransit);
+    const period = typeof this.sim.getTrafficPeriodInfo === 'function'
+      ? this.sim.getTrafficPeriodInfo()
+      : { id: 'normal', mult: 1.0, commuteBias: 'balanced' };
+
+    // 0. Priority EV City Bus Fleet Spawner between road-connected Bus Stops!
+    if (this.busStops.length >= 2) {
+      const activeBuses = this.vehicles.filter((v) => v.kind === 'bus').length;
+      const targetBuses = Math.min(12, Math.max(2, Math.ceil(this.busStops.length * (freeTransit ? 1.5 : 1.0))));
+      if (activeBuses < targetBuses && (activeBuses < 2 || Math.random() < (freeTransit ? 0.42 : 0.28))) {
+        for (let attempt = 0; attempt < 4; attempt++) {
+          const idxA = (Math.random() * this.busStops.length) | 0;
+          let idxB = (Math.random() * (this.busStops.length - 1)) | 0;
+          if (idxB >= idxA) idxB++;
+          const stopA = this.busStops[idxA];
+          const stopB = this.busStops[idxB];
+          const busPath = this.findRoadPath(stopA.rx, stopA.rz, stopB.rx, stopB.rz, false, 0, false);
+          if (busPath && busPath.length >= 2) {
+            const w0 = tileToWorld(busPath[0].x, busPath[0].z);
+            const maxSpeed = 1.72;
+            const bv = {
+              kind: 'bus',
+              tripType: 'transit',
+              tripLabel: '🚌 城市新能源公交专线',
+              fromName: stopA.portalName,
+              toName: stopB.portalName,
+              originTile: { x: stopA.bx, z: stopA.bz },
+              destTile: { x: stopB.bx, z: stopB.bz },
+              color: [0.10, 0.72, 0.88],
+              length: 0.42,
+              width: 0.15,
+              height: 0.15,
+              path: busPath,
+              seg: 0,
+              t: 0,
+              speed: maxSpeed * 0.65,
+              maxSpeed,
+              stuckTimer: 0,
+              laneSlot: 0,
+              laneChangeCooldown: 0,
+              wx: w0.wx,
+              wy: this.getRoadNodeY(busPath[0].x, busPath[0].z, busPath[0].layer),
+              wz: w0.wz,
+              dirX: 0,
+              dirZ: -1,
+              inTunnel: false
+            };
+            this.syncVehicleTransform(bv, 0);
+            this.vehicles.push(bv);
+            this.refreshActiveModalCounts();
+            return;
+          }
+        }
+      }
+    }
 
     const endpoints = { R: [], SHOP: [], WORK: [], IND: [], PORT: [], HW: [], GATEWAY: [], W: [] };
     if (this.isGroundRoadPassable(this.sim.getTile(22, GRID_SIZE - 1))) {
@@ -14399,7 +17159,7 @@ class TrafficManager {
 
     const activeGarbage = this.vehicles.filter((v) => v.kind === 'garbagetruck').length;
     const allZones = endpoints.R.concat(endpoints.SHOP, endpoints.WORK);
-    const freeTransit = Boolean(this.sim.policies?.freeTransit);
+    const workAndShop = endpoints.WORK.concat(endpoints.SHOP);
 
     let origins = null;
     let dests = null;
@@ -14408,10 +17168,21 @@ class TrafficManager {
     let tripLabel = '👷 通勤上班';
 
     const roll = Math.random();
+    const isMorningRush = period.commuteBias === 'to_work';
+    const isEveningRush = period.commuteBias === 'to_home';
+    const isRush = isMorningRush || isEveningRush;
+    const isMidday = period.commuteBias === 'commercial';
+    const isQuietNight = period.commuteBias === 'quiet';
+
+    // Non-overlapping cumulative probability thresholds so Service, Freight & Immigrant NEVER get shadowed during Rush Hour!
+    const pService = isQuietNight ? 0.22 : (isRush ? 0.10 : 0.14);
+    const pFreight = isQuietNight ? 0.58 : (isMidday ? 0.44 : (isRush ? 0.24 : 0.38));
+    const pImmig   = isRush ? 0.33 : 0.50;
+    const pShop    = isRush ? 0.45 : (isMidday ? 0.82 : 0.74);
 
     // 1. Municipal Sanitation Service Chain (Waste Plant <-> Zones)
     if (endpoints.W.length > 0 && allZones.length > 0 &&
-        activeGarbage < Math.min(10, endpoints.W.length * 4) && roll < 0.14) {
+        activeGarbage < Math.min(10, endpoints.W.length * 4) && roll < pService) {
       const outbound = Math.random() < 0.72;
       origins = outbound ? endpoints.W : allZones;
       dests = outbound ? allZones : endpoints.W;
@@ -14420,7 +17191,7 @@ class TrafficManager {
       tripLabel = '🚛 环卫沿街收运垃圾';
     }
     // 2. Industrial Freight Supply Chain (Industry -> Retail Restock OR Industry <-> Seaport / Highway Export)
-    else if (roll < 0.38 && endpoints.IND.length > 0 &&
+    else if (roll < pFreight && endpoints.IND.length > 0 &&
              (endpoints.SHOP.length > 0 || endpoints.PORT.length > 0 || endpoints.HW.length > 0)) {
       kind = 'truck';
       tripType = 'freight';
@@ -14446,7 +17217,7 @@ class TrafficManager {
       }
     }
     // 3. Intercity New Immigrants & Visitors (Highway / HSR / Airport -> Residential / CBD)
-    else if (roll < 0.50 && endpoints.GATEWAY.length > 0 &&
+    else if (roll < pImmig && endpoints.GATEWAY.length > 0 &&
              (endpoints.R.length > 0 || endpoints.SHOP.length > 0)) {
       origins = endpoints.GATEWAY;
       if (endpoints.R.length > 0 && (endpoints.SHOP.length === 0 || Math.random() < 0.75)) {
@@ -14462,9 +17233,9 @@ class TrafficManager {
       }
     }
     // 4. Shopping & Leisure Chain (Residential <-> Commercial / Landmarks / Stadium)
-    else if (roll < 0.74 && endpoints.R.length > 0 && endpoints.SHOP.length > 0) {
+    else if (roll < pShop && endpoints.R.length > 0 && endpoints.SHOP.length > 0) {
       tripType = 'shopping';
-      const toShop = Math.random() < 0.62;
+      const toShop = isEveningRush ? (Math.random() < 0.25) : (Math.random() < 0.62);
       origins = toShop ? endpoints.R : endpoints.SHOP;
       dests = toShop ? endpoints.SHOP : endpoints.R;
       if (freeTransit && Math.random() < 0.25) {
@@ -14478,19 +17249,17 @@ class TrafficManager {
         tripLabel = '🛍️ 商圈购物';
       }
     }
-    // 5. Daily Work Commute Chain (Residential <-> Industrial / Office)
-    else if (endpoints.R.length > 0 && endpoints.WORK.length > 0) {
+    // 5. Daily & Rush-Hour Tidal Work Commute Chain (55% share during Morning/Evening Rush!)
+    else if (endpoints.R.length > 0 && (isRush ? workAndShop.length > 0 : endpoints.WORK.length > 0)) {
       tripType = 'commute';
-      const toWork = Math.random() < 0.58;
-      origins = toWork ? endpoints.R : endpoints.WORK;
-      dests = toWork ? endpoints.WORK : endpoints.R;
-      if (freeTransit && Math.random() < 0.28) {
-        kind = 'bus';
-        tripLabel = toWork ? '👷 通勤上班' : '🏠 下班返家';
-      } else {
-        kind = 'car';
-        tripLabel = toWork ? '👷 通勤上班' : '🏠 下班返家';
-      }
+      const destPool = isRush ? workAndShop : endpoints.WORK;
+      const toWork = isMorningRush ? (Math.random() < 0.88) : (isEveningRush ? (Math.random() < 0.12) : (Math.random() < 0.58));
+      origins = toWork ? endpoints.R : destPool;
+      dests = toWork ? destPool : endpoints.R;
+      kind = (freeTransit && Math.random() < 0.28) ? 'bus' : 'car';
+      tripLabel = isMorningRush
+        ? (toWork ? '🌅 早高峰通勤上班' : '👷 通勤交班')
+        : (isEveningRush ? (toWork ? '👷 晚班通勤' : '🌆 晚高峰下班返家') : (toWork ? '👷 通勤上班' : '🏠 下班返家'));
     }
     // Fallback when city only has R + SHOP or WORK + SHOP early in Lv.1
     else if (endpoints.R.length > 0 && endpoints.SHOP.length > 0) {
@@ -14511,7 +17280,8 @@ class TrafficManager {
 
     const a = origins[(Math.random() * origins.length) | 0];
     const b = dests[(Math.random() * dests.length) | 0];
-    const path = this.findRoadPath(a.rx, a.rz, b.rx, b.rz);
+    const isHeavyTruck = kind === 'truck' || kind === 'garbagetruck';
+    const path = this.findRoadPath(a.rx, a.rz, b.rx, b.rz, false, 0, isHeavyTruck);
     if (!path || path.length < 2) return;
 
     let color = CAR_COLORS[(Math.random() * CAR_COLORS.length) | 0];
@@ -14727,8 +17497,13 @@ class TrafficManager {
       this.refreshModalSplitDemand();
     }
 
+    const period = typeof this.sim.getTrafficPeriodInfo === 'function'
+      ? this.sim.getTrafficPeriodInfo()
+      : { id: 'normal', mult: 1.0 };
+    const spawnInterval = Math.max(0.11, Math.min(0.65, 0.26 / Math.max(0.35, period.mult || 1.0)));
+
     this.spawnTimer += effDt;
-    if (this.spawnTimer >= 0.26) {
+    if (this.spawnTimer >= spawnInterval) {
       this.spawnTimer = 0;
       this.trySpawnVehicle();
     }
@@ -14798,15 +17573,20 @@ class TrafficManager {
 
       const onRampSeg = Boolean(cur.onRamp || nxt.onRamp);
       const isElevated = cur.layer === 1 || nxt.layer === 1;
+      const isOneWaySeg =
+        !onRampSeg && !isElevated &&
+        typeof curTile.roadDir === 'number' && curTile.roadDir >= 0 &&
+        typeof nxtTile.roadDir === 'number' && nxtTile.roadDir >= 0;
       const isMultiLane =
         !onRampSeg && (
           isElevated ||
+          isOneWaySeg ||
           (curTile.roadGround >= 2 && curTile.roadGround !== 4) ||
           (nxtTile.roadGround >= 2 && nxtTile.roadGround !== 4)
         );
       const allowOvertake = isMultiLane && !curTile.ramp && !nxtTile.ramp;
 
-      const roadBoost = isElevated ? 1.55 : (onRampSeg ? 1.32 : (nxtTile.roadGround >= 2 ? 1.25 : 1.0));
+      const roadBoost = isElevated ? 1.55 : (onRampSeg ? 1.32 : (nxtTile.roadGround >= 2 ? 1.25 : (isOneWaySeg ? 1.12 : 1.0)));
       let targetSpeed = v.maxSpeed * roadBoost;
 
       // Ground Intersection Control: 'signal' | 'yield' | 'roundabout' (never halts mid-ramp!)
@@ -15034,9 +17814,152 @@ class TrafficManager {
       t.congestion = t.congestion * 0.90 + raw * 0.10;
     }
 
-    // Update 3D Airliners & Cargo Container Ships
+    // Update 3D Airliners, Cargo Container Ships & Sidewalk Pedestrians
     this.updateAircraft(effDt);
     this.updateShips(effDt);
+    this.updatePedestrians(effDt);
+  }
+
+  _isPedRoadTile(tx, tz) {
+    if (!inBounds(tx, tz)) return false;
+    const t = this.sim.grid[idx(tx, tz)];
+    return Boolean(t && (t.roadGround === 1 || t.roadGround === 2) && !t.dam && !t.ramp && this.isGroundRoadPassable(t));
+  }
+
+  _pickPedNextTile(tx, tz, prevX, prevZ) {
+    const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+    const forwardChoices = [];
+    let backChoice = null;
+    for (let k = 0; k < 4; k++) {
+      const nx = tx + dirs[k][0];
+      const nz = tz + dirs[k][1];
+      if (!this._isPedRoadTile(nx, nz)) continue;
+      if (nx === prevX && nz === prevZ) {
+        backChoice = { x: nx, z: nz };
+      } else {
+        forwardChoices.push({ x: nx, z: nz });
+      }
+    }
+    if (forwardChoices.length > 0) {
+      return { ...forwardChoices[(Math.random() * forwardChoices.length) | 0], reversed: false };
+    }
+    if (backChoice) {
+      return { ...backChoice, reversed: true };
+    }
+    return { x: tx, z: tz, reversed: true };
+  }
+
+  _syncPedTransform(p) {
+    const w0 = tileToWorld(p.tx, p.tz);
+    const w1 = tileToWorld(p.nx, p.nz);
+    const dx = w1.wx - w0.wx;
+    const dz = w1.wz - w0.wz;
+    const len = Math.hypot(dx, dz);
+    if (len > 0.01) {
+      p.dirX = dx / len;
+      p.dirZ = dz / len;
+    }
+    // Outer sidewalk offset (+-0.43m from road centerline)
+    const swOff = 0.43 * p.side;
+    const rightX = -p.dirZ;
+    const rightZ = p.dirX;
+    const frac = Math.min(1, Math.max(0, p.t));
+    p.wx = w0.wx + dx * frac + rightX * swOff;
+    p.wz = w0.wz + dz * frac + rightZ * swOff;
+
+    const y0 = this.sim.isWaterTile(p.tx, p.tz)
+      ? this.getRoadNodeY(p.tx, p.tz, 0)
+      : (this.sim.getTileElev(p.tx, p.tz) + 0.04);
+    const y1 = this.sim.isWaterTile(p.nx, p.nz)
+      ? this.getRoadNodeY(p.nx, p.nz, 0)
+      : (this.sim.getTileElev(p.nx, p.nz) + 0.04);
+    p.wy = y0 + (y1 - y0) * frac;
+  }
+
+  updatePedestrians(effDt) {
+    if (this._pedRoadPool.length === 0) {
+      if (this.pedestrians.length > 0) this.pedestrians.length = 0;
+      return;
+    }
+
+    const period = typeof this.sim.getTrafficPeriodInfo === 'function'
+      ? this.sim.getTrafficPeriodInfo()
+      : { id: 'normal' };
+    const timeScale = period.id === 'late_night'
+      ? 0.35
+      : ((period.id === 'morning_rush' || period.id === 'evening_rush') ? 1.25 : 1.0);
+    const pop = this.sim.population || 0;
+    const baseCap = Math.min(240, Math.min(16, this._pedRoadPool.length * 0.55) + pop * 0.032);
+    const targetPed = Math.min(240, Math.round(baseCap * timeScale));
+
+    // Trim gracefully when transitioning into quiet late night
+    while (this.pedestrians.length > targetPed + 8) {
+      this.pedestrians.pop();
+    }
+
+    // Spawn batch along active sidewalks up to targetPed (<= 240 hard cap)
+    let spawnBudget = Math.min(6, Math.max(0, targetPed - this.pedestrians.length));
+    while (spawnBudget-- > 0 && this.pedestrians.length < 240) {
+      const spot = this._pedRoadPool[(Math.random() * this._pedRoadPool.length) | 0];
+      if (!spot || !this._isPedRoadTile(spot.x, spot.z)) continue;
+      const next = this._pickPedNextTile(spot.x, spot.z, -1, -1);
+      const p = {
+        tx: spot.x,
+        tz: spot.z,
+        nx: next.x,
+        nz: next.z,
+        t: Math.random() * 0.6,
+        side: Math.random() < 0.5 ? 1 : -1,
+        wx: 0,
+        wy: 0,
+        wz: 0,
+        dirX: 1,
+        dirZ: 0,
+        walkPhase: Math.random() * Math.PI * 2,
+        colorIdx: (Math.random() * 8) | 0,
+        speed: 0.24 + Math.random() * 0.14,
+        ttl: 24 + Math.random() * 28
+      };
+      this._syncPedTransform(p);
+      this.pedestrians.push(p);
+    }
+
+    // Advance sidewalk walkers
+    for (let i = this.pedestrians.length - 1; i >= 0; i--) {
+      const p = this.pedestrians[i];
+      if (!this._isPedRoadTile(p.tx, p.tz)) {
+        this.pedestrians.splice(i, 1);
+        continue;
+      }
+
+      p.ttl -= effDt;
+      p.t += p.speed * effDt;
+      p.walkPhase = (p.walkPhase + p.speed * effDt * 18) % (Math.PI * 2);
+
+      if (p.t >= 1.0) {
+        if (p.ttl <= 0 && this.pedestrians.length > Math.floor(targetPed * 0.85)) {
+          this.pedestrians.splice(i, 1);
+          continue;
+        }
+        const prevX = p.tx;
+        const prevZ = p.tz;
+        p.tx = p.nx;
+        p.tz = p.nz;
+        p.t -= 1.0;
+        if (!this._isPedRoadTile(p.tx, p.tz)) {
+          this.pedestrians.splice(i, 1);
+          continue;
+        }
+        const next = this._pickPedNextTile(p.tx, p.tz, prevX, prevZ);
+        p.nx = next.x;
+        p.nz = next.z;
+        if (next.reversed) {
+          p.side = -p.side;
+        }
+      }
+
+      this._syncPedTransform(p);
+    }
   }
 
   updateAircraft(effDt) {
@@ -15784,8 +18707,10 @@ class CityRenderer3D {
     this.lastOverlayMode = 'none';
     this.previewTiles = [];
     this.previewColor = [0.22, 0.85, 1.0];
+    this.servicePreviewTiles = [];
     this.selectedTile = null;
     this.selectedVehicle = null;
+    this._maxPedestrians = 240;
 
     // 4-Layer Independent Static Groups inside staticGroup (zero unnecessary terrain/forest rebuilds!)
     this.staticGroup = new THREE.Group();
@@ -15901,6 +18826,9 @@ class CityRenderer3D {
       cyanGlow: new THREE.MeshBasicMaterial({ color: 0x38bdf8 }),
       meteorGlow: new THREE.MeshBasicMaterial({ color: 0xff7b1c }),
       previewMat: new THREE.MeshBasicMaterial({ color: 0x38d9ff, transparent: true, opacity: 0.62 }),
+      servicePreviewMat: new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.46, depthWrite: false }),
+      pedBodyMat: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.72, metalness: 0.05 }),
+      pedHeadMat: new THREE.MeshStandardMaterial({ color: 0xf1c29b, roughness: 0.78 }),
       bulletBody: new THREE.MeshStandardMaterial({ color: 0xf8fafc, roughness: 0.20, metalness: 0.28 }),
       bulletStripe: new THREE.MeshStandardMaterial({ color: 0x1d6feb, roughness: 0.25, metalness: 0.4, emissive: 0x0b3b8c, emissiveIntensity: 0.32 }),
       garbageGreen: new THREE.MeshStandardMaterial({ color: 0x16a34a, roughness: 0.45 }),
@@ -15959,7 +18887,9 @@ class CityRenderer3D {
       lampPole: this._makeLampPoleGeo(),
       lampBulb: this._makeLampBulbGeo(),
       signalPole: this._makeSignalPoleGeo(),
-      signalLens: new THREE.SphereGeometry(0.026, 6, 5)
+      signalLens: new THREE.SphereGeometry(0.026, 6, 5),
+      pedBody: new THREE.CylinderGeometry(0.017, 0.020, 0.068, 6),
+      pedHead: new THREE.SphereGeometry(0.016, 6, 5)
     };
     this.geos.bulletCoach.rotateX(Math.PI * 0.5);
   }
@@ -16093,6 +19023,33 @@ class CityRenderer3D {
     for (let i = 0; i < this._poolCaps.preview; i++) this._acquirePoolMesh(this.previewMeshPool, i, this.geos.unitBox, this.mats.previewMat);
     for (let i = 0; i < this._poolCaps.scaffold; i++) this._acquirePoolMesh(this.scaffoldPool, i, this.geos.unitBox, this.mats.goldGlow);
     for (let i = 0; i < this._poolCaps.meteor; i++) this._acquirePoolMesh(this.meteorPool, i, this.geos.waterSphere, this.mats.meteorGlow);
+
+    // 1-Draw-Call Instanced Pre-Build Road-Connected Service Coverage Preview (up to 320 tiles, ZERO per-frame allocs!)
+    this._servicePreviewCap = 320;
+    this.servicePreviewInst = new THREE.InstancedMesh(this.geos.unitBox, this.mats.servicePreviewMat, this._servicePreviewCap);
+    this.servicePreviewInst.count = 0;
+    this.servicePreviewInst.visible = false;
+    this.servicePreviewInst.frustumCulled = false;
+    this.uiOverlayGroup.add(this.servicePreviewInst);
+
+    // 2-Draw-Call Instanced Sidewalk Pedestrians (up to 240 citizens strolling sidewalks, ZERO per-frame allocs!)
+    this._pedCap = 240;
+    this.pedBodyInst = new THREE.InstancedMesh(this.geos.pedBody, this.mats.pedBodyMat, this._pedCap);
+    this.pedHeadInst = new THREE.InstancedMesh(this.geos.pedHead, this.mats.pedHeadMat, this._pedCap);
+    this.pedBodyInst.count = 0;
+    this.pedHeadInst.count = 0;
+    this.pedBodyInst.visible = false;
+    this.pedHeadInst.visible = false;
+    this.pedBodyInst.frustumCulled = false;
+    this.pedHeadInst.frustumCulled = false;
+    const pedOutfitPalette = [0x1d4ed8, 0xe11d48, 0x0f766e, 0xd97706, 0xf8fafc, 0x334155, 0x7c3aed, 0x0284c7];
+    const tmpC = new THREE.Color();
+    for (let i = 0; i < this._pedCap; i++) {
+      tmpC.setHex(pedOutfitPalette[i % pedOutfitPalette.length]);
+      this.pedBodyInst.setColorAt(i, tmpC);
+    }
+    if (this.pedBodyInst.instanceColor) this.pedBodyInst.instanceColor.needsUpdate = true;
+    this.vehicleGroup.add(this.pedBodyInst, this.pedHeadInst);
   }
 
   _acquirePoolSprite(pool, index, { map, additive = false } = {}) {
@@ -16142,6 +19099,7 @@ class CityRenderer3D {
       this.sunLight.shadow.mapSize.set(2048, 2048);
       this._maxGlowSprites = 56;
       this._maxRenderedVehicles = 160;
+      this._maxPedestrians = 240;
     } else if (valid === 'medium') {
       this.renderer.setPixelRatio(Math.min(dpr, 1.5));
       this.renderer.shadowMap.enabled = true;
@@ -16149,12 +19107,14 @@ class CityRenderer3D {
       this.sunLight.shadow.mapSize.set(1024, 1024);
       this._maxGlowSprites = 24;
       this._maxRenderedVehicles = 80;
+      this._maxPedestrians = 120;
     } else {
       this.renderer.setPixelRatio(1);
       this.renderer.shadowMap.enabled = false;
       this.sunLight.castShadow = false;
       this._maxGlowSprites = 0;
       this._maxRenderedVehicles = 45;
+      this._maxPedestrians = 0;
     }
 
     if (this.sunLight.shadow && this.sunLight.shadow.map) {
@@ -16582,6 +19542,18 @@ class CityRenderer3D {
       this._signalGreenInst = greenInst;
       this._signalSyncAccum = 99;
     }
+
+    // 3. Roadside Modern EV Bus Stop Shelters (exact curb height from roadCornerY)
+    const busStops = Array.isArray(props.busStops) ? props.busStops : [];
+    if (busStops.length > 0 && this.archLib && typeof this.archLib.createBusStopShelter === 'function') {
+      for (let i = 0; i < busStops.length; i++) {
+        const bs = busStops[i];
+        const shelter = this.archLib.createBusStopShelter();
+        shelter.position.set(bs.x, bs.y, bs.z);
+        shelter.rotation.y = bs.yaw || 0;
+        this.infraGroup.add(shelter);
+      }
+    }
   }
 
   // 6-Batch Botanical InstancedMesh Forest (<= 6 draw calls for 1,500+ trees!)
@@ -16749,27 +19721,28 @@ class CityRenderer3D {
       const geo = new THREE.SphereGeometry(10, 32, 16);
       const cols = [];
       const pos = geo.attributes.position;
-      const top = new THREE.Color(0x6fa8e8), hor = new THREE.Color(0xdfe9f2), gnd = new THREE.Color(0x4a5246);
+      const top = new THREE.Color(0x4b8fe8), cloud = new THREE.Color(0xf4f8ff), hor = new THREE.Color(0xffe9d2), gnd = new THREE.Color(0x4f564b);
       const c = new THREE.Color();
       for (let i = 0; i < pos.count; i++) {
         const y = pos.getY(i) / 10;
-        if (y >= 0) c.copy(hor).lerp(top, Math.pow(y, 0.6));
-        else c.copy(hor).lerp(gnd, Math.min(1, -y * 3));
+        if (y >= 0.14) c.copy(cloud).lerp(top, Math.pow((y - 0.14) / 0.86, 0.58));
+        else if (y >= 0) c.copy(hor).lerp(cloud, y / 0.14);
+        else c.copy(hor).lerp(gnd, Math.min(1, -y * 2.8));
         cols.push(c.r, c.g, c.b);
       }
       geo.setAttribute('color', new THREE.Float32BufferAttribute(cols, 3));
       const mat = new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.BackSide });
       envScene.add(new THREE.Mesh(geo, mat));
-      const sunGeo = new THREE.SphereGeometry(0.8, 12, 8);
-      const sunMat = new THREE.MeshBasicMaterial({ color: 0xfff4dc });
+      const sunGeo = new THREE.SphereGeometry(0.95, 12, 8);
+      const sunMat = new THREE.MeshBasicMaterial({ color: 0xfff3d4 });
       const sun = new THREE.Mesh(sunGeo, sunMat);
-      sun.material.color.multiplyScalar(6);
-      sun.position.set(6, 6, 3);
+      sun.material.color.multiplyScalar(7.5);
+      sun.position.set(6, 5.5, 3.2);
       envScene.add(sun);
       const pmrem = new THREE.PMREMGenerator(this.renderer);
-      const rt = pmrem.fromScene(envScene, 0.02);
+      const rt = pmrem.fromScene(envScene, 0.018);
       this.scene.environment = rt.texture;
-      this.scene.environmentIntensity = 0.55;
+      this.scene.environmentIntensity = 0.68;
       this.hemiBase = 0.70;
       pmrem.dispose();
       geo.dispose();
@@ -17222,6 +20195,37 @@ class CityRenderer3D {
       sh.rotation.set(-(s.pitch || 0), s.yaw || 0, s.roll || 0);
     }
 
+    // Sidewalk Pedestrians (2 InstancedMeshes total, <= 240 citizens, ZERO per-frame allocations!)
+    const peds = (!isUnder && this._maxPedestrians > 0 && Array.isArray(this.traffic.pedestrians))
+      ? this.traffic.pedestrians
+      : [];
+    const pedCount = Math.min(peds.length, this._maxPedestrians, this._pedCap);
+    if (pedCount > 0) {
+      this._tmpScale.set(1, 1, 1);
+      this._tmpQuat.identity();
+      for (let i = 0; i < pedCount; i++) {
+        const p = peds[i];
+        const bob = Math.abs(Math.sin(p.walkPhase || 0)) * 0.014;
+        const baseY = (p.wy || 0) + 0.036 + bob;
+        this._tmpPos.set(p.wx, baseY, p.wz);
+        this._tmpMat4.compose(this._tmpPos, this._tmpQuat, this._tmpScale);
+        this.pedBodyInst.setMatrixAt(i, this._tmpMat4);
+
+        this._tmpPos.set(p.wx, baseY + 0.048, p.wz);
+        this._tmpMat4.compose(this._tmpPos, this._tmpQuat, this._tmpScale);
+        this.pedHeadInst.setMatrixAt(i, this._tmpMat4);
+      }
+      this.pedBodyInst.count = pedCount;
+      this.pedHeadInst.count = pedCount;
+      this.pedBodyInst.instanceMatrix.needsUpdate = true;
+      this.pedHeadInst.instanceMatrix.needsUpdate = true;
+      this.pedBodyInst.visible = true;
+      this.pedHeadInst.visible = true;
+    } else {
+      this.pedBodyInst.visible = false;
+      this.pedHeadInst.visible = false;
+    }
+
     // ==================== Zero-Leak Pooled VFX, Night Glow & Selection Overlays ====================
     let scafCount = 0;
     let fireCount = 0;
@@ -17377,6 +20381,32 @@ class CityRenderer3D {
     }
     this._hidePoolFrom(this.previewMeshPool, prevCount);
 
+    // Pre-Build Green Road-Connected Service Coverage Overlay (1 InstancedMesh, ZERO allocs!)
+    const svcList = Array.isArray(this.servicePreviewTiles) ? this.servicePreviewTiles : [];
+    const svcCount = Math.min(svcList.length, this._servicePreviewCap);
+    if (svcCount > 0 && !isUnder) {
+      this._tmpQuat.identity();
+      this._tmpScale.set(0.90, 0.035, 0.90);
+      for (let i = 0; i < svcCount; i++) {
+        const st = svcList[i];
+        if (!inBounds(st.x, st.z)) continue;
+        const { wx, wz } = tileToWorld(st.x, st.z);
+        const py = Math.max(this.sim.getTileElev(st.x, st.z), this.sim.getTileElev(st.x, st.z) + this.sim.waterDepth[idx(st.x, st.z)]) + 0.045;
+        this._tmpPos.set(wx, py, wz);
+        this._tmpMat4.compose(this._tmpPos, this._tmpQuat, this._tmpScale);
+        this.servicePreviewInst.setMatrixAt(i, this._tmpMat4);
+        const str = Math.max(0.15, Math.min(1.0, st.strength ?? 0.8));
+        this._tmpColor.setRGB(0.10 + (1 - str) * 0.25, 0.55 + str * 0.42, 0.22 + (1 - str) * 0.22);
+        this.servicePreviewInst.setColorAt(i, this._tmpColor);
+      }
+      this.servicePreviewInst.count = svcCount;
+      this.servicePreviewInst.instanceMatrix.needsUpdate = true;
+      if (this.servicePreviewInst.instanceColor) this.servicePreviewInst.instanceColor.needsUpdate = true;
+      this.servicePreviewInst.visible = true;
+    } else {
+      this.servicePreviewInst.visible = false;
+    }
+
     // Selected Tile Highlight
     if (this.selectedTile && inBounds(this.selectedTile.x, this.selectedTile.z)) {
       const { wx, wz } = tileToWorld(this.selectedTile.x, this.selectedTile.z);
@@ -17444,7 +20474,7 @@ class CityRenderer3D {
     this.sunLight.color.copy(daySun).lerp(moonCol, night).lerp(sunsetSun, sunset * 0.75);
     this.sunLight.intensity = 1.92 * (1 - night * 0.72);
     this.hemiLight.intensity = (this.hemiBase || 0.88) * (1 - night * 0.62);
-    if (this.scene.environment) this.scene.environmentIntensity = 0.55 * (1 - night * 0.82);
+    if (this.scene.environment) this.scene.environmentIntensity = 0.68 * (1 - night * 0.78);
 
     this.archLib.setNightFactor(night);
 
@@ -17493,8 +20523,8 @@ const { saveStorage } = __M;
 
 const TOOL_GROUPS = {
   terrain:  ['ter_raise', 'ter_lower', 'ter_flatten', 'ter_spring'],
-  road:     ['road_1', 'road_2', 'road_elev', 'road_ramp', 'road_tunnel'],
-  rail:     ['metro_line', 'metro_station', 'rail_track', 'hsr_station', 'seaport', 'airport'],
+  road:     ['road_1', 'road_2', 'road_oneway', 'road_elev', 'road_ramp', 'road_tunnel', 'interchange_diamond', 'interchange_rbt'],
+  rail:     ['bus_stop', 'metro_line', 'metro_station', 'rail_track', 'hsr_station', 'seaport', 'airport'],
   zones:    ['zone_RL', 'zone_RH', 'zone_CL', 'zone_CH', 'zone_I', 'zone_O', 'dezone'],
   water:    ['water_pipe', 'water_pump', 'sewage_out', 'water_treat', 'waste_plant'],
   power:    ['hydro_dam', 'power_pylon', 'power_wind', 'power_plant', 'solar_plant', 'nuclear_plant'],
@@ -17526,6 +20556,7 @@ class GameUI {
     this.dragBuildStart = null;
     this.dragBuildEnd = null;
     this.dragCancelled = false;
+    this.pendingPlace = null; // { toolId, x, z, rot } for iPhone tap-to-confirm placement
     this.rightMouseOrbit = false;
     this.flattenRefElev = null;
     this.lastSculptStamp = 0;
@@ -17657,6 +20688,32 @@ class GameUI {
       this.openSaveAndCityModal();
     });
 
+    const undoBtn = document.getElementById('btn-undo');
+    if (undoBtn) {
+      undoBtn.addEventListener('click', () => {
+        if (typeof this.sim.undoLastAction !== 'function') return;
+        const res = this.sim.undoLastAction();
+        if (res && res.ok) {
+          this.sfx.tap();
+          this.clearPendingPlace();
+          this.refreshSubToolbarUnlocks();
+          this.refreshHUD();
+          this.showToast(`↩️ 已撤销【${res.label || '上一步操作'}】`);
+        } else {
+          this.sfx.error();
+          this.showToast('ℹ️ 暂无可撤销的历史步骤');
+        }
+      });
+    }
+
+    const eventPill = document.getElementById('event-pill');
+    if (eventPill) {
+      eventPill.addEventListener('click', () => {
+        this.sfx.tap();
+        this.openCivicEventModal();
+      });
+    }
+
     const chirperPill = document.getElementById('chirper-pill');
     if (chirperPill) {
       chirperPill.addEventListener('click', () => {
@@ -17685,14 +20742,52 @@ class GameUI {
       this.sfx.tap();
       this.renderer.camPitch = this.renderer.camPitch < 0.50 ? 0.78 : (this.renderer.camPitch < 1.0 ? 1.24 : 0.38);
     });
+    const overlayPicker = document.getElementById('overlay-picker');
     document.getElementById('btn-overlay').addEventListener('click', () => {
       this.sfx.tap();
-      this.autoOverlayActive = false;
-      const modes = ['none', 'underground', 'power', 'landValue', 'traffic'];
-      const next = modes[(modes.indexOf(this.renderer.overlayMode) + 1) % modes.length];
-      this.renderer.overlayMode = next;
-      this.updateOverlayLegend();
+      if (overlayPicker) {
+        overlayPicker.classList.toggle('open');
+      } else {
+        this.autoOverlayActive = false;
+        const modes = ['none', 'underground', 'power', 'landValue', 'traffic', 'pollution', 'education', 'noise'];
+        const next = modes[(modes.indexOf(this.renderer.overlayMode) + 1) % modes.length];
+        this.renderer.overlayMode = next;
+        this.updateOverlayLegend();
+      }
     });
+    if (overlayPicker) {
+      overlayPicker.querySelectorAll('[data-ov]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          this.sfx.tap();
+          this.autoOverlayActive = false;
+          this.renderer.overlayMode = btn.dataset.ov;
+          overlayPicker.classList.remove('open');
+          this.updateOverlayLegend();
+        });
+      });
+    }
+
+    // Single-Tile Tap-to-Confirm Placement Bar buttons
+    const btnPlaceOk = document.getElementById('btn-place-ok');
+    if (btnPlaceOk) {
+      btnPlaceOk.addEventListener('click', () => this.confirmPendingPlace());
+    }
+    const btnPlaceRot = document.getElementById('btn-place-rotate');
+    if (btnPlaceRot) {
+      btnPlaceRot.addEventListener('click', () => {
+        if (!this.pendingPlace) return;
+        this.sfx.tap();
+        this.pendingPlace.rot = ((this.pendingPlace.rot || 0) + 1) % 4;
+        this._refreshPendingPlaceVisuals();
+      });
+    }
+    const btnPlaceCancel = document.getElementById('btn-place-cancel');
+    if (btnPlaceCancel) {
+      btnPlaceCancel.addEventListener('click', () => {
+        this.sfx.tap();
+        this.clearPendingPlace();
+      });
+    }
     const sfxBtn = document.getElementById('btn-sfx');
     if (sfxBtn) {
       sfxBtn.textContent = this.sfx.enabled ? '🔊' : '🔇';
@@ -17768,6 +20863,7 @@ class GameUI {
     sub.innerHTML = '';
     itemIds.forEach((id) => {
       const item = CATALOG[id];
+      if (!item) return;
       const unlocked = this.sim.isToolUnlocked(id);
       const btn = document.createElement('button');
       btn.className = 'sub-item' + (id === defaultToolId ? ' active' : '');
@@ -17916,7 +21012,9 @@ class GameUI {
     }
     this.inspectedVehicle = null;
     this.activeTool = toolId;
+    this.clearPendingPlace();
     this.renderer.previewTiles = [];
+    this.renderer.servicePreviewTiles = [];
     this.dragBuildStart = null;
 
     // Auto X-Ray view for Underground Pipes / Metro, and Power Grid view for Power/Dam tools!
@@ -17991,19 +21089,25 @@ class GameUI {
     const mode = this.renderer.overlayMode;
     btn.classList.toggle('active', mode !== 'none');
 
+    const picker = document.getElementById('overlay-picker');
+    if (picker) {
+      picker.querySelectorAll('[data-ov]').forEach((b) => b.classList.toggle('active', b.dataset.ov === mode));
+    }
+
     if (mode === 'none') {
       el.classList.remove('visible');
     } else {
       el.classList.add('visible');
-      if (mode === 'underground') {
-        el.innerHTML = `<strong>🔵 地下透视蓝图视图</strong><br>青蓝管线 = 地下输水管（覆盖两侧4格）| 红管 = 地震破裂需抢修<br>亮紫隧道 = 地下地铁线路与运行中的地铁列车`;
-      } else if (mode === 'power') {
-        el.innerHTML = `<strong>⚡ 高压电网覆盖视图</strong><br>蓝色地块 = 已通电区域 | 远距离电厂/大坝请架设【高压输电铁塔】接力`;
-      } else if (mode === 'landValue') {
-        el.innerHTML = `<strong>💎 地价热力视图</strong><br>翠绿 = 高地价核心区（可长出 48~64 层摩天大楼）`;
-      } else if (mode === 'traffic') {
-        el.innerHTML = `<strong>🚦 交通拥堵与工业污染视图</strong><br>红橙色道路 = 严重堵车（会导致商店缺货倒闭！建议架二层高架或修地铁）`;
-      }
+      const legends = {
+        underground: `<strong>🔵 地下透视蓝图视图</strong><br>青蓝管线 = 地下输水管（覆盖两侧4格）| 红管 = 地震破裂需抢修<br>亮紫隧道 = 地下地铁线路与运行中的地铁列车`,
+        power: `<strong>⚡ 高压电网覆盖视图</strong><br>蓝色地块 = 已通电区域 | 远距离电厂/大坝请架设【高压输电铁塔】接力`,
+        landValue: `<strong>💎 地价热力视图</strong><br>翠绿 = 高地价核心区（可长出 48~64 层摩天大楼）`,
+        traffic: `<strong>🚦 交通拥堵热力视图</strong><br>红橙色道路 = 严重堵车（会导致商店缺货！建议架二层高架、设单行道或修公交/地铁）`,
+        pollution: `<strong>☣️ 空气与水体污染视图</strong><br>紫红色 = 重工业/污水高污染区（远离居民区与抽水站，可用【环保减排法】大幅降低）`,
+        education: `<strong>🎓 教育与市政覆盖视图</strong><br>金青色 = 高学历与高市政覆盖区（驱动高新写字楼与清洁科技工业增产！）`,
+        noise: `<strong>🔊 城市交通与工业噪音视图</strong><br>品红/橙色 = 噪音扰民区（点击住宅街道开启【🚫 禁行重型货车】或种树建公园降噪！）`
+      };
+      el.innerHTML = legends[mode] || '';
     }
   }
 
@@ -18021,13 +21125,109 @@ class GameUI {
 
   _isLinePathTool(t) {
     return (
-      t === 'road_1' || t === 'road_2' || t === 'road_elev' || t === 'road_ramp' || t === 'road_tunnel' ||
+      t === 'road_1' || t === 'road_2' || t === 'road_oneway' || t === 'road_elev' || t === 'road_ramp' || t === 'road_tunnel' ||
       t === 'metro_line' || t === 'rail_track' || t === 'water_pipe' || t === 'hydro_dam'
     );
   }
 
   _isRectTool(t) {
     return t.startsWith('zone_') || t === 'dezone' || t === 'bulldoze' || t === 'bulldoze_under';
+  }
+
+  _isInterchangeTool(t) {
+    return t === 'interchange_diamond' || t === 'interchange_rbt';
+  }
+
+  _isConfirmTool(t) {
+    return (
+      t !== 'pan' &&
+      !this._isTerrainBrush(t) &&
+      t !== 'ter_spring' &&
+      !this._isLinePathTool(t) &&
+      !this._isRectTool(t)
+    );
+  }
+
+  clearPendingPlace() {
+    this.pendingPlace = null;
+    this.renderer.previewTiles = [];
+    this.renderer.servicePreviewTiles = [];
+    const bar = document.getElementById('place-confirm-bar');
+    if (bar) bar.classList.remove('open');
+  }
+
+  _refreshPendingPlaceVisuals() {
+    const p = this.pendingPlace;
+    const bar = document.getElementById('place-confirm-bar');
+    const infoEl = document.getElementById('place-confirm-info');
+    const okBtn = document.getElementById('btn-place-ok');
+    if (!p || !bar) return;
+
+    const item = CATALOG[p.toolId];
+    if (!item) { this.clearPendingPlace(); return; }
+
+    if (this._isInterchangeTool(p.toolId) && typeof this.sim.previewInterchange === 'function') {
+      const prev = this.sim.previewInterchange(p.toolId, p.x, p.z, p.rot || 0);
+      this.renderer.previewTiles = prev.tiles || [{ x: p.x, z: p.z }];
+      this.renderer.previewColor = prev.valid ? [0.22, 0.92, 0.62] : [0.95, 0.28, 0.28];
+      this.renderer.servicePreviewTiles = [];
+      if (infoEl) {
+        infoEl.textContent = prev.valid
+          ? `${item.icon} ${item.name} · 占地 ${prev.tiles.length} 格 · 造价 ¥${(prev.cost || item.cost).toLocaleString()}`
+          : `⚠️ ${prev.reason || '当前位置无法放置立体立交（请选平坦开阔地）'}`;
+      }
+      if (okBtn) okBtn.disabled = !prev.valid;
+    } else {
+      const est = this.sim.estimateAction(p.toolId, [{ x: p.x, z: p.z }]);
+      const valid = !est.lockedLevel && est.validTiles.length > 0 && (this.sim.difficulty === 'sandbox' || est.cost <= this.sim.money);
+      this.renderer.previewTiles = [{ x: p.x, z: p.z }];
+      this.renderer.previewColor = valid ? [0.22, 0.92, 0.62] : [0.95, 0.28, 0.28];
+
+      let covTxt = '';
+      if (typeof this.sim.previewServiceCoverage === 'function') {
+        const cov = this.sim.previewServiceCoverage(p.toolId, p.x, p.z);
+        this.renderer.servicePreviewTiles = (cov && Array.isArray(cov.tiles)) ? cov.tiles : [];
+        if (cov && cov.tiles && cov.tiles.length > 0) {
+          covTxt = ` · 🟢 沿路覆盖 ${cov.tiles.length} 格 / ${cov.affectedBuildings || 0} 栋楼`;
+        }
+      } else {
+        this.renderer.servicePreviewTiles = [];
+      }
+
+      if (infoEl) {
+        if (est.lockedLevel) {
+          infoEl.textContent = `🔒 需升至 Lv.${est.lockedLevel} 解锁【${item.name}】`;
+        } else if (est.validTiles.length === 0) {
+          infoEl.textContent = `⚠️ 此地块无法放置【${item.name}】（请检查道路/水面/坡度要求）`;
+        } else if (this.sim.difficulty !== 'sandbox' && est.cost > this.sim.money) {
+          infoEl.textContent = `💰 资金不足：需要 ¥${est.cost.toLocaleString()}`;
+        } else {
+          const costStr = this.sim.difficulty === 'sandbox' ? '免费' : `¥${est.cost.toLocaleString()}`;
+          infoEl.textContent = `${item.icon} ${item.name} (${p.x},${p.z}) · ${costStr}${covTxt}`;
+        }
+      }
+      if (okBtn) okBtn.disabled = !valid;
+    }
+    bar.classList.add('open');
+  }
+
+  confirmPendingPlace() {
+    const p = this.pendingPlace;
+    if (!p) return;
+    let res;
+    if (this._isInterchangeTool(p.toolId) && typeof this.sim.placeInterchange === 'function') {
+      res = this.sim.placeInterchange(p.toolId, p.x, p.z, p.rot || 0, false);
+    } else {
+      res = this.sim.applyTool(p.toolId, [{ x: p.x, z: p.z }], false, { rot: p.rot || 0 });
+    }
+    if (res && res.ok) {
+      this.clearPendingPlace();
+      this.refreshSubToolbarUnlocks();
+      this.refreshHUD();
+    } else if (res && res.reason) {
+      this.sfx.error();
+      this.showToast(`⚠️ ${res.reason}`);
+    }
   }
 
   _computePlannedTiles(s, e) {
@@ -18147,9 +21347,27 @@ class GameUI {
 
     this.canvas.addEventListener('pointermove', (e) => {
       if (!this.pointers.has(e.pointerId)) {
-        if (this.activeTool !== 'pan' && this.pointers.size === 0) {
+        if (this.activeTool !== 'pan' && this.pointers.size === 0 && !this.pendingPlace) {
           const hit = this.renderer.screenToGround(e.clientX, e.clientY);
-          this.renderer.previewTiles = hit && hit.valid ? [{ x: hit.tx, z: hit.tz }] : [];
+          if (hit && hit.valid) {
+            if (this._isInterchangeTool(this.activeTool) && typeof this.sim.previewInterchange === 'function') {
+              const prev = this.sim.previewInterchange(this.activeTool, hit.tx, hit.tz, 0);
+              this.renderer.previewTiles = prev.tiles || [{ x: hit.tx, z: hit.tz }];
+              this.renderer.previewColor = prev.valid ? [0.22, 0.92, 0.62] : [0.95, 0.28, 0.28];
+              this.renderer.servicePreviewTiles = [];
+            } else {
+              this.renderer.previewTiles = [{ x: hit.tx, z: hit.tz }];
+              if (this._isConfirmTool(this.activeTool) && typeof this.sim.previewServiceCoverage === 'function') {
+                const cov = this.sim.previewServiceCoverage(this.activeTool, hit.tx, hit.tz);
+                this.renderer.servicePreviewTiles = (cov && Array.isArray(cov.tiles)) ? cov.tiles : [];
+              } else {
+                this.renderer.servicePreviewTiles = [];
+              }
+            }
+          } else {
+            this.renderer.previewTiles = [];
+            this.renderer.servicePreviewTiles = [];
+          }
         }
         return;
       }
@@ -18245,13 +21463,23 @@ class GameUI {
           }
         }
       } else if (this.dragBuildStart && this.dragBuildEnd && !this.dragCancelled) {
-        const tiles = this._computePlannedTiles(this.dragBuildStart, this.dragBuildEnd);
-        this.sim.applyTool(this.activeTool, tiles, false);
-        this.refreshSubToolbarUnlocks();
-        this.refreshHUD();
+        if (this._isConfirmTool(this.activeTool)) {
+          // Lock single-tile / interchange tap-to-confirm preview bar with green road-connected coverage!
+          const rot = (this.pendingPlace && this.pendingPlace.toolId === this.activeTool) ? (this.pendingPlace.rot || 0) : 0;
+          this.pendingPlace = { toolId: this.activeTool, x: this.dragBuildEnd.x, z: this.dragBuildEnd.z, rot };
+          this._refreshPendingPlaceVisuals();
+          this.sfx.tap();
+        } else {
+          const tiles = this._computePlannedTiles(this.dragBuildStart, this.dragBuildEnd);
+          this.sim.applyTool(this.activeTool, tiles, false);
+          this.refreshSubToolbarUnlocks();
+          this.refreshHUD();
+          this.renderer.previewTiles = [];
+          this.renderer.servicePreviewTiles = [];
+        }
+      } else if (this.activeTool !== 'pan' && !this.pendingPlace) {
         this.renderer.previewTiles = [];
-      } else if (this.activeTool !== 'pan') {
-        this.renderer.previewTiles = [];
+        this.renderer.servicePreviewTiles = [];
       }
 
       this.dragBuildStart = null;
@@ -18268,8 +21496,27 @@ class GameUI {
       if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
       this.keys.add(e.key.toLowerCase());
       if (e.key === 'Escape') {
+        this.clearPendingPlace();
         this.selectTool('pan');
         this.closeModal();
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
+        e.preventDefault();
+        if (typeof this.sim.undoLastAction === 'function') {
+          const res = this.sim.undoLastAction();
+          if (res && res.ok) {
+            this.sfx.tap();
+            this.clearPendingPlace();
+            this.refreshSubToolbarUnlocks();
+            this.refreshHUD();
+            this.showToast(`↩️ 已撤销【${res.label || '上一步操作'}】`);
+          }
+        }
+      } else if (e.key.toLowerCase() === 'r' && this.pendingPlace) {
+        this.sfx.tap();
+        this.pendingPlace.rot = ((this.pendingPlace.rot || 0) + 1) % 4;
+        this._refreshPendingPlaceVisuals();
+      } else if (e.key === 'Enter' && this.pendingPlace) {
+        this.confirmPendingPlace();
       } else if (e.key === ' ') {
         e.preventDefault();
         this.sim.speed = this.sim.speed === 0 ? 1 : 0;
@@ -18445,13 +21692,30 @@ class GameUI {
       if (b.sewageBackedUp) badges += `<span class="badge warn">🚱 污水倒灌</span>`;
       if (b.sick) badges += `<span class="badge warn">🤢 污染致病</span>`;
       if (b.trashPiled) badges += `<span class="badge warn">🗑️ 垃圾堆积</span>`;
+      if ((b.type === 'O' || (b.type === 'I' && b.level >= 4)) && typeof this.sim.educatedRate === 'number') {
+        const eduOk = this.sim.educatedRate >= 35;
+        badges += `<span class="badge ${eduOk ? 'ok' : 'warn'}">🎓 人才匹配 ${Math.round(this.sim.educatedRate)}%</span>`;
+      }
+      if ((t.noise || 0) >= 55 && (b.type === 'RL' || b.type === 'RH')) {
+        badges += `<span class="badge warn">🔊 噪音扰民 ${Math.round(t.noise)}</span>`;
+      }
       badgesEl.innerHTML = badges;
+
+      let extraTransitRow = '';
+      const ts = this.sim.transitStats;
+      if (ts && (b.type === 'metro_station' || b.type === 'hsr_station')) {
+        const seg = b.type === 'metro_station' ? ts.metro : ts.hsr;
+        if (seg) {
+          extraTransitRow = `<div style="grid-column:1/-1;color:#7dd3fc;">🚆 轨交客流：<strong>${seg.riders || 0} 人/日</strong> · 票收 <strong>+¥${seg.revenue || 0}</strong> · 减堵 <strong>-${seg.carsSaved || 0} 车</strong></div>`;
+        }
+      }
 
       gridEl.innerHTML = `
         <div>居住人口：<strong>${st.pop} 人</strong></div>
         <div>就业岗位：<strong>${st.jobs} 个</strong></div>
         <div>海拔 / 地价：<strong>${elev}m / ${Math.round(t.landValue)}</strong></div>
-        <div>教育 / 消防：<strong>${Math.round(t.education || 0)} / ${Math.round(t.fireSafety || 0)}</strong></div>
+        <div>教育 / 噪音：<strong>${Math.round(t.education || 0)} / ${Math.round(t.noise || 0)}</strong></div>
+        ${extraTransitRow}
       `;
       hintEl.textContent = this.sim.getUpgradeHint(t);
 
@@ -18481,41 +21745,69 @@ class GameUI {
         roundabout: '🔄 环岛流转'
       }[curJMode] || '🚦 标准红绿灯';
 
+      const dirArrows = ['⬆️ 向北单行', '⬇️ 向南单行', '⬅️ 向西单行', '➡️ 向东单行'];
+      const isOneWay = typeof t.roadDir === 'number' && t.roadDir >= 0;
+
       badgesEl.innerHTML = `
         <span class="badge info">海拔 ${elev}m</span>
         ${deg >= 3 ? `<span class="badge ok">${jBadgeLabel}</span>` : ''}
+        ${isOneWay ? `<span class="badge info">${dirArrows[t.roadDir] || '➡️ 单行道'}</span>` : ''}
+        ${t.banTrucks ? `<span class="badge warn">🚫 禁行重卡</span>` : ''}
+        ${t.busStop ? `<span class="badge ok">🚌 智能公交站</span>` : ''}
         ${(t.roadGround > 0 || t.roadElevated > 0) && t.outsideConnected === false ? `<span class="badge warn">🚧 未连通城际高速</span>` : ''}
         ${wDepth > 0.08 ? `<span class="badge info">水深 ${wDepth.toFixed(2)}m</span>` : ''}
         ${t.pipe ? `<span class="badge ${t.pipeBroken ? 'warn' : 'ok'}">${t.pipeBroken ? '🔴 水管震裂' : '🔵 已铺地下水管'}</span>` : ''}
         ${t.metro ? `<span class="badge info">🟣 地下地铁隧道</span>` : ''}
       `;
+      const busRow = (t.busStop && this.sim.transitStats?.bus)
+        ? `<div style="grid-column:1/-1;color:#7dd3fc;">🚌 公交系统：<strong>${this.sim.transitStats.bus.riders || 0} 人/日</strong> · 票收 <strong>+¥${this.sim.transitStats.bus.revenue || 0}</strong> · 减堵 <strong>-${this.sim.transitStats.bus.carsSaved || 0} 车</strong></div>`
+        : '';
       gridEl.innerHTML = `
         <div>坐标位置：<strong>(${x}, ${z})</strong></div>
-        <div>地价评分：<strong>${Math.round(t.landValue)} / 100</strong></div>
+        <div>地价 / 噪音：<strong>${Math.round(t.landValue)} / ${Math.round(t.noise || 0)}</strong></div>
         <div>水体污染：<strong>${Math.round((this.sim.waterPoll[z * 56 + x] || 0) * 100)}%</strong></div>
         <div>路面拥堵：<strong>${Math.round((t.congestion || 0) * 100)}%</strong></div>
+        ${busRow}
       `;
 
-      if (deg >= 3 && actionsEl) {
+      const canManageRoad = (t.roadGround === 1 || t.roadGround === 2) && !t.dam;
+      if ((deg >= 3 || canManageRoad) && actionsEl) {
         actionsEl.style.display = 'flex';
-        const rbtCost = (t.roundaboutPaid || this.sim.difficulty === 'sandbox') ? '已建/免费' : '¥120';
-        actionsEl.innerHTML = `
-          <div class="junction-ctrl-lbl">🎛️ 路口交通管制方案（治堵利器）：</div>
-          <div class="junction-ctrl-wrap">
-            <button class="junction-btn ${curJMode === 'signal' ? 'active' : ''}" data-jmode="signal">
-              <span>🚦 标准红绿灯</span>
-              <span style="font-size:10px;opacity:0.8;">正交均衡放行</span>
-            </button>
-            <button class="junction-btn ${curJMode === 'yield' ? 'active' : ''}" data-jmode="yield">
-              <span>🛑 支路让主路(无灯)</span>
-              <span style="font-size:10px;opacity:0.8;">大道全速直行</span>
-            </button>
-            <button class="junction-btn ${curJMode === 'roundabout' ? 'active' : ''}" data-jmode="roundabout">
-              <span>🔄 改建环岛(${rbtCost})</span>
-              <span style="font-size:10px;opacity:0.85;color:#fde68a;">消除红绿灯死锁</span>
-            </button>
-          </div>
-        `;
+        actionsEl.style.flexDirection = 'column';
+        actionsEl.style.gap = '6px';
+        let htmlAct = '';
+
+        if (deg >= 3) {
+          const rbtCost = (t.roundaboutPaid || this.sim.difficulty === 'sandbox') ? '已建/免费' : '¥120';
+          htmlAct += `
+            <div class="junction-ctrl-lbl">🎛️ 路口交通管制方案（治堵利器）：</div>
+            <div class="junction-ctrl-wrap">
+              <button class="junction-btn ${curJMode === 'signal' ? 'active' : ''}" data-jmode="signal">
+                <span>🚦 标准红绿灯</span>
+                <span style="font-size:10px;opacity:0.8;">正交均衡放行</span>
+              </button>
+              <button class="junction-btn ${curJMode === 'yield' ? 'active' : ''}" data-jmode="yield">
+                <span>🛑 支路让主路(无灯)</span>
+                <span style="font-size:10px;opacity:0.8;">大道全速直行</span>
+              </button>
+              <button class="junction-btn ${curJMode === 'roundabout' ? 'active' : ''}" data-jmode="roundabout">
+                <span>🔄 改建环岛(${rbtCost})</span>
+                <span style="font-size:10px;opacity:0.85;color:#fde68a;">消除红绿灯死锁</span>
+              </button>
+            </div>
+          `;
+        }
+
+        if (canManageRoad) {
+          htmlAct += `<div style="display:flex;gap:6px;flex-wrap:wrap;">`;
+          if (isOneWay) {
+            htmlAct += `<button class="btn-primary" id="btn-flip-oneway" style="flex:1;font-size:11.5px;padding:6px 8px;">🔁 反转单行方向</button>`;
+          }
+          htmlAct += `<button class="${t.banTrucks ? 'btn-primary' : 'btn-secondary'}" id="btn-toggle-truck-ban" style="flex:1;font-size:11.5px;padding:6px 8px;">${t.banTrucks ? '✅ 解除重卡禁行' : '🚫 禁行重型货车(降噪)'}</button>`;
+          htmlAct += `</div>`;
+        }
+
+        actionsEl.innerHTML = htmlAct;
         actionsEl.querySelectorAll('[data-jmode]').forEach((jbtn) => {
           jbtn.addEventListener('click', () => {
             const nextMode = jbtn.dataset.jmode;
@@ -18526,7 +21818,33 @@ class GameUI {
             }
           });
         });
-        hintEl.textContent = '💡 小支路汇入大道选【🛑 支路让主路】拆红绿灯；四向繁忙十字路口改建【🔄 环岛】可彻底消除排队咬死！';
+        const flipBtn = document.getElementById('btn-flip-oneway');
+        if (flipBtn && typeof this.sim.flipOneWayDirection === 'function') {
+          flipBtn.addEventListener('click', () => {
+            const r = this.sim.flipOneWayDirection(x, z);
+            if (r && r.ok) {
+              this.sfx.road();
+              this.refreshHUD();
+              this.inspectTile(x, z);
+              this.showToast(`🔁 已反转 ${r.count || 1} 格单行道通行方向`);
+            }
+          });
+        }
+        const banBtn = document.getElementById('btn-toggle-truck-ban');
+        if (banBtn && typeof this.sim.toggleTruckBan === 'function') {
+          banBtn.addEventListener('click', () => {
+            const r = this.sim.toggleTruckBan(x, z);
+            if (r && r.ok) {
+              this.sfx.tap();
+              this.refreshHUD();
+              this.inspectTile(x, z);
+              this.showToast(r.banTrucks ? `🚫 已对该路段(${r.count || 1}格)实施重卡禁行，货车将自动绕行高架与大道` : `✅ 已恢复该路段货车通行`);
+            }
+          });
+        }
+        hintEl.textContent = deg >= 3
+          ? '💡 小支路汇入大道选【🛑 支路让主路】；繁忙十字改【🔄 环岛】；住宅街道点【🚫 禁行重卡】可大幅降噪！'
+          : '💡 住宅区街道开启【🚫 禁行重型货车】可降低 55% 噪音并迫使货车改走主干道与高架！';
       } else {
         hintEl.textContent = wDepth > 0.1
           ? '💡 上游干净河岸适合建【抽水站】，西北深V急流峡谷适合横拉【水力发电大坝】！'
@@ -18650,6 +21968,166 @@ class GameUI {
         if (issueBtn) issueBtn.style.borderColor = 'rgba(251, 191, 36, 0.65)';
       }
     }
+
+    // Undo button live count
+    const undoBtn = document.getElementById('btn-undo');
+    const undoCntEl = document.getElementById('hud-undo-count');
+    if (undoBtn && undoCntEl) {
+      const n = Array.isArray(this.sim.undoStack) ? this.sim.undoStack.length : 0;
+      undoCntEl.textContent = String(n);
+      undoBtn.disabled = n === 0;
+    }
+
+    // Rush-Hour Tidal Traffic Period badge
+    const periodEl = document.getElementById('hud-traffic-period');
+    if (periodEl && typeof this.sim.getTrafficPeriodInfo === 'function') {
+      const pInfo = this.sim.getTrafficPeriodInfo();
+      periodEl.textContent = `${pInfo.icon} ${pInfo.label}`;
+      periodEl.className = 'traffic-period-chip' + (pInfo.mult >= 1.8 ? ' rush' : (pInfo.mult <= 0.5 ? ' night' : ''));
+    }
+
+    // Dynamic Mayor Civic Decision Event Pill
+    const evPill = document.getElementById('event-pill');
+    if (evPill) {
+      const ev = this.sim.activeEvent;
+      if (ev) {
+        evPill.style.display = 'inline-flex';
+        const ic = document.getElementById('event-pill-icon');
+        const tt = document.getElementById('event-pill-title');
+        if (ic) ic.textContent = ev.icon || '🏛️';
+        if (tt) tt.textContent = `批示：${ev.title}`;
+      } else {
+        evPill.style.display = 'none';
+      }
+    }
+  }
+
+  openCivicEventModal() {
+    const ev = this.sim.activeEvent;
+    if (!ev) return;
+    const body = document.getElementById('modal-body');
+    document.getElementById('modal-title').textContent = `${ev.icon || '🏛️'} 市政重大决策 · ${ev.title}`;
+    body.innerHTML = `
+      <div class="modal-section">
+        <p style="font-size:13px;line-height:1.6;color:#e2e8f0;margin:0 0 12px;">${ev.desc}</p>
+        ${(ev.choices || []).map((ch, idx) => `
+          <button class="event-choice-btn" data-ev-choice="${idx}">
+            <div style="font-size:13px;font-weight:700;color:#fde68a;">${ch.label}</div>
+            <div style="font-size:11.5px;color:#94a3b8;margin-top:3px;">${ch.effectDesc}</div>
+          </button>
+        `).join('')}
+      </div>
+    `;
+    body.querySelectorAll('[data-ev-choice]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const idx = Number(btn.dataset.evChoice);
+        if (typeof this.sim.resolveCivicEvent === 'function') {
+          const res = this.sim.resolveCivicEvent(idx);
+          if (res && res.ok) {
+            this.sfx.milestone();
+            this.refreshHUD();
+            this.closeModal();
+            this.showToast(`📜 市政批示已生效：${res.summary || ev.title}`, 3400, 'levelup');
+          }
+        }
+      });
+    });
+    document.getElementById('modal-backdrop').classList.add('open');
+  }
+
+  _drawFinanceHistoryChart(metricKey = 'netIncome') {
+    const canvas = document.getElementById('finance-history-canvas');
+    if (!canvas) return;
+    const hist = Array.isArray(this.sim.history) ? this.sim.history : [];
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const w = Math.max(240, canvas.clientWidth || 320);
+    const h = 138;
+    canvas.width = Math.round(w * dpr);
+    canvas.height = Math.round(h * dpr);
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.scale(dpr, dpr);
+    ctx.clearRect(0, 0, w, h);
+
+    if (hist.length < 2) {
+      ctx.fillStyle = '#94a3b8';
+      ctx.font = '12px sans-serif';
+      ctx.fillText('正在累计月度统计数据（满2个月即绘出趋势曲线）...', 16, h * 0.52);
+      return;
+    }
+
+    const cfg = {
+      netIncome: { color: '#4ade80', fill: 'rgba(74,222,128,0.16)', fmt: (v) => `${v >= 0 ? '+' : ''}¥${Math.round(v)}` },
+      pop:       { color: '#38bdf8', fill: 'rgba(56,189,248,0.18)', fmt: (v) => `${Math.round(v)}人` },
+      happiness: { color: '#fbbf24', fill: 'rgba(251,191,36,0.18)', fmt: (v) => `${Math.round(v)}%` },
+      transitRiders: { color: '#c084fc', fill: 'rgba(192,132,252,0.18)', fmt: (v) => `${Math.round(v)}人次` }
+    }[metricKey] || { color: '#38bdf8', fill: 'rgba(56,189,248,0.18)', fmt: (v) => String(Math.round(v)) };
+
+    const vals = hist.map((p) => Number(p[metricKey] || 0));
+    let minV = Math.min(...vals);
+    let maxV = Math.max(...vals);
+    if (metricKey === 'netIncome') { minV = Math.min(minV, 0); maxV = Math.max(maxV, 100); }
+    else if (metricKey === 'happiness') { minV = 0; maxV = 100; }
+    else if (maxV === minV) { maxV = minV + 10; }
+    const span = Math.max(1, maxV - minV);
+
+    const padL = 48, padR = 12, padT = 14, padB = 22;
+    const plotW = w - padL - padR;
+    const plotH = h - padT - padB;
+
+    // Grid lines & labels
+    ctx.strokeStyle = 'rgba(148,163,184,0.16)';
+    ctx.lineWidth = 1;
+    ctx.fillStyle = '#94a3b8';
+    ctx.font = '10px sans-serif';
+    for (let g = 0; g <= 2; g++) {
+      const y = padT + (plotH * g) / 2;
+      ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(w - padR, y); ctx.stroke();
+      const lv = maxV - (span * g) / 2;
+      ctx.fillText(cfg.fmt(lv), 4, y + 3);
+    }
+
+    // Zero baseline for netIncome
+    if (metricKey === 'netIncome' && minV < 0 && maxV > 0) {
+      const zy = padT + ((maxV - 0) / span) * plotH;
+      ctx.strokeStyle = 'rgba(248,113,113,0.45)';
+      ctx.beginPath(); ctx.moveTo(padL, zy); ctx.lineTo(w - padR, zy); ctx.stroke();
+    }
+
+    const pts = vals.map((v, i) => ({
+      x: padL + (plotW * i) / Math.max(1, vals.length - 1),
+      y: padT + ((maxV - v) / span) * plotH
+    }));
+
+    // Fill area
+    ctx.beginPath();
+    ctx.moveTo(pts[0].x, padT + plotH);
+    for (const p of pts) ctx.lineTo(p.x, p.y);
+    ctx.lineTo(pts[pts.length - 1].x, padT + plotH);
+    ctx.closePath();
+    ctx.fillStyle = cfg.fill;
+    ctx.fill();
+
+    // Stroke line
+    ctx.beginPath();
+    pts.forEach((p, i) => (i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)));
+    ctx.strokeStyle = cfg.color;
+    ctx.lineWidth = 2.2;
+    ctx.stroke();
+
+    // End dot + month labels
+    const last = pts[pts.length - 1];
+    ctx.beginPath();
+    ctx.arc(last.x, last.y, 3.5, 0, Math.PI * 2);
+    ctx.fillStyle = cfg.color;
+    ctx.fill();
+
+    ctx.fillStyle = '#94a3b8';
+    ctx.fillText(hist[0].label || '', padL, h - 5);
+    const midLabel = hist[Math.floor(hist.length / 2)]?.label || '';
+    ctx.fillText(midLabel, padL + plotW * 0.45, h - 5);
+    const endLabel = hist[hist.length - 1].label || '';
+    ctx.fillText(endLabel, w - padR - 34, h - 5);
   }
 
   flyToTile(x, z) {
@@ -18844,17 +22322,54 @@ class GameUI {
 
     body.innerHTML = `
       <div class="modal-section">
+        <h4>📈 近 24 个月城市运行趋势图</h4>
+        <div class="finance-chart-wrap">
+          <div class="finance-chart-tabs" id="finance-chart-tabs">
+            <button class="chart-tab-btn active" data-chart-metric="netIncome">💰 净收支</button>
+            <button class="chart-tab-btn" data-chart-metric="pop">👥 人口</button>
+            <button class="chart-tab-btn" data-chart-metric="happiness">😊 幸福度</button>
+            <button class="chart-tab-btn" data-chart-metric="transitRiders">🚌 公交客流</button>
+          </div>
+          <canvas id="finance-history-canvas"></canvas>
+        </div>
+      </div>
+
+      <div class="modal-section">
         <h4>💰 每期财政收支明细</h4>
         <div class="insp-grid" style="font-size:12px;">
           <div>税收总收入：<strong style="color:#4ade80">+¥${this.sim.lastTaxIncome}</strong></div>
           <div>基建与部门维护：<strong style="color:#f87171">-¥${this.sim.lastUpkeep}</strong></div>
           <div>银行贷款还本付息：<strong style="color:#fbbf24">-¥${this.sim.lastLoanPay}</strong></div>
           <div>净现金流：<strong>${this.sim.netIncome >= 0 ? '+' : ''}¥${this.sim.netIncome}</strong></div>
-          <div>失业率 / 荒废楼宇：<strong>${this.sim.unemploymentPct}% / ${this.sim.abandonedCount}栋</strong></div>
+          <div>失业率 / 受教育率：<strong>${this.sim.unemploymentPct}% / <span style="color:#38bdf8">${Math.round(this.sim.educatedRate || 0)}%</span></strong></div>
           <div>大坝水电出力：<strong style="color:#38bdf8">${this.sim.hydroPowerMW} MW</strong></div>
           <div style="grid-column: 1 / -1;">供水 / 排污容量：<strong style="color:${this.sim.waterDemand > (this.sim.sewageSupply || 0) * 1.15 ? '#f87171' : '#38bdf8'}">${this.sim.waterSupply} / ${this.sim.sewageSupply}</strong> <span style="color:#94a3b8;font-size:11px;">（当前用水与污水负荷 ${this.sim.waterDemand}）</span></div>
         </div>
       </div>
+
+      ${(() => {
+        const ts = this.sim.transitStats;
+        if (!ts) return '';
+        const rows = [
+          { name: '🚌 城市公交', cnt: `${ts.bus?.stops || 0}站`, r: ts.bus?.riders || 0, rev: ts.bus?.revenue || 0, up: ts.bus?.upkeep || 0, saved: ts.bus?.carsSaved || 0 },
+          { name: '🚇 地下地铁', cnt: `${ts.metro?.stations || 0}站`, r: ts.metro?.riders || 0, rev: ts.metro?.revenue || 0, up: ts.metro?.upkeep || 0, saved: ts.metro?.carsSaved || 0 },
+          { name: '🚄 城际高铁', cnt: `${ts.hsr?.stations || 0}站`, r: ts.hsr?.riders || 0, rev: ts.hsr?.revenue || 0, up: ts.hsr?.upkeep || 0, saved: ts.hsr?.carsSaved || 0 }
+        ];
+        return `
+          <div class="modal-section">
+            <h4>🚌 公共交通客流与票务盈亏表（总减堵 -${ts.totalCarsSaved || 0} 车）</h4>
+            <table class="transit-table">
+              <thead><tr><th>线路</th><th>站点</th><th>日客流</th><th>票收</th><th>维护</th><th>净利</th></tr></thead>
+              <tbody>
+                ${rows.map((rw) => {
+                  const net = rw.rev - rw.up;
+                  return `<tr><td>${rw.name}</td><td>${rw.cnt}</td><td>${rw.r}</td><td style="color:#4ade80">+¥${rw.rev}</td><td style="color:#f87171">-¥${rw.up}</td><td style="color:${net >= 0 ? '#4ade80' : '#fbbf24'}">${net >= 0 ? '+' : ''}¥${net}</td></tr>`;
+                }).join('')}
+              </tbody>
+            </table>
+          </div>
+        `;
+      })()}
 
       <div class="modal-section">
         <h4>🚗 居民出行去向与车流换算总览</h4>
@@ -18924,21 +22439,40 @@ class GameUI {
       </div>
 
       <div class="modal-section">
-        <h4>📜 城市法令</h4>
+        <h4>📜 市政战略政策（影响税收、人才、污染与客流）</h4>
         <label class="policy-toggle">
-          <span>🚌 <strong>免费公共交通</strong>（减少路面私家车拥堵）</span>
+          <span>🚌 <strong>免费公共交通</strong>（公交/轨交客流+35%、路网减堵-22%，免收票款）</span>
           <input type="checkbox" id="pol-transit" ${this.sim.policies.freeTransit ? 'checked' : ''}>
         </label>
         <label class="policy-toggle">
-          <span>🌿 <strong>绿色环保城市条例</strong>（工业污染减半，提升地价）</span>
-          <input type="checkbox" id="pol-green" ${this.sim.policies.greenCity ? 'checked' : ''}>
+          <span>🌳 <strong>环保减排法</strong>（工业污染-35%、地价提升，工业税微降6%）</span>
+          <input type="checkbox" id="pol-green" ${(this.sim.policies.greenEnergy || this.sim.policies.greenCity) ? 'checked' : ''}>
         </label>
         <label class="policy-toggle">
-          <span>🔬 <strong>高科技产业补贴</strong>（提升税收与研发升级速度）</span>
-          <input type="checkbox" id="pol-tech" ${this.sim.policies.techBoost ? 'checked' : ''}>
+          <span>🎓 <strong>免费高等教育</strong>（全城受教育率+18%、写字楼/高新工业增产+15%）</span>
+          <input type="checkbox" id="pol-edu" ${this.sim.policies.freeHigherEd ? 'checked' : ''}>
+        </label>
+        <label class="policy-toggle">
+          <span>⚡ <strong>工业节能补贴</strong>（全城水电负荷-15%，支付小额财政补贴）</span>
+          <input type="checkbox" id="pol-energy" ${this.sim.policies.energySubsidy ? 'checked' : ''}>
+        </label>
+        <label class="policy-toggle">
+          <span>📈 <strong>招商引资减税</strong>（商业/办公/工业需求+28%，商办税临时-10%）</span>
+          <input type="checkbox" id="pol-biz" ${(this.sim.policies.bizTaxBreak || this.sim.policies.techBoost) ? 'checked' : ''}>
         </label>
       </div>
     `;
+
+    // Render 24-month history trend chart + metric tabs
+    this._drawFinanceHistoryChart('netIncome');
+    body.querySelectorAll('[data-chart-metric]').forEach((tab) => {
+      tab.addEventListener('click', () => {
+        this.sfx.tap();
+        body.querySelectorAll('[data-chart-metric]').forEach((b) => b.classList.remove('active'));
+        tab.classList.add('active');
+        this._drawFinanceHistoryChart(tab.dataset.chartMetric);
+      });
+    });
 
     document.getElementById('tax-slider').addEventListener('input', (e) => {
       this.sim.taxRate = Number(e.target.value);
@@ -18978,10 +22512,13 @@ class GameUI {
       });
     });
 
-    const bindPol = (id, key) => {
-      document.getElementById(id).addEventListener('change', (e) => {
+    const bindPol = (id, key, aliasKey = null) => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.addEventListener('change', (e) => {
         this.sfx.tap();
         this.sim.policies[key] = e.target.checked;
+        if (aliasKey) this.sim.policies[aliasKey] = e.target.checked;
         this.sim.recomputeNetworksAndFields();
         this.sim.stepEconomy();
         this.sim.meshDirty = true;
@@ -18990,8 +22527,10 @@ class GameUI {
       });
     };
     bindPol('pol-transit', 'freeTransit');
-    bindPol('pol-green', 'greenCity');
-    bindPol('pol-tech', 'techBoost');
+    bindPol('pol-green', 'greenEnergy', 'greenCity');
+    bindPol('pol-edu', 'freeHigherEd');
+    bindPol('pol-energy', 'energySubsidy');
+    bindPol('pol-biz', 'bizTaxBreak', 'techBoost');
 
     document.getElementById('modal-backdrop').classList.add('open');
   }
@@ -19627,7 +23166,7 @@ function bootGame() {
     ui.showToast(
       restored
         ? `👋 已恢复离线进度【${sim.cityName}】(${sim.getFormattedDate()})`
-        : '🏞️ 山河天际线 Pro v7.0 已启动！点右上【示范/存档】可切换画质、下载 iPhone 全离线高清包或体验满级大都会'
+        : '🏞️ 山河天际线 Pro v7.5 已启动！体验 1024px 超清建筑质感、单行道/一键立交、智能公交、建前绿区预览与 15 步撤销！'
     );
   }, 550);
 

@@ -91,7 +91,7 @@
   <div id="boot-splash">
     <div class="boot-logo-ring">🏙️</div>
     <div class="boot-title">山河天际线 Pro 3D</div>
-    <div class="boot-subtitle">旗舰 PBR 离线立体都市模拟器 v7.0</div>
+    <div class="boot-subtitle">旗舰 PBR 离线立体都市模拟器 v7.5</div>
     <div class="boot-bar-track"><div class="boot-bar-fill" id="boot-bar-fill"></div></div>
     <div class="boot-status" id="boot-status">正在初始化三维引擎...</div>
   </div>
@@ -171,16 +171,18 @@
       <button class="icon-btn active" data-speed="1" title="标准慢速">1x</button>
       <button class="icon-btn" data-speed="2" title="2倍速">2x</button>
       <button class="icon-btn" data-speed="4" title="4倍速">4x</button>
+      <button class="icon-btn" id="btn-undo" title="撤销上一步操作（最多15步，退还费用）" disabled>↩️ <span class="issue-badge zero" id="hud-undo-count">0</span></button>
       <button class="icon-btn" id="btn-time-mode" title="切换昼夜光影与星空">🌤️</button>
       <button class="icon-btn" id="btn-issues" title="查看分类城市问题并一键跳转定位">🔔 问题 <span class="issue-badge" id="hud-issue-count">0</span></button>
-      <button class="icon-btn" id="btn-budget" title="财政预算、部门经费与银行贷款">📊 财政</button>
+      <button class="icon-btn" id="btn-budget" title="财政预算、24月趋势图、公交客流与政策">📊 财政</button>
       <button class="icon-btn" id="btn-disaster" title="陨石/海啸/龙卷风/地震天灾">☄️ 灾害</button>
-      <button class="icon-btn" id="btn-menu" title="难度/全解锁/示范城/存档">💾 示范/存档</button>
+      <button class="icon-btn" id="btn-menu" title="画质/离线包/示范城/存档">💾 示范/存档</button>
     </div>
   </header>
 
-  <!-- Cities: Skylines Classic Chirper Citizen Feed Pill -->
+  <!-- Cities: Skylines Classic Chirper Citizen Feed Pill + Rush-Hour Indicator -->
   <div id="chirper-pill" title="市民心声广播（点击可刷新下一条动态）">
+    <span id="hud-traffic-period" class="traffic-period-chip">🌤️ 平峰</span>
     <span class="chirp-bird">🐦</span>
     <span id="chirper-user" style="font-weight:700;color:#38bdf8;">@市民小张</span>
     <span id="chirper-text">听说新市长上任了！期待我们的山河新城早日通上地铁和高铁🚄</span>
@@ -216,6 +218,12 @@
       <span class="guide-chip-step" id="guide-chip-step">1/10</span>
     </button>
 
+    <!-- Dynamic Mayor Civic Decision Pill -->
+    <button id="event-pill" style="display:none;" title="有新的市政重大决策等待市长批示">
+      <span id="event-pill-icon">🏛️</span>
+      <span id="event-pill-title">市政决策</span>
+    </button>
+
     <!-- Data Overlay Legend -->
     <div id="overlay-legend"></div>
   </div>
@@ -249,6 +257,28 @@
     </div>
     <div id="insp-hint" style="margin-top:8px;font-size:11px;color:#7dd3fc;line-height:1.45;"></div>
   </section>
+
+  <!-- Direct Data Overlay Floating Picker -->
+  <div id="overlay-picker">
+    <button class="ov-pick-btn active" data-ov="none">🌐 正常</button>
+    <button class="ov-pick-btn" data-ov="underground">🚇 地下</button>
+    <button class="ov-pick-btn" data-ov="power">⚡ 电网</button>
+    <button class="ov-pick-btn" data-ov="traffic">🚦 拥堵</button>
+    <button class="ov-pick-btn" data-ov="landValue">💎 地价</button>
+    <button class="ov-pick-btn" data-ov="pollution">☣️ 污染</button>
+    <button class="ov-pick-btn" data-ov="education">🎓 教育</button>
+    <button class="ov-pick-btn" data-ov="noise">🔊 噪音</button>
+  </div>
+
+  <!-- Single-Tile Tap-to-Confirm Placement Bar (iPhone Touch Precision) -->
+  <div id="place-confirm-bar">
+    <span id="place-confirm-info">📍 选址预览</span>
+    <div class="place-confirm-btns">
+      <button id="btn-place-rotate" class="place-act-btn" title="旋转建筑/立交朝向">🔄 旋转</button>
+      <button id="btn-place-ok" class="place-act-btn ok">✅ 确认建造</button>
+      <button id="btn-place-cancel" class="place-act-btn cancel">✖ 取消</button>
+    </div>
+  </div>
 
   <!-- Category Sub-Toolbar -->
   <div id="sub-toolbar"></div>

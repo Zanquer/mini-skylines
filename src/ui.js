@@ -4,8 +4,8 @@ import { saveStorage } from './asset_loader.js';
 
 const TOOL_GROUPS = {
   terrain:  ['ter_raise', 'ter_lower', 'ter_flatten', 'ter_spring'],
-  road:     ['road_1', 'road_2', 'road_elev', 'road_ramp', 'road_tunnel'],
-  rail:     ['metro_line', 'metro_station', 'rail_track', 'hsr_station', 'seaport', 'airport'],
+  road:     ['road_1', 'road_2', 'road_oneway', 'road_elev', 'road_ramp', 'road_tunnel', 'interchange_diamond', 'interchange_rbt'],
+  rail:     ['bus_stop', 'metro_line', 'metro_station', 'rail_track', 'hsr_station', 'seaport', 'airport'],
   zones:    ['zone_RL', 'zone_RH', 'zone_CL', 'zone_CH', 'zone_I', 'zone_O', 'dezone'],
   water:    ['water_pipe', 'water_pump', 'sewage_out', 'water_treat', 'waste_plant'],
   power:    ['hydro_dam', 'power_pylon', 'power_wind', 'power_plant', 'solar_plant', 'nuclear_plant'],
@@ -38,6 +38,7 @@ export class GameUI {
     this.dragBuildStart = null;
     this.dragBuildEnd = null;
     this.dragCancelled = false;
+    this.pendingPlace = null; // { toolId, x, z, rot } for iPhone tap-to-confirm placement
     this.rightMouseOrbit = false;
     this.flattenRefElev = null;
     this.lastSculptStamp = 0;
@@ -169,6 +170,32 @@ export class GameUI {
       this.openSaveAndCityModal();
     });
 
+    const undoBtn = document.getElementById('btn-undo');
+    if (undoBtn) {
+      undoBtn.addEventListener('click', () => {
+        if (typeof this.sim.undoLastAction !== 'function') return;
+        const res = this.sim.undoLastAction();
+        if (res && res.ok) {
+          this.sfx.tap();
+          this.clearPendingPlace();
+          this.refreshSubToolbarUnlocks();
+          this.refreshHUD();
+          this.showToast(`↩️ 已撤销【${res.label || '上一步操作'}】`);
+        } else {
+          this.sfx.error();
+          this.showToast('ℹ️ 暂无可撤销的历史步骤');
+        }
+      });
+    }
+
+    const eventPill = document.getElementById('event-pill');
+    if (eventPill) {
+      eventPill.addEventListener('click', () => {
+        this.sfx.tap();
+        this.openCivicEventModal();
+      });
+    }
+
     const chirperPill = document.getElementById('chirper-pill');
     if (chirperPill) {
       chirperPill.addEventListener('click', () => {
@@ -197,14 +224,52 @@ export class GameUI {
       this.sfx.tap();
       this.renderer.camPitch = this.renderer.camPitch < 0.50 ? 0.78 : (this.renderer.camPitch < 1.0 ? 1.24 : 0.38);
     });
+    const overlayPicker = document.getElementById('overlay-picker');
     document.getElementById('btn-overlay').addEventListener('click', () => {
       this.sfx.tap();
-      this.autoOverlayActive = false;
-      const modes = ['none', 'underground', 'power', 'landValue', 'traffic'];
-      const next = modes[(modes.indexOf(this.renderer.overlayMode) + 1) % modes.length];
-      this.renderer.overlayMode = next;
-      this.updateOverlayLegend();
+      if (overlayPicker) {
+        overlayPicker.classList.toggle('open');
+      } else {
+        this.autoOverlayActive = false;
+        const modes = ['none', 'underground', 'power', 'landValue', 'traffic', 'pollution', 'education', 'noise'];
+        const next = modes[(modes.indexOf(this.renderer.overlayMode) + 1) % modes.length];
+        this.renderer.overlayMode = next;
+        this.updateOverlayLegend();
+      }
     });
+    if (overlayPicker) {
+      overlayPicker.querySelectorAll('[data-ov]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          this.sfx.tap();
+          this.autoOverlayActive = false;
+          this.renderer.overlayMode = btn.dataset.ov;
+          overlayPicker.classList.remove('open');
+          this.updateOverlayLegend();
+        });
+      });
+    }
+
+    // Single-Tile Tap-to-Confirm Placement Bar buttons
+    const btnPlaceOk = document.getElementById('btn-place-ok');
+    if (btnPlaceOk) {
+      btnPlaceOk.addEventListener('click', () => this.confirmPendingPlace());
+    }
+    const btnPlaceRot = document.getElementById('btn-place-rotate');
+    if (btnPlaceRot) {
+      btnPlaceRot.addEventListener('click', () => {
+        if (!this.pendingPlace) return;
+        this.sfx.tap();
+        this.pendingPlace.rot = ((this.pendingPlace.rot || 0) + 1) % 4;
+        this._refreshPendingPlaceVisuals();
+      });
+    }
+    const btnPlaceCancel = document.getElementById('btn-place-cancel');
+    if (btnPlaceCancel) {
+      btnPlaceCancel.addEventListener('click', () => {
+        this.sfx.tap();
+        this.clearPendingPlace();
+      });
+    }
     const sfxBtn = document.getElementById('btn-sfx');
     if (sfxBtn) {
       sfxBtn.textContent = this.sfx.enabled ? '🔊' : '🔇';
@@ -280,6 +345,7 @@ export class GameUI {
     sub.innerHTML = '';
     itemIds.forEach((id) => {
       const item = CATALOG[id];
+      if (!item) return;
       const unlocked = this.sim.isToolUnlocked(id);
       const btn = document.createElement('button');
       btn.className = 'sub-item' + (id === defaultToolId ? ' active' : '');
@@ -428,7 +494,9 @@ export class GameUI {
     }
     this.inspectedVehicle = null;
     this.activeTool = toolId;
+    this.clearPendingPlace();
     this.renderer.previewTiles = [];
+    this.renderer.servicePreviewTiles = [];
     this.dragBuildStart = null;
 
     // Auto X-Ray view for Underground Pipes / Metro, and Power Grid view for Power/Dam tools!
@@ -503,19 +571,25 @@ export class GameUI {
     const mode = this.renderer.overlayMode;
     btn.classList.toggle('active', mode !== 'none');
 
+    const picker = document.getElementById('overlay-picker');
+    if (picker) {
+      picker.querySelectorAll('[data-ov]').forEach((b) => b.classList.toggle('active', b.dataset.ov === mode));
+    }
+
     if (mode === 'none') {
       el.classList.remove('visible');
     } else {
       el.classList.add('visible');
-      if (mode === 'underground') {
-        el.innerHTML = `<strong>🔵 地下透视蓝图视图</strong><br>青蓝管线 = 地下输水管（覆盖两侧4格）| 红管 = 地震破裂需抢修<br>亮紫隧道 = 地下地铁线路与运行中的地铁列车`;
-      } else if (mode === 'power') {
-        el.innerHTML = `<strong>⚡ 高压电网覆盖视图</strong><br>蓝色地块 = 已通电区域 | 远距离电厂/大坝请架设【高压输电铁塔】接力`;
-      } else if (mode === 'landValue') {
-        el.innerHTML = `<strong>💎 地价热力视图</strong><br>翠绿 = 高地价核心区（可长出 48~64 层摩天大楼）`;
-      } else if (mode === 'traffic') {
-        el.innerHTML = `<strong>🚦 交通拥堵与工业污染视图</strong><br>红橙色道路 = 严重堵车（会导致商店缺货倒闭！建议架二层高架或修地铁）`;
-      }
+      const legends = {
+        underground: `<strong>🔵 地下透视蓝图视图</strong><br>青蓝管线 = 地下输水管（覆盖两侧4格）| 红管 = 地震破裂需抢修<br>亮紫隧道 = 地下地铁线路与运行中的地铁列车`,
+        power: `<strong>⚡ 高压电网覆盖视图</strong><br>蓝色地块 = 已通电区域 | 远距离电厂/大坝请架设【高压输电铁塔】接力`,
+        landValue: `<strong>💎 地价热力视图</strong><br>翠绿 = 高地价核心区（可长出 48~64 层摩天大楼）`,
+        traffic: `<strong>🚦 交通拥堵热力视图</strong><br>红橙色道路 = 严重堵车（会导致商店缺货！建议架二层高架、设单行道或修公交/地铁）`,
+        pollution: `<strong>☣️ 空气与水体污染视图</strong><br>紫红色 = 重工业/污水高污染区（远离居民区与抽水站，可用【环保减排法】大幅降低）`,
+        education: `<strong>🎓 教育与市政覆盖视图</strong><br>金青色 = 高学历与高市政覆盖区（驱动高新写字楼与清洁科技工业增产！）`,
+        noise: `<strong>🔊 城市交通与工业噪音视图</strong><br>品红/橙色 = 噪音扰民区（点击住宅街道开启【🚫 禁行重型货车】或种树建公园降噪！）`
+      };
+      el.innerHTML = legends[mode] || '';
     }
   }
 
@@ -533,13 +607,109 @@ export class GameUI {
 
   _isLinePathTool(t) {
     return (
-      t === 'road_1' || t === 'road_2' || t === 'road_elev' || t === 'road_ramp' || t === 'road_tunnel' ||
+      t === 'road_1' || t === 'road_2' || t === 'road_oneway' || t === 'road_elev' || t === 'road_ramp' || t === 'road_tunnel' ||
       t === 'metro_line' || t === 'rail_track' || t === 'water_pipe' || t === 'hydro_dam'
     );
   }
 
   _isRectTool(t) {
     return t.startsWith('zone_') || t === 'dezone' || t === 'bulldoze' || t === 'bulldoze_under';
+  }
+
+  _isInterchangeTool(t) {
+    return t === 'interchange_diamond' || t === 'interchange_rbt';
+  }
+
+  _isConfirmTool(t) {
+    return (
+      t !== 'pan' &&
+      !this._isTerrainBrush(t) &&
+      t !== 'ter_spring' &&
+      !this._isLinePathTool(t) &&
+      !this._isRectTool(t)
+    );
+  }
+
+  clearPendingPlace() {
+    this.pendingPlace = null;
+    this.renderer.previewTiles = [];
+    this.renderer.servicePreviewTiles = [];
+    const bar = document.getElementById('place-confirm-bar');
+    if (bar) bar.classList.remove('open');
+  }
+
+  _refreshPendingPlaceVisuals() {
+    const p = this.pendingPlace;
+    const bar = document.getElementById('place-confirm-bar');
+    const infoEl = document.getElementById('place-confirm-info');
+    const okBtn = document.getElementById('btn-place-ok');
+    if (!p || !bar) return;
+
+    const item = CATALOG[p.toolId];
+    if (!item) { this.clearPendingPlace(); return; }
+
+    if (this._isInterchangeTool(p.toolId) && typeof this.sim.previewInterchange === 'function') {
+      const prev = this.sim.previewInterchange(p.toolId, p.x, p.z, p.rot || 0);
+      this.renderer.previewTiles = prev.tiles || [{ x: p.x, z: p.z }];
+      this.renderer.previewColor = prev.valid ? [0.22, 0.92, 0.62] : [0.95, 0.28, 0.28];
+      this.renderer.servicePreviewTiles = [];
+      if (infoEl) {
+        infoEl.textContent = prev.valid
+          ? `${item.icon} ${item.name} · 占地 ${prev.tiles.length} 格 · 造价 ¥${(prev.cost || item.cost).toLocaleString()}`
+          : `⚠️ ${prev.reason || '当前位置无法放置立体立交（请选平坦开阔地）'}`;
+      }
+      if (okBtn) okBtn.disabled = !prev.valid;
+    } else {
+      const est = this.sim.estimateAction(p.toolId, [{ x: p.x, z: p.z }]);
+      const valid = !est.lockedLevel && est.validTiles.length > 0 && (this.sim.difficulty === 'sandbox' || est.cost <= this.sim.money);
+      this.renderer.previewTiles = [{ x: p.x, z: p.z }];
+      this.renderer.previewColor = valid ? [0.22, 0.92, 0.62] : [0.95, 0.28, 0.28];
+
+      let covTxt = '';
+      if (typeof this.sim.previewServiceCoverage === 'function') {
+        const cov = this.sim.previewServiceCoverage(p.toolId, p.x, p.z);
+        this.renderer.servicePreviewTiles = (cov && Array.isArray(cov.tiles)) ? cov.tiles : [];
+        if (cov && cov.tiles && cov.tiles.length > 0) {
+          covTxt = ` · 🟢 沿路覆盖 ${cov.tiles.length} 格 / ${cov.affectedBuildings || 0} 栋楼`;
+        }
+      } else {
+        this.renderer.servicePreviewTiles = [];
+      }
+
+      if (infoEl) {
+        if (est.lockedLevel) {
+          infoEl.textContent = `🔒 需升至 Lv.${est.lockedLevel} 解锁【${item.name}】`;
+        } else if (est.validTiles.length === 0) {
+          infoEl.textContent = `⚠️ 此地块无法放置【${item.name}】（请检查道路/水面/坡度要求）`;
+        } else if (this.sim.difficulty !== 'sandbox' && est.cost > this.sim.money) {
+          infoEl.textContent = `💰 资金不足：需要 ¥${est.cost.toLocaleString()}`;
+        } else {
+          const costStr = this.sim.difficulty === 'sandbox' ? '免费' : `¥${est.cost.toLocaleString()}`;
+          infoEl.textContent = `${item.icon} ${item.name} (${p.x},${p.z}) · ${costStr}${covTxt}`;
+        }
+      }
+      if (okBtn) okBtn.disabled = !valid;
+    }
+    bar.classList.add('open');
+  }
+
+  confirmPendingPlace() {
+    const p = this.pendingPlace;
+    if (!p) return;
+    let res;
+    if (this._isInterchangeTool(p.toolId) && typeof this.sim.placeInterchange === 'function') {
+      res = this.sim.placeInterchange(p.toolId, p.x, p.z, p.rot || 0, false);
+    } else {
+      res = this.sim.applyTool(p.toolId, [{ x: p.x, z: p.z }], false, { rot: p.rot || 0 });
+    }
+    if (res && res.ok) {
+      this.clearPendingPlace();
+      this.refreshSubToolbarUnlocks();
+      this.refreshHUD();
+    } else if (res && res.reason) {
+      this.sfx.error();
+      this.showToast(`⚠️ ${res.reason}`);
+    }
   }
 
   _computePlannedTiles(s, e) {
@@ -659,9 +829,27 @@ export class GameUI {
 
     this.canvas.addEventListener('pointermove', (e) => {
       if (!this.pointers.has(e.pointerId)) {
-        if (this.activeTool !== 'pan' && this.pointers.size === 0) {
+        if (this.activeTool !== 'pan' && this.pointers.size === 0 && !this.pendingPlace) {
           const hit = this.renderer.screenToGround(e.clientX, e.clientY);
-          this.renderer.previewTiles = hit && hit.valid ? [{ x: hit.tx, z: hit.tz }] : [];
+          if (hit && hit.valid) {
+            if (this._isInterchangeTool(this.activeTool) && typeof this.sim.previewInterchange === 'function') {
+              const prev = this.sim.previewInterchange(this.activeTool, hit.tx, hit.tz, 0);
+              this.renderer.previewTiles = prev.tiles || [{ x: hit.tx, z: hit.tz }];
+              this.renderer.previewColor = prev.valid ? [0.22, 0.92, 0.62] : [0.95, 0.28, 0.28];
+              this.renderer.servicePreviewTiles = [];
+            } else {
+              this.renderer.previewTiles = [{ x: hit.tx, z: hit.tz }];
+              if (this._isConfirmTool(this.activeTool) && typeof this.sim.previewServiceCoverage === 'function') {
+                const cov = this.sim.previewServiceCoverage(this.activeTool, hit.tx, hit.tz);
+                this.renderer.servicePreviewTiles = (cov && Array.isArray(cov.tiles)) ? cov.tiles : [];
+              } else {
+                this.renderer.servicePreviewTiles = [];
+              }
+            }
+          } else {
+            this.renderer.previewTiles = [];
+            this.renderer.servicePreviewTiles = [];
+          }
         }
         return;
       }
@@ -757,13 +945,23 @@ export class GameUI {
           }
         }
       } else if (this.dragBuildStart && this.dragBuildEnd && !this.dragCancelled) {
-        const tiles = this._computePlannedTiles(this.dragBuildStart, this.dragBuildEnd);
-        this.sim.applyTool(this.activeTool, tiles, false);
-        this.refreshSubToolbarUnlocks();
-        this.refreshHUD();
+        if (this._isConfirmTool(this.activeTool)) {
+          // Lock single-tile / interchange tap-to-confirm preview bar with green road-connected coverage!
+          const rot = (this.pendingPlace && this.pendingPlace.toolId === this.activeTool) ? (this.pendingPlace.rot || 0) : 0;
+          this.pendingPlace = { toolId: this.activeTool, x: this.dragBuildEnd.x, z: this.dragBuildEnd.z, rot };
+          this._refreshPendingPlaceVisuals();
+          this.sfx.tap();
+        } else {
+          const tiles = this._computePlannedTiles(this.dragBuildStart, this.dragBuildEnd);
+          this.sim.applyTool(this.activeTool, tiles, false);
+          this.refreshSubToolbarUnlocks();
+          this.refreshHUD();
+          this.renderer.previewTiles = [];
+          this.renderer.servicePreviewTiles = [];
+        }
+      } else if (this.activeTool !== 'pan' && !this.pendingPlace) {
         this.renderer.previewTiles = [];
-      } else if (this.activeTool !== 'pan') {
-        this.renderer.previewTiles = [];
+        this.renderer.servicePreviewTiles = [];
       }
 
       this.dragBuildStart = null;
@@ -780,8 +978,27 @@ export class GameUI {
       if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
       this.keys.add(e.key.toLowerCase());
       if (e.key === 'Escape') {
+        this.clearPendingPlace();
         this.selectTool('pan');
         this.closeModal();
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
+        e.preventDefault();
+        if (typeof this.sim.undoLastAction === 'function') {
+          const res = this.sim.undoLastAction();
+          if (res && res.ok) {
+            this.sfx.tap();
+            this.clearPendingPlace();
+            this.refreshSubToolbarUnlocks();
+            this.refreshHUD();
+            this.showToast(`↩️ 已撤销【${res.label || '上一步操作'}】`);
+          }
+        }
+      } else if (e.key.toLowerCase() === 'r' && this.pendingPlace) {
+        this.sfx.tap();
+        this.pendingPlace.rot = ((this.pendingPlace.rot || 0) + 1) % 4;
+        this._refreshPendingPlaceVisuals();
+      } else if (e.key === 'Enter' && this.pendingPlace) {
+        this.confirmPendingPlace();
       } else if (e.key === ' ') {
         e.preventDefault();
         this.sim.speed = this.sim.speed === 0 ? 1 : 0;
@@ -957,13 +1174,30 @@ export class GameUI {
       if (b.sewageBackedUp) badges += `<span class="badge warn">🚱 污水倒灌</span>`;
       if (b.sick) badges += `<span class="badge warn">🤢 污染致病</span>`;
       if (b.trashPiled) badges += `<span class="badge warn">🗑️ 垃圾堆积</span>`;
+      if ((b.type === 'O' || (b.type === 'I' && b.level >= 4)) && typeof this.sim.educatedRate === 'number') {
+        const eduOk = this.sim.educatedRate >= 35;
+        badges += `<span class="badge ${eduOk ? 'ok' : 'warn'}">🎓 人才匹配 ${Math.round(this.sim.educatedRate)}%</span>`;
+      }
+      if ((t.noise || 0) >= 55 && (b.type === 'RL' || b.type === 'RH')) {
+        badges += `<span class="badge warn">🔊 噪音扰民 ${Math.round(t.noise)}</span>`;
+      }
       badgesEl.innerHTML = badges;
+
+      let extraTransitRow = '';
+      const ts = this.sim.transitStats;
+      if (ts && (b.type === 'metro_station' || b.type === 'hsr_station')) {
+        const seg = b.type === 'metro_station' ? ts.metro : ts.hsr;
+        if (seg) {
+          extraTransitRow = `<div style="grid-column:1/-1;color:#7dd3fc;">🚆 轨交客流：<strong>${seg.riders || 0} 人/日</strong> · 票收 <strong>+¥${seg.revenue || 0}</strong> · 减堵 <strong>-${seg.carsSaved || 0} 车</strong></div>`;
+        }
+      }
 
       gridEl.innerHTML = `
         <div>居住人口：<strong>${st.pop} 人</strong></div>
         <div>就业岗位：<strong>${st.jobs} 个</strong></div>
         <div>海拔 / 地价：<strong>${elev}m / ${Math.round(t.landValue)}</strong></div>
-        <div>教育 / 消防：<strong>${Math.round(t.education || 0)} / ${Math.round(t.fireSafety || 0)}</strong></div>
+        <div>教育 / 噪音：<strong>${Math.round(t.education || 0)} / ${Math.round(t.noise || 0)}</strong></div>
+        ${extraTransitRow}
       `;
       hintEl.textContent = this.sim.getUpgradeHint(t);
 
@@ -993,41 +1227,69 @@ export class GameUI {
         roundabout: '🔄 环岛流转'
       }[curJMode] || '🚦 标准红绿灯';
 
+      const dirArrows = ['⬆️ 向北单行', '⬇️ 向南单行', '⬅️ 向西单行', '➡️ 向东单行'];
+      const isOneWay = typeof t.roadDir === 'number' && t.roadDir >= 0;
+
       badgesEl.innerHTML = `
         <span class="badge info">海拔 ${elev}m</span>
         ${deg >= 3 ? `<span class="badge ok">${jBadgeLabel}</span>` : ''}
+        ${isOneWay ? `<span class="badge info">${dirArrows[t.roadDir] || '➡️ 单行道'}</span>` : ''}
+        ${t.banTrucks ? `<span class="badge warn">🚫 禁行重卡</span>` : ''}
+        ${t.busStop ? `<span class="badge ok">🚌 智能公交站</span>` : ''}
         ${(t.roadGround > 0 || t.roadElevated > 0) && t.outsideConnected === false ? `<span class="badge warn">🚧 未连通城际高速</span>` : ''}
         ${wDepth > 0.08 ? `<span class="badge info">水深 ${wDepth.toFixed(2)}m</span>` : ''}
         ${t.pipe ? `<span class="badge ${t.pipeBroken ? 'warn' : 'ok'}">${t.pipeBroken ? '🔴 水管震裂' : '🔵 已铺地下水管'}</span>` : ''}
         ${t.metro ? `<span class="badge info">🟣 地下地铁隧道</span>` : ''}
       `;
+      const busRow = (t.busStop && this.sim.transitStats?.bus)
+        ? `<div style="grid-column:1/-1;color:#7dd3fc;">🚌 公交系统：<strong>${this.sim.transitStats.bus.riders || 0} 人/日</strong> · 票收 <strong>+¥${this.sim.transitStats.bus.revenue || 0}</strong> · 减堵 <strong>-${this.sim.transitStats.bus.carsSaved || 0} 车</strong></div>`
+        : '';
       gridEl.innerHTML = `
         <div>坐标位置：<strong>(${x}, ${z})</strong></div>
-        <div>地价评分：<strong>${Math.round(t.landValue)} / 100</strong></div>
+        <div>地价 / 噪音：<strong>${Math.round(t.landValue)} / ${Math.round(t.noise || 0)}</strong></div>
         <div>水体污染：<strong>${Math.round((this.sim.waterPoll[z * 56 + x] || 0) * 100)}%</strong></div>
         <div>路面拥堵：<strong>${Math.round((t.congestion || 0) * 100)}%</strong></div>
+        ${busRow}
       `;
 
-      if (deg >= 3 && actionsEl) {
+      const canManageRoad = (t.roadGround === 1 || t.roadGround === 2) && !t.dam;
+      if ((deg >= 3 || canManageRoad) && actionsEl) {
         actionsEl.style.display = 'flex';
-        const rbtCost = (t.roundaboutPaid || this.sim.difficulty === 'sandbox') ? '已建/免费' : '¥120';
-        actionsEl.innerHTML = `
-          <div class="junction-ctrl-lbl">🎛️ 路口交通管制方案（治堵利器）：</div>
-          <div class="junction-ctrl-wrap">
-            <button class="junction-btn ${curJMode === 'signal' ? 'active' : ''}" data-jmode="signal">
-              <span>🚦 标准红绿灯</span>
-              <span style="font-size:10px;opacity:0.8;">正交均衡放行</span>
-            </button>
-            <button class="junction-btn ${curJMode === 'yield' ? 'active' : ''}" data-jmode="yield">
-              <span>🛑 支路让主路(无灯)</span>
-              <span style="font-size:10px;opacity:0.8;">大道全速直行</span>
-            </button>
-            <button class="junction-btn ${curJMode === 'roundabout' ? 'active' : ''}" data-jmode="roundabout">
-              <span>🔄 改建环岛(${rbtCost})</span>
-              <span style="font-size:10px;opacity:0.85;color:#fde68a;">消除红绿灯死锁</span>
-            </button>
-          </div>
-        `;
+        actionsEl.style.flexDirection = 'column';
+        actionsEl.style.gap = '6px';
+        let htmlAct = '';
+
+        if (deg >= 3) {
+          const rbtCost = (t.roundaboutPaid || this.sim.difficulty === 'sandbox') ? '已建/免费' : '¥120';
+          htmlAct += `
+            <div class="junction-ctrl-lbl">🎛️ 路口交通管制方案（治堵利器）：</div>
+            <div class="junction-ctrl-wrap">
+              <button class="junction-btn ${curJMode === 'signal' ? 'active' : ''}" data-jmode="signal">
+                <span>🚦 标准红绿灯</span>
+                <span style="font-size:10px;opacity:0.8;">正交均衡放行</span>
+              </button>
+              <button class="junction-btn ${curJMode === 'yield' ? 'active' : ''}" data-jmode="yield">
+                <span>🛑 支路让主路(无灯)</span>
+                <span style="font-size:10px;opacity:0.8;">大道全速直行</span>
+              </button>
+              <button class="junction-btn ${curJMode === 'roundabout' ? 'active' : ''}" data-jmode="roundabout">
+                <span>🔄 改建环岛(${rbtCost})</span>
+                <span style="font-size:10px;opacity:0.85;color:#fde68a;">消除红绿灯死锁</span>
+              </button>
+            </div>
+          `;
+        }
+
+        if (canManageRoad) {
+          htmlAct += `<div style="display:flex;gap:6px;flex-wrap:wrap;">`;
+          if (isOneWay) {
+            htmlAct += `<button class="btn-primary" id="btn-flip-oneway" style="flex:1;font-size:11.5px;padding:6px 8px;">🔁 反转单行方向</button>`;
+          }
+          htmlAct += `<button class="${t.banTrucks ? 'btn-primary' : 'btn-secondary'}" id="btn-toggle-truck-ban" style="flex:1;font-size:11.5px;padding:6px 8px;">${t.banTrucks ? '✅ 解除重卡禁行' : '🚫 禁行重型货车(降噪)'}</button>`;
+          htmlAct += `</div>`;
+        }
+
+        actionsEl.innerHTML = htmlAct;
         actionsEl.querySelectorAll('[data-jmode]').forEach((jbtn) => {
           jbtn.addEventListener('click', () => {
             const nextMode = jbtn.dataset.jmode;
@@ -1038,7 +1300,33 @@ export class GameUI {
             }
           });
         });
-        hintEl.textContent = '💡 小支路汇入大道选【🛑 支路让主路】拆红绿灯；四向繁忙十字路口改建【🔄 环岛】可彻底消除排队咬死！';
+        const flipBtn = document.getElementById('btn-flip-oneway');
+        if (flipBtn && typeof this.sim.flipOneWayDirection === 'function') {
+          flipBtn.addEventListener('click', () => {
+            const r = this.sim.flipOneWayDirection(x, z);
+            if (r && r.ok) {
+              this.sfx.road();
+              this.refreshHUD();
+              this.inspectTile(x, z);
+              this.showToast(`🔁 已反转 ${r.count || 1} 格单行道通行方向`);
+            }
+          });
+        }
+        const banBtn = document.getElementById('btn-toggle-truck-ban');
+        if (banBtn && typeof this.sim.toggleTruckBan === 'function') {
+          banBtn.addEventListener('click', () => {
+            const r = this.sim.toggleTruckBan(x, z);
+            if (r && r.ok) {
+              this.sfx.tap();
+              this.refreshHUD();
+              this.inspectTile(x, z);
+              this.showToast(r.banTrucks ? `🚫 已对该路段(${r.count || 1}格)实施重卡禁行，货车将自动绕行高架与大道` : `✅ 已恢复该路段货车通行`);
+            }
+          });
+        }
+        hintEl.textContent = deg >= 3
+          ? '💡 小支路汇入大道选【🛑 支路让主路】；繁忙十字改【🔄 环岛】；住宅街道点【🚫 禁行重卡】可大幅降噪！'
+          : '💡 住宅区街道开启【🚫 禁行重型货车】可降低 55% 噪音并迫使货车改走主干道与高架！';
       } else {
         hintEl.textContent = wDepth > 0.1
           ? '💡 上游干净河岸适合建【抽水站】，西北深V急流峡谷适合横拉【水力发电大坝】！'
@@ -1162,6 +1450,166 @@ export class GameUI {
         if (issueBtn) issueBtn.style.borderColor = 'rgba(251, 191, 36, 0.65)';
       }
     }
+
+    // Undo button live count
+    const undoBtn = document.getElementById('btn-undo');
+    const undoCntEl = document.getElementById('hud-undo-count');
+    if (undoBtn && undoCntEl) {
+      const n = Array.isArray(this.sim.undoStack) ? this.sim.undoStack.length : 0;
+      undoCntEl.textContent = String(n);
+      undoBtn.disabled = n === 0;
+    }
+
+    // Rush-Hour Tidal Traffic Period badge
+    const periodEl = document.getElementById('hud-traffic-period');
+    if (periodEl && typeof this.sim.getTrafficPeriodInfo === 'function') {
+      const pInfo = this.sim.getTrafficPeriodInfo();
+      periodEl.textContent = `${pInfo.icon} ${pInfo.label}`;
+      periodEl.className = 'traffic-period-chip' + (pInfo.mult >= 1.8 ? ' rush' : (pInfo.mult <= 0.5 ? ' night' : ''));
+    }
+
+    // Dynamic Mayor Civic Decision Event Pill
+    const evPill = document.getElementById('event-pill');
+    if (evPill) {
+      const ev = this.sim.activeEvent;
+      if (ev) {
+        evPill.style.display = 'inline-flex';
+        const ic = document.getElementById('event-pill-icon');
+        const tt = document.getElementById('event-pill-title');
+        if (ic) ic.textContent = ev.icon || '🏛️';
+        if (tt) tt.textContent = `批示：${ev.title}`;
+      } else {
+        evPill.style.display = 'none';
+      }
+    }
+  }
+
+  openCivicEventModal() {
+    const ev = this.sim.activeEvent;
+    if (!ev) return;
+    const body = document.getElementById('modal-body');
+    document.getElementById('modal-title').textContent = `${ev.icon || '🏛️'} 市政重大决策 · ${ev.title}`;
+    body.innerHTML = `
+      <div class="modal-section">
+        <p style="font-size:13px;line-height:1.6;color:#e2e8f0;margin:0 0 12px;">${ev.desc}</p>
+        ${(ev.choices || []).map((ch, idx) => `
+          <button class="event-choice-btn" data-ev-choice="${idx}">
+            <div style="font-size:13px;font-weight:700;color:#fde68a;">${ch.label}</div>
+            <div style="font-size:11.5px;color:#94a3b8;margin-top:3px;">${ch.effectDesc}</div>
+          </button>
+        `).join('')}
+      </div>
+    `;
+    body.querySelectorAll('[data-ev-choice]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const idx = Number(btn.dataset.evChoice);
+        if (typeof this.sim.resolveCivicEvent === 'function') {
+          const res = this.sim.resolveCivicEvent(idx);
+          if (res && res.ok) {
+            this.sfx.milestone();
+            this.refreshHUD();
+            this.closeModal();
+            this.showToast(`📜 市政批示已生效：${res.summary || ev.title}`, 3400, 'levelup');
+          }
+        }
+      });
+    });
+    document.getElementById('modal-backdrop').classList.add('open');
+  }
+
+  _drawFinanceHistoryChart(metricKey = 'netIncome') {
+    const canvas = document.getElementById('finance-history-canvas');
+    if (!canvas) return;
+    const hist = Array.isArray(this.sim.history) ? this.sim.history : [];
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const w = Math.max(240, canvas.clientWidth || 320);
+    const h = 138;
+    canvas.width = Math.round(w * dpr);
+    canvas.height = Math.round(h * dpr);
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.scale(dpr, dpr);
+    ctx.clearRect(0, 0, w, h);
+
+    if (hist.length < 2) {
+      ctx.fillStyle = '#94a3b8';
+      ctx.font = '12px sans-serif';
+      ctx.fillText('正在累计月度统计数据（满2个月即绘出趋势曲线）...', 16, h * 0.52);
+      return;
+    }
+
+    const cfg = {
+      netIncome: { color: '#4ade80', fill: 'rgba(74,222,128,0.16)', fmt: (v) => `${v >= 0 ? '+' : ''}¥${Math.round(v)}` },
+      pop:       { color: '#38bdf8', fill: 'rgba(56,189,248,0.18)', fmt: (v) => `${Math.round(v)}人` },
+      happiness: { color: '#fbbf24', fill: 'rgba(251,191,36,0.18)', fmt: (v) => `${Math.round(v)}%` },
+      transitRiders: { color: '#c084fc', fill: 'rgba(192,132,252,0.18)', fmt: (v) => `${Math.round(v)}人次` }
+    }[metricKey] || { color: '#38bdf8', fill: 'rgba(56,189,248,0.18)', fmt: (v) => String(Math.round(v)) };
+
+    const vals = hist.map((p) => Number(p[metricKey] || 0));
+    let minV = Math.min(...vals);
+    let maxV = Math.max(...vals);
+    if (metricKey === 'netIncome') { minV = Math.min(minV, 0); maxV = Math.max(maxV, 100); }
+    else if (metricKey === 'happiness') { minV = 0; maxV = 100; }
+    else if (maxV === minV) { maxV = minV + 10; }
+    const span = Math.max(1, maxV - minV);
+
+    const padL = 48, padR = 12, padT = 14, padB = 22;
+    const plotW = w - padL - padR;
+    const plotH = h - padT - padB;
+
+    // Grid lines & labels
+    ctx.strokeStyle = 'rgba(148,163,184,0.16)';
+    ctx.lineWidth = 1;
+    ctx.fillStyle = '#94a3b8';
+    ctx.font = '10px sans-serif';
+    for (let g = 0; g <= 2; g++) {
+      const y = padT + (plotH * g) / 2;
+      ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(w - padR, y); ctx.stroke();
+      const lv = maxV - (span * g) / 2;
+      ctx.fillText(cfg.fmt(lv), 4, y + 3);
+    }
+
+    // Zero baseline for netIncome
+    if (metricKey === 'netIncome' && minV < 0 && maxV > 0) {
+      const zy = padT + ((maxV - 0) / span) * plotH;
+      ctx.strokeStyle = 'rgba(248,113,113,0.45)';
+      ctx.beginPath(); ctx.moveTo(padL, zy); ctx.lineTo(w - padR, zy); ctx.stroke();
+    }
+
+    const pts = vals.map((v, i) => ({
+      x: padL + (plotW * i) / Math.max(1, vals.length - 1),
+      y: padT + ((maxV - v) / span) * plotH
+    }));
+
+    // Fill area
+    ctx.beginPath();
+    ctx.moveTo(pts[0].x, padT + plotH);
+    for (const p of pts) ctx.lineTo(p.x, p.y);
+    ctx.lineTo(pts[pts.length - 1].x, padT + plotH);
+    ctx.closePath();
+    ctx.fillStyle = cfg.fill;
+    ctx.fill();
+
+    // Stroke line
+    ctx.beginPath();
+    pts.forEach((p, i) => (i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)));
+    ctx.strokeStyle = cfg.color;
+    ctx.lineWidth = 2.2;
+    ctx.stroke();
+
+    // End dot + month labels
+    const last = pts[pts.length - 1];
+    ctx.beginPath();
+    ctx.arc(last.x, last.y, 3.5, 0, Math.PI * 2);
+    ctx.fillStyle = cfg.color;
+    ctx.fill();
+
+    ctx.fillStyle = '#94a3b8';
+    ctx.fillText(hist[0].label || '', padL, h - 5);
+    const midLabel = hist[Math.floor(hist.length / 2)]?.label || '';
+    ctx.fillText(midLabel, padL + plotW * 0.45, h - 5);
+    const endLabel = hist[hist.length - 1].label || '';
+    ctx.fillText(endLabel, w - padR - 34, h - 5);
   }
 
   flyToTile(x, z) {
@@ -1356,17 +1804,54 @@ export class GameUI {
 
     body.innerHTML = `
       <div class="modal-section">
+        <h4>📈 近 24 个月城市运行趋势图</h4>
+        <div class="finance-chart-wrap">
+          <div class="finance-chart-tabs" id="finance-chart-tabs">
+            <button class="chart-tab-btn active" data-chart-metric="netIncome">💰 净收支</button>
+            <button class="chart-tab-btn" data-chart-metric="pop">👥 人口</button>
+            <button class="chart-tab-btn" data-chart-metric="happiness">😊 幸福度</button>
+            <button class="chart-tab-btn" data-chart-metric="transitRiders">🚌 公交客流</button>
+          </div>
+          <canvas id="finance-history-canvas"></canvas>
+        </div>
+      </div>
+
+      <div class="modal-section">
         <h4>💰 每期财政收支明细</h4>
         <div class="insp-grid" style="font-size:12px;">
           <div>税收总收入：<strong style="color:#4ade80">+¥${this.sim.lastTaxIncome}</strong></div>
           <div>基建与部门维护：<strong style="color:#f87171">-¥${this.sim.lastUpkeep}</strong></div>
           <div>银行贷款还本付息：<strong style="color:#fbbf24">-¥${this.sim.lastLoanPay}</strong></div>
           <div>净现金流：<strong>${this.sim.netIncome >= 0 ? '+' : ''}¥${this.sim.netIncome}</strong></div>
-          <div>失业率 / 荒废楼宇：<strong>${this.sim.unemploymentPct}% / ${this.sim.abandonedCount}栋</strong></div>
+          <div>失业率 / 受教育率：<strong>${this.sim.unemploymentPct}% / <span style="color:#38bdf8">${Math.round(this.sim.educatedRate || 0)}%</span></strong></div>
           <div>大坝水电出力：<strong style="color:#38bdf8">${this.sim.hydroPowerMW} MW</strong></div>
           <div style="grid-column: 1 / -1;">供水 / 排污容量：<strong style="color:${this.sim.waterDemand > (this.sim.sewageSupply || 0) * 1.15 ? '#f87171' : '#38bdf8'}">${this.sim.waterSupply} / ${this.sim.sewageSupply}</strong> <span style="color:#94a3b8;font-size:11px;">（当前用水与污水负荷 ${this.sim.waterDemand}）</span></div>
         </div>
       </div>
+
+      ${(() => {
+        const ts = this.sim.transitStats;
+        if (!ts) return '';
+        const rows = [
+          { name: '🚌 城市公交', cnt: `${ts.bus?.stops || 0}站`, r: ts.bus?.riders || 0, rev: ts.bus?.revenue || 0, up: ts.bus?.upkeep || 0, saved: ts.bus?.carsSaved || 0 },
+          { name: '🚇 地下地铁', cnt: `${ts.metro?.stations || 0}站`, r: ts.metro?.riders || 0, rev: ts.metro?.revenue || 0, up: ts.metro?.upkeep || 0, saved: ts.metro?.carsSaved || 0 },
+          { name: '🚄 城际高铁', cnt: `${ts.hsr?.stations || 0}站`, r: ts.hsr?.riders || 0, rev: ts.hsr?.revenue || 0, up: ts.hsr?.upkeep || 0, saved: ts.hsr?.carsSaved || 0 }
+        ];
+        return `
+          <div class="modal-section">
+            <h4>🚌 公共交通客流与票务盈亏表（总减堵 -${ts.totalCarsSaved || 0} 车）</h4>
+            <table class="transit-table">
+              <thead><tr><th>线路</th><th>站点</th><th>日客流</th><th>票收</th><th>维护</th><th>净利</th></tr></thead>
+              <tbody>
+                ${rows.map((rw) => {
+                  const net = rw.rev - rw.up;
+                  return `<tr><td>${rw.name}</td><td>${rw.cnt}</td><td>${rw.r}</td><td style="color:#4ade80">+¥${rw.rev}</td><td style="color:#f87171">-¥${rw.up}</td><td style="color:${net >= 0 ? '#4ade80' : '#fbbf24'}">${net >= 0 ? '+' : ''}¥${net}</td></tr>`;
+                }).join('')}
+              </tbody>
+            </table>
+          </div>
+        `;
+      })()}
 
       <div class="modal-section">
         <h4>🚗 居民出行去向与车流换算总览</h4>
@@ -1436,21 +1921,40 @@ export class GameUI {
       </div>
 
       <div class="modal-section">
-        <h4>📜 城市法令</h4>
+        <h4>📜 市政战略政策（影响税收、人才、污染与客流）</h4>
         <label class="policy-toggle">
-          <span>🚌 <strong>免费公共交通</strong>（减少路面私家车拥堵）</span>
+          <span>🚌 <strong>免费公共交通</strong>（公交/轨交客流+35%、路网减堵-22%，免收票款）</span>
           <input type="checkbox" id="pol-transit" ${this.sim.policies.freeTransit ? 'checked' : ''}>
         </label>
         <label class="policy-toggle">
-          <span>🌿 <strong>绿色环保城市条例</strong>（工业污染减半，提升地价）</span>
-          <input type="checkbox" id="pol-green" ${this.sim.policies.greenCity ? 'checked' : ''}>
+          <span>🌳 <strong>环保减排法</strong>（工业污染-35%、地价提升，工业税微降6%）</span>
+          <input type="checkbox" id="pol-green" ${(this.sim.policies.greenEnergy || this.sim.policies.greenCity) ? 'checked' : ''}>
         </label>
         <label class="policy-toggle">
-          <span>🔬 <strong>高科技产业补贴</strong>（提升税收与研发升级速度）</span>
-          <input type="checkbox" id="pol-tech" ${this.sim.policies.techBoost ? 'checked' : ''}>
+          <span>🎓 <strong>免费高等教育</strong>（全城受教育率+18%、写字楼/高新工业增产+15%）</span>
+          <input type="checkbox" id="pol-edu" ${this.sim.policies.freeHigherEd ? 'checked' : ''}>
+        </label>
+        <label class="policy-toggle">
+          <span>⚡ <strong>工业节能补贴</strong>（全城水电负荷-15%，支付小额财政补贴）</span>
+          <input type="checkbox" id="pol-energy" ${this.sim.policies.energySubsidy ? 'checked' : ''}>
+        </label>
+        <label class="policy-toggle">
+          <span>📈 <strong>招商引资减税</strong>（商业/办公/工业需求+28%，商办税临时-10%）</span>
+          <input type="checkbox" id="pol-biz" ${(this.sim.policies.bizTaxBreak || this.sim.policies.techBoost) ? 'checked' : ''}>
         </label>
       </div>
     `;
+
+    // Render 24-month history trend chart + metric tabs
+    this._drawFinanceHistoryChart('netIncome');
+    body.querySelectorAll('[data-chart-metric]').forEach((tab) => {
+      tab.addEventListener('click', () => {
+        this.sfx.tap();
+        body.querySelectorAll('[data-chart-metric]').forEach((b) => b.classList.remove('active'));
+        tab.classList.add('active');
+        this._drawFinanceHistoryChart(tab.dataset.chartMetric);
+      });
+    });
 
     document.getElementById('tax-slider').addEventListener('input', (e) => {
       this.sim.taxRate = Number(e.target.value);
@@ -1490,10 +1994,13 @@ export class GameUI {
       });
     });
 
-    const bindPol = (id, key) => {
-      document.getElementById(id).addEventListener('change', (e) => {
+    const bindPol = (id, key, aliasKey = null) => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.addEventListener('change', (e) => {
         this.sfx.tap();
         this.sim.policies[key] = e.target.checked;
+        if (aliasKey) this.sim.policies[aliasKey] = e.target.checked;
         this.sim.recomputeNetworksAndFields();
         this.sim.stepEconomy();
         this.sim.meshDirty = true;
@@ -1502,8 +2009,10 @@ export class GameUI {
       });
     };
     bindPol('pol-transit', 'freeTransit');
-    bindPol('pol-green', 'greenCity');
-    bindPol('pol-tech', 'techBoost');
+    bindPol('pol-green', 'greenEnergy', 'greenCity');
+    bindPol('pol-edu', 'freeHigherEd');
+    bindPol('pol-energy', 'energySubsidy');
+    bindPol('pol-biz', 'bizTaxBreak', 'techBoost');
 
     document.getElementById('modal-backdrop').classList.add('open');
   }

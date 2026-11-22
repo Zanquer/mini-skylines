@@ -120,7 +120,7 @@ function bootGame() {
     ui.showToast(
       restored
         ? `👋 已恢复离线进度【${sim.cityName}】(${sim.getFormattedDate()})`
-        : '🏞️ 山河天际线 Pro v7.0 已启动！点右上【示范/存档】可切换画质、下载 iPhone 全离线高清包或体验满级大都会'
+        : '🏞️ 山河天际线 Pro v7.5 已启动！体验 1024px 超清建筑质感、单行道/一键立交、智能公交、建前绿区预览与 15 步撤销！'
     );
   }, 550);
 

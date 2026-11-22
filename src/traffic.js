@@ -29,6 +29,10 @@ export class TrafficManager {
     this.trains = [];      // HSR multi-car bullet trains & underground metro trains!
     this.aircraft = [];    // 3D Wide-body Airliners approaching/landing/climbing at airports!
     this.ships = [];       // 3D Cargo Container Ships sailing SE Sea Bay <-> Seaport!
+    this.busStops = [];    // Active roadside EV bus stop tiles collected during refreshRoadGraph!
+    this.pedestrians = []; // Lightweight sidewalk pedestrians (<= 240, pure data, zero Three.js dependency)
+    this._pedRoadPool = [];
+    this._pedSpawnTimer = 0;
     this.spawnTimer = 0;
     this.trainTimer = 0;
     this.fireTimer = 0;
@@ -56,13 +60,16 @@ export class TrafficManager {
       rawCarDemand: 0,
       targetRoadVehicles: 0,
       metroSharePct: 0,
+      busSharePct: 0,
       transitPolicyPct: 0,
       walkSharePct: 0,
       seaportFreightPct: 0,
       activeCommuters: 0,
       activeFreight: 0,
       activeService: 0,
-      gridlockTimeouts: 0
+      activeTransit: 0,
+      gridlockTimeouts: 0,
+      trafficPeriod: null
     };
   }
 
@@ -71,6 +78,10 @@ export class TrafficManager {
     this.trains.length = 0;
     this.aircraft.length = 0;
     this.ships.length = 0;
+    this.busStops.length = 0;
+    this.pedestrians.length = 0;
+    this._pedRoadPool.length = 0;
+    this._pedSpawnTimer = 0;
     this.aircraftTimer = 0;
     this.shipTimer = 2.0;
     this.modalTimer = 0;
@@ -82,13 +93,16 @@ export class TrafficManager {
     this.modalSplit.rawCarDemand = 0;
     this.modalSplit.targetRoadVehicles = 0;
     this.modalSplit.metroSharePct = 0;
+    this.modalSplit.busSharePct = 0;
     this.modalSplit.transitPolicyPct = 0;
     this.modalSplit.walkSharePct = 0;
     this.modalSplit.seaportFreightPct = 0;
     this.modalSplit.activeCommuters = 0;
     this.modalSplit.activeFreight = 0;
     this.modalSplit.activeService = 0;
+    this.modalSplit.activeTransit = 0;
     this.modalSplit.gridlockTimeouts = 0;
+    this.modalSplit.trafficPeriod = null;
   }
 
   findVehicleNearWorld(wx, wz, maxDist = 0.58) {
@@ -145,15 +159,18 @@ export class TrafficManager {
     let commuters = 0;
     let freight = 0;
     let service = 0;
+    let transit = 0;
     for (let i = 0; i < this.vehicles.length; i++) {
       const v = this.vehicles[i];
       if (v.tripType === 'freight') freight++;
       else if (v.tripType === 'service') service++;
+      else if (v.tripType === 'transit' || v.kind === 'bus') transit++;
       else commuters++;
     }
     this.modalSplit.activeCommuters = commuters;
     this.modalSplit.activeFreight = freight;
     this.modalSplit.activeService = service;
+    this.modalSplit.activeTransit = transit;
   }
 
   refreshModalSplitDemand() {
@@ -166,12 +183,48 @@ export class TrafficManager {
     let walkableR = 0;
     let poweredMetro = 0;
     let activeSeaports = 0;
+    let activeBusStops = 0;
+
+    this._pedRoadPool.length = 0;
+    const pedAttractorTypes = new Set([
+      'RL', 'RH', 'CL', 'CH', 'O', 'park', 'metro_station', 'hsr_station',
+      'stadium', 'amusement_park', 'school', 'hospital', 'landmark'
+    ]);
 
     for (let i = 0; i < grid.length; i++) {
       const t = grid[i];
-      if (!hasAnyRoad && (this.isGroundRoadPassable(t) || t.roadElevated > 0)) {
+      const passGround = this.isGroundRoadPassable(t);
+      if (!hasAnyRoad && (passGround || t.roadElevated > 0)) {
         hasAnyRoad = true;
       }
+      if (t.busStop && passGround && !t.dam && !t.ramp && t.roadGround !== 3 && t.roadGround !== 4) {
+        activeBusStops++;
+      }
+
+      // Collect sidewalk pedestrian spawn candidates near populated zones, parks, bus stops & rail stations
+      if (passGround && (t.roadGround === 1 || t.roadGround === 2) && !t.dam && !t.ramp) {
+        let pedHotspot = Boolean(t.busStop);
+        if (!pedHotspot) {
+          for (let dz = -2; dz <= 2 && !pedHotspot; dz++) {
+            const nz = t.z + dz;
+            if (nz < 0 || nz >= GRID_SIZE) continue;
+            const span = 2 - Math.abs(dz);
+            for (let dx = -span; dx <= span; dx++) {
+              const nx = t.x + dx;
+              if (nx < 0 || nx >= GRID_SIZE) continue;
+              const nb = grid[idx(nx, nz)].building;
+              if (nb && !nb.abandoned && !nb.underConstruction && !nb.flooded && pedAttractorTypes.has(nb.type)) {
+                pedHotspot = true;
+                break;
+              }
+            }
+          }
+        }
+        if (pedHotspot) {
+          this._pedRoadPool.push({ x: t.x, z: t.z });
+        }
+      }
+
       const b = t.building;
       if (!b || b.underConstruction || b.abandoned || b.flooded) continue;
 
@@ -222,19 +275,35 @@ export class TrafficManager {
       metroSharePct = Math.min(48, Math.round(Math.min(1, poweredMetro / neededStations) * 48));
     }
 
-    const transitPolicyPct = this.sim.policies?.freeTransit ? 20 : 0;
+    const freeTransit = Boolean(this.sim.policies?.freeTransit);
+    const busSharePct = activeBusStops >= 2
+      ? Math.min(26, Math.round((6 + activeBusStops * 3.2) * (freeTransit ? 1.35 : 1.0)))
+      : 0;
+
+    // Free Public Transit policy reduces private road car traffic volume by -22%!
+    const transitPolicyPct = freeTransit ? 22 : 0;
     const seaportFreightPct = (this.sim.hasSeaport || activeSeaports > 0) ? 35 : 0;
 
+    const period = typeof this.sim.getTrafficPeriodInfo === 'function'
+      ? this.sim.getTrafficPeriodInfo()
+      : { id: 'normal', icon: '🌤️', label: '平峰顺畅', mult: 1.0, commuteBias: 'balanced' };
+
+    const modalReduction = Math.min(0.68, (walkSharePct + metroSharePct + busSharePct) * 0.0075);
+    const freeTransitMult = freeTransit ? 0.78 : 1.0; // Exact -22% road volume reduction!
+    const baseTarget = rawDemand * (1 - modalReduction) * freeTransitMult;
+    const minFleet = activeBusStops >= 2 ? 4 : 3;
     const targetRoadVehicles = hasAnyRoad
-      ? Math.max(4, Math.min(165, Math.round(rawDemand * (1 - (walkSharePct + metroSharePct + transitPolicyPct) * 0.0085))))
+      ? Math.max(minFleet, Math.min(185, Math.round(baseTarget * (period.mult || 1.0))))
       : 0;
 
     this.modalSplit.rawCarDemand = rawDemand;
     this.modalSplit.targetRoadVehicles = targetRoadVehicles;
     this.modalSplit.walkSharePct = walkSharePct;
     this.modalSplit.metroSharePct = metroSharePct;
+    this.modalSplit.busSharePct = busSharePct;
     this.modalSplit.transitPolicyPct = transitPolicyPct;
     this.modalSplit.seaportFreightPct = seaportFreightPct;
+    this.modalSplit.trafficPeriod = period;
     this.refreshActiveModalCounts();
   }
 
@@ -248,12 +317,26 @@ export class TrafficManager {
     return !(wd > 0.28);
   }
 
+  isGroundStepAllowedByOneWay(curT, nxtT, stepDir) {
+    // stepDir: 0=N(-Z), 1=S(+Z), 2=W(-X), 3=E(+X); oppDir = stepDir ^ 1
+    if (!curT || !nxtT) return false;
+    const oppDir = stepDir ^ 1;
+    if (typeof curT.roadDir === 'number' && curT.roadDir >= 0 && curT.roadDir === oppDir) {
+      return false;
+    }
+    if (typeof nxtT.roadDir === 'number' && nxtT.roadDir >= 0 && nxtT.roadDir === oppDir) {
+      return false;
+    }
+    return true;
+  }
+
   computeRoadSignature() {
     const grid = this.sim.grid;
     let h = 2166136261 >>> 0;
     for (let i = 0; i < grid.length; i++) {
       const t = grid[i];
       const flooded = t.roadGround > 0 && !this.isGroundRoadPassable(t);
+      const dirBits = ((typeof t.roadDir === 'number' ? t.roadDir : -1) + 1) & 7;
       const code =
         (t.roadGround & 7) |
         ((t.roadElevated & 3) << 3) |
@@ -262,7 +345,10 @@ export class TrafficManager {
         (t.metro ? 128 : 0) |
         (t.dam ? 256 : 0) |
         (t.roadBridge ? 512 : 0) |
-        (flooded ? 1024 : 0);
+        (flooded ? 1024 : 0) |
+        (dirBits << 11) |
+        (t.banTrucks ? 16384 : 0) |
+        (t.busStop ? 32768 : 0);
       h ^= code;
       h = Math.imul(h, 16777619) >>> 0;
     }
@@ -281,9 +367,23 @@ export class TrafficManager {
   buildRampAndDegreeGraph() {
     const grid = this.sim.grid;
     this.rampMeta.clear();
+    this.busStops.length = 0;
     if (!grid || !grid.length) return;
 
     const N = GRID_SIZE * GRID_SIZE;
+    for (let i = 0; i < N; i++) {
+      const t = grid[i];
+      if (t.busStop && this.isGroundRoadPassable(t) && !t.dam && !t.ramp && t.roadGround !== 3 && t.roadGround !== 4) {
+        this.busStops.push({
+          rx: t.x,
+          rz: t.z,
+          bx: t.x,
+          bz: t.z,
+          building: null,
+          portalName: `智能公交站 (${t.x},${t.z})`
+        });
+      }
+    }
     const visitedRamp = new Uint8Array(N);
     const isValidRampTile = (t) => Boolean(t && t.ramp && t.roadElevated > 0 && this.isGroundRoadPassable(t));
 
@@ -500,6 +600,16 @@ export class TrafficManager {
         if (tile.ramp !== true && nextTile.ramp !== true) return false;
       }
 
+      // Strict one-way enforcement on ground-to-ground road steps
+      if (!node.onRamp && !nextNode.onRamp && node.layer === 0 && nextNode.layer === 0) {
+        const dx = nextNode.x - node.x;
+        const dz = nextNode.z - node.z;
+        if (Math.abs(dx) + Math.abs(dz) === 1) {
+          const stepDir = dx === 1 ? 3 : (dx === -1 ? 2 : (dz === 1 ? 1 : 0));
+          if (!this.isGroundStepAllowedByOneWay(tile, nextTile, stepDir)) return false;
+        }
+      }
+
       if (node.onRamp || nextNode.onRamp) {
         this.ensureRampGraphFresh();
         const dx = nextNode.x - node.x;
@@ -556,8 +666,16 @@ export class TrafficManager {
 
   isVehiclePathValidAhead(v) {
     if (!v || !v.path || v.seg >= v.path.length - 1) return false;
+    const isHeavyTruck = v.kind === 'truck' || v.kind === 'garbagetruck';
     for (let k = v.seg; k < v.path.length - 1; k++) {
       if (!this.isValidRoadStep(v.path[k], v.path[k + 1])) return false;
+      if (isHeavyTruck && k + 1 < v.path.length - 1) {
+        const nxt = v.path[k + 1];
+        if (nxt.layer === 0 && !nxt.onRamp) {
+          const nt = this.sim.getTile(nxt.x, nxt.z);
+          if (nt && nt.banTrucks === true) return false;
+        }
+      }
     }
     return true;
   }
@@ -631,6 +749,15 @@ export class TrafficManager {
       const base1 = stdOffFor(p1, t1);
       const blend = Math.max(0, (clampedT - 0.45) / 0.55);
       return rampOff + (base1 - rampOff) * (blend * blend * (3 - 2 * blend));
+    }
+
+    const isOneWayPair =
+      p0.layer === 0 && p1.layer === 0 &&
+      t0 && t1 &&
+      typeof t0.roadDir === 'number' && t0.roadDir >= 0 &&
+      typeof t1.roadDir === 'number' && t1.roadDir >= 0;
+    if (isOneWayPair) {
+      return v.laneSlot === 1 ? 0.18 : -0.16;
     }
 
     const isMultiLane =
@@ -741,13 +868,14 @@ export class TrafficManager {
 
     const startOnRamp = Boolean(cur.onRamp);
     const startLayer = cur.layer || 0;
-    let newPath = this.findRoadPath(cur.x, cur.z, last.x, last.z, startOnRamp, startLayer);
+    const isHeavyTruck = v.kind === 'truck' || v.kind === 'garbagetruck';
+    let newPath = this.findRoadPath(cur.x, cur.z, last.x, last.z, startOnRamp, startLayer, isHeavyTruck);
     if ((!newPath || newPath.length < 2) && v.kind === 'firetruck' && v.fireTargetIdx !== undefined) {
       const bt = this.sim.grid[v.fireTargetIdx];
       if (bt && bt.building && bt.building.fire > 0 && typeof this.sim.findRoadAccess === 'function') {
         const altAcc = this.sim.findRoadAccess(bt.x, bt.z);
         if (altAcc) {
-          newPath = this.findRoadPath(cur.x, cur.z, altAcc.rx, altAcc.rz, startOnRamp, startLayer);
+          newPath = this.findRoadPath(cur.x, cur.z, altAcc.rx, altAcc.rz, startOnRamp, startLayer, false);
         }
       }
     }
@@ -938,7 +1066,19 @@ export class TrafficManager {
       }
     }
 
+    for (let i = this.pedestrians.length - 1; i >= 0; i--) {
+      const p = this.pedestrians[i];
+      const pt = this.sim.getTile(p.tx, p.tz);
+      if (!pt || !(pt.roadGround === 1 || pt.roadGround === 2) || !this.isGroundRoadPassable(pt) || pt.dam || pt.ramp) {
+        this.pedestrians.splice(i, 1);
+      }
+    }
+
     this.purgeInvalidShipsAndAircraft();
+  }
+
+  revalidateVehicles() {
+    return this.revalidateActiveTransport();
   }
 
   refreshRoadGraph(precomputedSig = null) {
@@ -963,6 +1103,9 @@ export class TrafficManager {
       cost = 0.78 + (nt.congestion || 0) * 1.8;
     } else if (nt.roadGround === 2) {
       cost = 0.82 + (nt.congestion || 0) * 2.4;
+    } else if (typeof nt.roadDir === 'number' && nt.roadDir >= 0) {
+      // Express one-way street: faster flow & lower friction than two-way street!
+      cost = 0.94 + (nt.congestion || 0) * 2.4;
     } else {
       cost = 1.18 + (nt.congestion || 0) * 3.2;
     }
@@ -977,7 +1120,8 @@ export class TrafficManager {
   }
 
   // 3-State Travel-Time Dijkstra (0..N-1 ground, N..2N-1 viaduct, 2N..3N-1 sloped ramp; zero len=0 hops!)
-  findRoadPath(sx, sz, ex, ez, startOnRamp = false, startLayer = 0) {
+  // Enforces strict one-way streets (roadDir >= 0) and optional heavy-truck ban avoidance (avoidTruckBan)
+  findRoadPath(sx, sz, ex, ez, startOnRamp = false, startLayer = 0, avoidTruckBan = false) {
     if (!inBounds(sx, sz) || !inBounds(ex, ez)) return null;
     if (sx === ex && sz === ez && !startOnRamp && startLayer === 0) return null;
 
@@ -1102,6 +1246,11 @@ export class TrafficManager {
           const ni = idx(nx, nz);
           const nt = grid[ni];
 
+          // Enforce strict one-way street direction on ground steps
+          if (!this.isGroundStepAllowedByOneWay(ct, nt, d)) continue;
+          // Enforce heavy-truck ban on intermediate tiles (allow only if ni is the final destination itself)
+          if (avoidTruckBan && nt.banTrucks === true && ni !== eIdx) continue;
+
           if (!nt.ramp) {
             if (this.isGroundRoadPassable(nt)) {
               relax(ni, curCost + this.groundStepCost(nt, ni), cur);
@@ -1200,7 +1349,8 @@ export class TrafficManager {
             const nt = grid[ni];
             if (Math.abs(crm.lowFrac) < 1e-5) {
               const nrm = nt.ramp ? this.rampMeta.get(ni) : null;
-              if (this.isGroundRoadPassable(nt) && (!nt.ramp || nrm?.throughGround)) {
+              const truckOk = !(avoidTruckBan && nt.banTrucks === true && ni !== eIdx);
+              if (truckOk && this.isGroundStepAllowedByOneWay(ct, nt, ld) && this.isGroundRoadPassable(nt) && (!nt.ramp || nrm?.throughGround)) {
                 relax(ni, curCost + this.groundStepCost(nt, ni), cur);
               }
             } else if (nt.ramp && this.rampMeta.has(ni)) {
@@ -1389,6 +1539,7 @@ export class TrafficManager {
   }
 
   trySpawnVehicle() {
+    this.ensureRampGraphFresh();
     if (this.modalSplit.rawCarDemand === 0) {
       this.refreshModalSplitDemand();
     }
@@ -1400,6 +1551,62 @@ export class TrafficManager {
       0
     );
     if (nonEmergencyCount >= maxCars) return;
+
+    const freeTransit = Boolean(this.sim.policies?.freeTransit);
+    const period = typeof this.sim.getTrafficPeriodInfo === 'function'
+      ? this.sim.getTrafficPeriodInfo()
+      : { id: 'normal', mult: 1.0, commuteBias: 'balanced' };
+
+    // 0. Priority EV City Bus Fleet Spawner between road-connected Bus Stops!
+    if (this.busStops.length >= 2) {
+      const activeBuses = this.vehicles.filter((v) => v.kind === 'bus').length;
+      const targetBuses = Math.min(12, Math.max(2, Math.ceil(this.busStops.length * (freeTransit ? 1.5 : 1.0))));
+      if (activeBuses < targetBuses && (activeBuses < 2 || Math.random() < (freeTransit ? 0.42 : 0.28))) {
+        for (let attempt = 0; attempt < 4; attempt++) {
+          const idxA = (Math.random() * this.busStops.length) | 0;
+          let idxB = (Math.random() * (this.busStops.length - 1)) | 0;
+          if (idxB >= idxA) idxB++;
+          const stopA = this.busStops[idxA];
+          const stopB = this.busStops[idxB];
+          const busPath = this.findRoadPath(stopA.rx, stopA.rz, stopB.rx, stopB.rz, false, 0, false);
+          if (busPath && busPath.length >= 2) {
+            const w0 = tileToWorld(busPath[0].x, busPath[0].z);
+            const maxSpeed = 1.72;
+            const bv = {
+              kind: 'bus',
+              tripType: 'transit',
+              tripLabel: '🚌 城市新能源公交专线',
+              fromName: stopA.portalName,
+              toName: stopB.portalName,
+              originTile: { x: stopA.bx, z: stopA.bz },
+              destTile: { x: stopB.bx, z: stopB.bz },
+              color: [0.10, 0.72, 0.88],
+              length: 0.42,
+              width: 0.15,
+              height: 0.15,
+              path: busPath,
+              seg: 0,
+              t: 0,
+              speed: maxSpeed * 0.65,
+              maxSpeed,
+              stuckTimer: 0,
+              laneSlot: 0,
+              laneChangeCooldown: 0,
+              wx: w0.wx,
+              wy: this.getRoadNodeY(busPath[0].x, busPath[0].z, busPath[0].layer),
+              wz: w0.wz,
+              dirX: 0,
+              dirZ: -1,
+              inTunnel: false
+            };
+            this.syncVehicleTransform(bv, 0);
+            this.vehicles.push(bv);
+            this.refreshActiveModalCounts();
+            return;
+          }
+        }
+      }
+    }
 
     const endpoints = { R: [], SHOP: [], WORK: [], IND: [], PORT: [], HW: [], GATEWAY: [], W: [] };
     if (this.isGroundRoadPassable(this.sim.getTile(22, GRID_SIZE - 1))) {
@@ -1456,7 +1663,7 @@ export class TrafficManager {
 
     const activeGarbage = this.vehicles.filter((v) => v.kind === 'garbagetruck').length;
     const allZones = endpoints.R.concat(endpoints.SHOP, endpoints.WORK);
-    const freeTransit = Boolean(this.sim.policies?.freeTransit);
+    const workAndShop = endpoints.WORK.concat(endpoints.SHOP);
 
     let origins = null;
     let dests = null;
@@ -1465,10 +1672,21 @@ export class TrafficManager {
     let tripLabel = '👷 通勤上班';
 
     const roll = Math.random();
+    const isMorningRush = period.commuteBias === 'to_work';
+    const isEveningRush = period.commuteBias === 'to_home';
+    const isRush = isMorningRush || isEveningRush;
+    const isMidday = period.commuteBias === 'commercial';
+    const isQuietNight = period.commuteBias === 'quiet';
+
+    // Non-overlapping cumulative probability thresholds so Service, Freight & Immigrant NEVER get shadowed during Rush Hour!
+    const pService = isQuietNight ? 0.22 : (isRush ? 0.10 : 0.14);
+    const pFreight = isQuietNight ? 0.58 : (isMidday ? 0.44 : (isRush ? 0.24 : 0.38));
+    const pImmig   = isRush ? 0.33 : 0.50;
+    const pShop    = isRush ? 0.45 : (isMidday ? 0.82 : 0.74);
 
     // 1. Municipal Sanitation Service Chain (Waste Plant <-> Zones)
     if (endpoints.W.length > 0 && allZones.length > 0 &&
-        activeGarbage < Math.min(10, endpoints.W.length * 4) && roll < 0.14) {
+        activeGarbage < Math.min(10, endpoints.W.length * 4) && roll < pService) {
       const outbound = Math.random() < 0.72;
       origins = outbound ? endpoints.W : allZones;
       dests = outbound ? allZones : endpoints.W;
@@ -1477,7 +1695,7 @@ export class TrafficManager {
       tripLabel = '🚛 环卫沿街收运垃圾';
     }
     // 2. Industrial Freight Supply Chain (Industry -> Retail Restock OR Industry <-> Seaport / Highway Export)
-    else if (roll < 0.38 && endpoints.IND.length > 0 &&
+    else if (roll < pFreight && endpoints.IND.length > 0 &&
              (endpoints.SHOP.length > 0 || endpoints.PORT.length > 0 || endpoints.HW.length > 0)) {
       kind = 'truck';
       tripType = 'freight';
@@ -1503,7 +1721,7 @@ export class TrafficManager {
       }
     }
     // 3. Intercity New Immigrants & Visitors (Highway / HSR / Airport -> Residential / CBD)
-    else if (roll < 0.50 && endpoints.GATEWAY.length > 0 &&
+    else if (roll < pImmig && endpoints.GATEWAY.length > 0 &&
              (endpoints.R.length > 0 || endpoints.SHOP.length > 0)) {
       origins = endpoints.GATEWAY;
       if (endpoints.R.length > 0 && (endpoints.SHOP.length === 0 || Math.random() < 0.75)) {
@@ -1519,9 +1737,9 @@ export class TrafficManager {
       }
     }
     // 4. Shopping & Leisure Chain (Residential <-> Commercial / Landmarks / Stadium)
-    else if (roll < 0.74 && endpoints.R.length > 0 && endpoints.SHOP.length > 0) {
+    else if (roll < pShop && endpoints.R.length > 0 && endpoints.SHOP.length > 0) {
       tripType = 'shopping';
-      const toShop = Math.random() < 0.62;
+      const toShop = isEveningRush ? (Math.random() < 0.25) : (Math.random() < 0.62);
       origins = toShop ? endpoints.R : endpoints.SHOP;
       dests = toShop ? endpoints.SHOP : endpoints.R;
       if (freeTransit && Math.random() < 0.25) {
@@ -1535,19 +1753,17 @@ export class TrafficManager {
         tripLabel = '🛍️ 商圈购物';
       }
     }
-    // 5. Daily Work Commute Chain (Residential <-> Industrial / Office)
-    else if (endpoints.R.length > 0 && endpoints.WORK.length > 0) {
+    // 5. Daily & Rush-Hour Tidal Work Commute Chain (55% share during Morning/Evening Rush!)
+    else if (endpoints.R.length > 0 && (isRush ? workAndShop.length > 0 : endpoints.WORK.length > 0)) {
       tripType = 'commute';
-      const toWork = Math.random() < 0.58;
-      origins = toWork ? endpoints.R : endpoints.WORK;
-      dests = toWork ? endpoints.WORK : endpoints.R;
-      if (freeTransit && Math.random() < 0.28) {
-        kind = 'bus';
-        tripLabel = toWork ? '👷 通勤上班' : '🏠 下班返家';
-      } else {
-        kind = 'car';
-        tripLabel = toWork ? '👷 通勤上班' : '🏠 下班返家';
-      }
+      const destPool = isRush ? workAndShop : endpoints.WORK;
+      const toWork = isMorningRush ? (Math.random() < 0.88) : (isEveningRush ? (Math.random() < 0.12) : (Math.random() < 0.58));
+      origins = toWork ? endpoints.R : destPool;
+      dests = toWork ? destPool : endpoints.R;
+      kind = (freeTransit && Math.random() < 0.28) ? 'bus' : 'car';
+      tripLabel = isMorningRush
+        ? (toWork ? '🌅 早高峰通勤上班' : '👷 通勤交班')
+        : (isEveningRush ? (toWork ? '👷 晚班通勤' : '🌆 晚高峰下班返家') : (toWork ? '👷 通勤上班' : '🏠 下班返家'));
     }
     // Fallback when city only has R + SHOP or WORK + SHOP early in Lv.1
     else if (endpoints.R.length > 0 && endpoints.SHOP.length > 0) {
@@ -1568,7 +1784,8 @@ export class TrafficManager {
 
     const a = origins[(Math.random() * origins.length) | 0];
     const b = dests[(Math.random() * dests.length) | 0];
-    const path = this.findRoadPath(a.rx, a.rz, b.rx, b.rz);
+    const isHeavyTruck = kind === 'truck' || kind === 'garbagetruck';
+    const path = this.findRoadPath(a.rx, a.rz, b.rx, b.rz, false, 0, isHeavyTruck);
     if (!path || path.length < 2) return;
 
     let color = CAR_COLORS[(Math.random() * CAR_COLORS.length) | 0];
@@ -1784,8 +2001,13 @@ export class TrafficManager {
       this.refreshModalSplitDemand();
     }
 
+    const period = typeof this.sim.getTrafficPeriodInfo === 'function'
+      ? this.sim.getTrafficPeriodInfo()
+      : { id: 'normal', mult: 1.0 };
+    const spawnInterval = Math.max(0.11, Math.min(0.65, 0.26 / Math.max(0.35, period.mult || 1.0)));
+
     this.spawnTimer += effDt;
-    if (this.spawnTimer >= 0.26) {
+    if (this.spawnTimer >= spawnInterval) {
       this.spawnTimer = 0;
       this.trySpawnVehicle();
     }
@@ -1855,15 +2077,20 @@ export class TrafficManager {
 
       const onRampSeg = Boolean(cur.onRamp || nxt.onRamp);
       const isElevated = cur.layer === 1 || nxt.layer === 1;
+      const isOneWaySeg =
+        !onRampSeg && !isElevated &&
+        typeof curTile.roadDir === 'number' && curTile.roadDir >= 0 &&
+        typeof nxtTile.roadDir === 'number' && nxtTile.roadDir >= 0;
       const isMultiLane =
         !onRampSeg && (
           isElevated ||
+          isOneWaySeg ||
           (curTile.roadGround >= 2 && curTile.roadGround !== 4) ||
           (nxtTile.roadGround >= 2 && nxtTile.roadGround !== 4)
         );
       const allowOvertake = isMultiLane && !curTile.ramp && !nxtTile.ramp;
 
-      const roadBoost = isElevated ? 1.55 : (onRampSeg ? 1.32 : (nxtTile.roadGround >= 2 ? 1.25 : 1.0));
+      const roadBoost = isElevated ? 1.55 : (onRampSeg ? 1.32 : (nxtTile.roadGround >= 2 ? 1.25 : (isOneWaySeg ? 1.12 : 1.0)));
       let targetSpeed = v.maxSpeed * roadBoost;
 
       // Ground Intersection Control: 'signal' | 'yield' | 'roundabout' (never halts mid-ramp!)
@@ -2091,9 +2318,152 @@ export class TrafficManager {
       t.congestion = t.congestion * 0.90 + raw * 0.10;
     }
 
-    // Update 3D Airliners & Cargo Container Ships
+    // Update 3D Airliners, Cargo Container Ships & Sidewalk Pedestrians
     this.updateAircraft(effDt);
     this.updateShips(effDt);
+    this.updatePedestrians(effDt);
+  }
+
+  _isPedRoadTile(tx, tz) {
+    if (!inBounds(tx, tz)) return false;
+    const t = this.sim.grid[idx(tx, tz)];
+    return Boolean(t && (t.roadGround === 1 || t.roadGround === 2) && !t.dam && !t.ramp && this.isGroundRoadPassable(t));
+  }
+
+  _pickPedNextTile(tx, tz, prevX, prevZ) {
+    const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+    const forwardChoices = [];
+    let backChoice = null;
+    for (let k = 0; k < 4; k++) {
+      const nx = tx + dirs[k][0];
+      const nz = tz + dirs[k][1];
+      if (!this._isPedRoadTile(nx, nz)) continue;
+      if (nx === prevX && nz === prevZ) {
+        backChoice = { x: nx, z: nz };
+      } else {
+        forwardChoices.push({ x: nx, z: nz });
+      }
+    }
+    if (forwardChoices.length > 0) {
+      return { ...forwardChoices[(Math.random() * forwardChoices.length) | 0], reversed: false };
+    }
+    if (backChoice) {
+      return { ...backChoice, reversed: true };
+    }
+    return { x: tx, z: tz, reversed: true };
+  }
+
+  _syncPedTransform(p) {
+    const w0 = tileToWorld(p.tx, p.tz);
+    const w1 = tileToWorld(p.nx, p.nz);
+    const dx = w1.wx - w0.wx;
+    const dz = w1.wz - w0.wz;
+    const len = Math.hypot(dx, dz);
+    if (len > 0.01) {
+      p.dirX = dx / len;
+      p.dirZ = dz / len;
+    }
+    // Outer sidewalk offset (+-0.43m from road centerline)
+    const swOff = 0.43 * p.side;
+    const rightX = -p.dirZ;
+    const rightZ = p.dirX;
+    const frac = Math.min(1, Math.max(0, p.t));
+    p.wx = w0.wx + dx * frac + rightX * swOff;
+    p.wz = w0.wz + dz * frac + rightZ * swOff;
+
+    const y0 = this.sim.isWaterTile(p.tx, p.tz)
+      ? this.getRoadNodeY(p.tx, p.tz, 0)
+      : (this.sim.getTileElev(p.tx, p.tz) + 0.04);
+    const y1 = this.sim.isWaterTile(p.nx, p.nz)
+      ? this.getRoadNodeY(p.nx, p.nz, 0)
+      : (this.sim.getTileElev(p.nx, p.nz) + 0.04);
+    p.wy = y0 + (y1 - y0) * frac;
+  }
+
+  updatePedestrians(effDt) {
+    if (this._pedRoadPool.length === 0) {
+      if (this.pedestrians.length > 0) this.pedestrians.length = 0;
+      return;
+    }
+
+    const period = typeof this.sim.getTrafficPeriodInfo === 'function'
+      ? this.sim.getTrafficPeriodInfo()
+      : { id: 'normal' };
+    const timeScale = period.id === 'late_night'
+      ? 0.35
+      : ((period.id === 'morning_rush' || period.id === 'evening_rush') ? 1.25 : 1.0);
+    const pop = this.sim.population || 0;
+    const baseCap = Math.min(240, Math.min(16, this._pedRoadPool.length * 0.55) + pop * 0.032);
+    const targetPed = Math.min(240, Math.round(baseCap * timeScale));
+
+    // Trim gracefully when transitioning into quiet late night
+    while (this.pedestrians.length > targetPed + 8) {
+      this.pedestrians.pop();
+    }
+
+    // Spawn batch along active sidewalks up to targetPed (<= 240 hard cap)
+    let spawnBudget = Math.min(6, Math.max(0, targetPed - this.pedestrians.length));
+    while (spawnBudget-- > 0 && this.pedestrians.length < 240) {
+      const spot = this._pedRoadPool[(Math.random() * this._pedRoadPool.length) | 0];
+      if (!spot || !this._isPedRoadTile(spot.x, spot.z)) continue;
+      const next = this._pickPedNextTile(spot.x, spot.z, -1, -1);
+      const p = {
+        tx: spot.x,
+        tz: spot.z,
+        nx: next.x,
+        nz: next.z,
+        t: Math.random() * 0.6,
+        side: Math.random() < 0.5 ? 1 : -1,
+        wx: 0,
+        wy: 0,
+        wz: 0,
+        dirX: 1,
+        dirZ: 0,
+        walkPhase: Math.random() * Math.PI * 2,
+        colorIdx: (Math.random() * 8) | 0,
+        speed: 0.24 + Math.random() * 0.14,
+        ttl: 24 + Math.random() * 28
+      };
+      this._syncPedTransform(p);
+      this.pedestrians.push(p);
+    }
+
+    // Advance sidewalk walkers
+    for (let i = this.pedestrians.length - 1; i >= 0; i--) {
+      const p = this.pedestrians[i];
+      if (!this._isPedRoadTile(p.tx, p.tz)) {
+        this.pedestrians.splice(i, 1);
+        continue;
+      }
+
+      p.ttl -= effDt;
+      p.t += p.speed * effDt;
+      p.walkPhase = (p.walkPhase + p.speed * effDt * 18) % (Math.PI * 2);
+
+      if (p.t >= 1.0) {
+        if (p.ttl <= 0 && this.pedestrians.length > Math.floor(targetPed * 0.85)) {
+          this.pedestrians.splice(i, 1);
+          continue;
+        }
+        const prevX = p.tx;
+        const prevZ = p.tz;
+        p.tx = p.nx;
+        p.tz = p.nz;
+        p.t -= 1.0;
+        if (!this._isPedRoadTile(p.tx, p.tz)) {
+          this.pedestrians.splice(i, 1);
+          continue;
+        }
+        const next = this._pickPedNextTile(p.tx, p.tz, prevX, prevZ);
+        p.nx = next.x;
+        p.nz = next.z;
+        if (next.reversed) {
+          p.side = -p.side;
+        }
+      }
+
+      this._syncPedTransform(p);
+    }
   }
 
   updateAircraft(effDt) {
