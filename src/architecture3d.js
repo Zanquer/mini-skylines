@@ -1,0 +1,2527 @@
+// High-Detail Photorealistic 3D Architectural Asset Library, CR400 Bullet Trains, Aircraft, Ships & Sky Dome
+// Offline single-file bundle compatible: imports FACADE_TEXTURES data URIs and accesses THREE via constructor / globalThis.THREE.
+
+import { FACADE_TEXTURES } from './facade_textures.js';
+
+function hash2(x, y, seed = 1337) {
+  let n = Math.imul(x | 0, 374761393) ^ Math.imul(y | 0, 668265263) ^ Math.imul(seed | 0, 1442695041);
+  n = Math.imul(n ^ (n >>> 13), 1274126177);
+  return ((n ^ (n >>> 16)) >>> 0) / 4294967296;
+}
+
+function mergeParts(THREE, parts) {
+  const positions = [];
+  const normals = [];
+  const uvs = [];
+  const m4 = new THREE.Matrix4();
+  const n3 = new THREE.Matrix3();
+  const q = new THREE.Quaternion();
+  const e = new THREE.Euler();
+  const posV = new THREE.Vector3();
+  const sclV = new THREE.Vector3();
+  const v = new THREE.Vector3();
+
+  for (const p of parts) {
+    const src = p.geo;
+    const g = src.index ? src.toNonIndexed() : src;
+    e.set(p.rx || 0, p.ry || 0, p.rz || 0, 'XYZ');
+    q.setFromEuler(e);
+    posV.set(p.px || 0, p.py || 0, p.pz || 0);
+    sclV.set(p.sx ?? 1, p.sy ?? 1, p.sz ?? 1);
+    m4.compose(posV, q, sclV);
+    n3.getNormalMatrix(m4);
+
+    const posAttr = g.getAttribute('position');
+    const normAttr = g.getAttribute('normal');
+    const uvAttr = g.getAttribute('uv');
+    const count = posAttr.count;
+
+    for (let i = 0; i < count; i++) {
+      v.fromBufferAttribute(posAttr, i).applyMatrix4(m4);
+      positions.push(v.x, v.y, v.z);
+
+      if (normAttr) {
+        v.fromBufferAttribute(normAttr, i).applyMatrix3(n3).normalize();
+        normals.push(v.x, v.y, v.z);
+      } else {
+        normals.push(0, 1, 0);
+      }
+
+      if (uvAttr) {
+        uvs.push(uvAttr.getX(i), uvAttr.getY(i));
+      } else {
+        uvs.push(0, 0);
+      }
+    }
+    if (src.index) g.dispose();
+  }
+
+  const out = new THREE.BufferGeometry();
+  out.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  out.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
+  out.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  return out;
+}
+
+// Lofted Streamlined Parabolic Nose Geometry for CR400 "Fuxing" Bullet Train (facing +Z, rail-head at y=0)
+function buildCR400NoseGeometry(THREE) {
+  // Stations from z = +0.04 (full CR400 cross-section) to z = +0.355 (aerodynamic nose cone)
+  const stations = [
+    { z: 0.040, rx: 0.104, yBot: 0.022, yTop: 0.240 },
+    { z: 0.105, rx: 0.101, yBot: 0.023, yTop: 0.228 },
+    { z: 0.170, rx: 0.092, yBot: 0.025, yTop: 0.198 },
+    { z: 0.235, rx: 0.076, yBot: 0.028, yTop: 0.158 },
+    { z: 0.290, rx: 0.055, yBot: 0.033, yTop: 0.118 },
+    { z: 0.332, rx: 0.032, yBot: 0.042, yTop: 0.088 },
+    { z: 0.355, rx: 0.012, yBot: 0.052, yTop: 0.068 }
+  ];
+
+  const N = 14;
+  const ringPts = stations.map((st) => {
+    const cy = (st.yBot + st.yTop) * 0.5;
+    const ry = (st.yTop - st.yBot) * 0.5;
+    const pts = [];
+    for (let k = 0; k < N; k++) {
+      const a = (k * Math.PI * 2) / N;
+      // Counter-clockwise when viewed from +Z so outward normals point UP/OUT/+Z
+      const sx = -Math.sin(a);
+      const ca = Math.cos(a);
+      // Slight flat-bottom skirt shaping on lower half
+      const yShape = ca < 0 ? Math.pow(-ca, 0.78) * -1 : Math.pow(ca, 0.88);
+      const xShape = Math.sign(sx) * Math.pow(Math.abs(sx), 0.88);
+      pts.push([xShape * st.rx, cy + yShape * ry, st.z]);
+    }
+    return pts;
+  });
+
+  const positions = [];
+  const uvs = [];
+  const pushTri = (a, b, c) => {
+    positions.push(a[0], a[1], a[2], b[0], b[1], b[2], c[0], c[1], c[2]);
+    uvs.push(0, 0, 1, 0, 0.5, 1);
+  };
+
+  for (let s = 0; s < stations.length - 1; s++) {
+    const r0 = ringPts[s];
+    const r1 = ringPts[s + 1];
+    for (let k = 0; k < N; k++) {
+      const kn = (k + 1) % N;
+      pushTri(r0[k], r1[k], r1[kn]);
+      pushTri(r0[k], r1[kn], r0[kn]);
+    }
+  }
+
+  // Smooth front nose cap at final station
+  const lastRing = ringPts[stations.length - 1];
+  const tip = [0, 0.060, 0.362];
+  for (let k = 0; k < N; k++) {
+    const kn = (k + 1) % N;
+    pushTri(lastRing[k], tip, lastRing[kn]);
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  geo.computeVertexNormals();
+  return geo;
+}
+
+// ==================== World-Space Facade & Night-Window Shader Patch ====================
+
+function applyWorldFacadePatch(mat, opts) {
+  const {
+    cacheKey,
+    tileW = 0.64,
+    tileH = 0.60,
+    roofTex = null,
+    roofScale = 0.72,
+    nightMode = 0,
+    cellsX = 4.0,
+    cellsY = 4.0,
+    planarOnly = false
+  } = opts;
+
+  const fTileW = Number(tileW).toFixed(4);
+  const fTileH = Number(tileH).toFixed(4);
+  const fRoofS = Number(roofScale).toFixed(4);
+  const fCellsX = Number(cellsX).toFixed(2);
+  const fCellsY = Number(cellsY).toFixed(2);
+  const iNightMode = nightMode | 0;
+  const iPlanar = planarOnly ? 1 : 0;
+
+  const patchFn = (shader) => {
+    shader.uniforms.uArchRoofMap = { value: roofTex || mat.map };
+
+    shader.vertexShader = shader.vertexShader
+      .replace(
+        '#include <common>',
+        `#include <common>
+varying vec3 vArchWorldPos;
+varying vec3 vArchWorldNorm;
+varying vec3 vArchBasePos;`
+      )
+      .replace(
+        '#include <project_vertex>',
+        `#include <project_vertex>
+vArchWorldPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
+vec3 archCol0 = modelMatrix[0].xyz;
+vec3 archCol1 = modelMatrix[1].xyz;
+vec3 archCol2 = modelMatrix[2].xyz;
+vArchWorldNorm = normalize(
+  archCol0 * (objectNormal.x / max(1e-6, dot(archCol0, archCol0))) +
+  archCol1 * (objectNormal.y / max(1e-6, dot(archCol1, archCol1))) +
+  archCol2 * (objectNormal.z / max(1e-6, dot(archCol2, archCol2)))
+);
+vArchBasePos = (modelMatrix * vec4(0.0, -0.5, 0.0, 1.0)).xyz;`
+      );
+
+    shader.fragmentShader = shader.fragmentShader
+      .replace(
+        '#include <common>',
+        `#include <common>
+uniform sampler2D uArchRoofMap;
+varying vec3 vArchWorldPos;
+varying vec3 vArchWorldNorm;
+varying vec3 vArchBasePos;`
+      )
+      .replace(
+        '#include <map_fragment>',
+        `vec3 archN = normalize(vArchWorldNorm);
+bool archIsRoof = (${iPlanar} == 1) || (abs(archN.y) >= 0.5);
+vec2 archWallUV = vec2(
+  ((abs(archN.x) > abs(archN.z) ? (vArchWorldPos.z - vArchBasePos.z) : (vArchWorldPos.x - vArchBasePos.x)) / ${fTileW}) + 0.5,
+  max(0.0, vArchWorldPos.y - vArchBasePos.y) / ${fTileH}
+);
+vec2 archRoofUV = vArchWorldPos.xz / ${fRoofS};
+vec4 archTexel = vec4(1.0);
+#ifdef USE_MAP
+  vec4 archWallSample = texture2D(map, archWallUV);
+  vec4 archRoofSample = texture2D(uArchRoofMap, archRoofUV);
+  archTexel = archIsRoof ? archRoofSample : archWallSample;
+  diffuseColor *= archTexel;
+#endif`
+      )
+      .replace(
+        '#include <emissivemap_fragment>',
+        `float archNight = totalEmissiveRadiance.r;
+totalEmissiveRadiance = vec3(0.0);
+#if defined(USE_MAP) && (${iNightMode} > 0)
+  if (!archIsRoof && archNight > 0.005) {
+    vec2 archCellScaled = archWallUV * vec2(${fCellsX}, ${fCellsY});
+    vec2 archCellId = floor(archCellScaled);
+    vec2 archCellFrac = fract(archCellScaled);
+
+    float bldgSeed = floor(vArchBasePos.x * 3.17 + 0.5) * 19.3 + floor(vArchBasePos.z * 3.17 + 0.5) * 47.9;
+    float faceSeed = abs(archN.x) > abs(archN.z) ? (archN.x > 0.0 ? 11.0 : 23.0) : (archN.z > 0.0 ? 37.0 : 53.0);
+    float rnd = fract(sin(dot(archCellId + vec2(bldgSeed, faceSeed), vec2(127.1, 311.7))) * 43758.5453);
+    float rndTemp = fract(rnd * 17.37 + 0.23);
+
+    // Perceptual sRGB brightness & channel values from linear hardware-sRGB sample
+    vec3 srgbTex = sqrt(max(vec3(0.0), archTexel.rgb));
+    float sLum = dot(srgbTex, vec3(0.299, 0.587, 0.114));
+    float glassMask = 0.0;
+
+    #if ${iNightMode} == 1
+      // Residential (res_beige / res_grey): 4x4 window/balcony cells; exclude bright walls & lower AC louvers
+      float inResPane = step(0.09, archCellFrac.x) * step(archCellFrac.x, 0.91) * step(0.28, archCellFrac.y) * step(archCellFrac.y, 0.90);
+      float darkPane = smoothstep(0.73, 0.52, sLum) * smoothstep(0.18, 0.28, sLum);
+      float coolPane = smoothstep(-0.01, 0.03, srgbTex.b - srgbTex.r) * smoothstep(0.80, 0.56, sLum);
+      glassMask = inResPane * max(darkPane, coolPane);
+    #elif ${iNightMode} == 2
+      // Unitized blue-grey office glass curtain wall (4x4): vision pane in middle 20%..84%, keep spandrels & silver mullions crisp
+      float inVision = step(0.05, archCellFrac.x) * step(archCellFrac.x, 0.95) * step(0.20, archCellFrac.y) * step(archCellFrac.y, 0.84);
+      glassMask = inVision * smoothstep(0.01, 0.06, srgbTex.b - srgbTex.r * 0.94) * smoothstep(0.74, 0.55, sLum) * smoothstep(0.16, 0.26, sLum);
+    #elif ${iNightMode} == 3
+      // Limestone pilaster office facade (4x4): dark recessed window apertures between bright stone piers
+      float inStoneWin = step(0.15, archCellFrac.x) * step(archCellFrac.x, 0.85) * step(0.10, archCellFrac.y) * step(archCellFrac.y, 0.88);
+      glassMask = inStoneWin * smoothstep(0.58, 0.40, sLum) * smoothstep(0.14, 0.23, sLum);
+    #elif ${iNightMode} == 4
+      // Ground-floor retail shopfront podium (4x1): warm boutique display glass in lower 62%
+      float inShop = step(0.06, archCellFrac.x) * step(archCellFrac.x, 0.94) * step(0.03, archCellFrac.y) * step(archCellFrac.y, 0.62);
+      glassMask = inShop * smoothstep(0.20, 0.30, sLum) * smoothstep(0.86, 0.64, sLum);
+    #elif ${iNightMode} == 5
+      // Villa / Townhouse cream plaster (2x2): dark casement panes inside crisp white window muntins
+      float inVilla = step(0.16, archCellFrac.x) * step(archCellFrac.x, 0.84) * step(0.16, archCellFrac.y) * step(archCellFrac.y, 0.82);
+      glassMask = inVilla * smoothstep(0.52, 0.34, sLum);
+    #elif ${iNightMode} == 6
+      // Industrial corrugated panel: upper horizontal clerestory window band (v in 0.75..0.89)
+      float vBand = fract(archWallUV.y);
+      float inClere = step(0.75, vBand) * step(vBand, 0.89);
+      glassMask = inClere * smoothstep(0.68, 0.48, sLum) * smoothstep(0.22, 0.32, sLum);
+    #endif
+
+    float litProb = (${iNightMode} == 4) ? 0.78 : ((${iNightMode} == 2 || ${iNightMode} == 3) ? 0.48 : 0.44);
+    float isLit = step(1.0 - litProb, rnd);
+
+    // Warm residential/retail amber-gold (0xffd9a0) mixed with cool white-sky executive suites
+    vec3 warmGlow = vec3(1.0, 0.83, 0.58);
+    vec3 coolGlow = vec3(0.82, 0.92, 1.0);
+    float coolMix = (${iNightMode} == 2 || ${iNightMode} == 3) ? step(0.60, rndTemp) : step(0.88, rndTemp);
+    vec3 winRadiance = mix(warmGlow, coolGlow, coolMix) * (0.76 + 0.44 * fract(rnd * 29.3));
+
+    totalEmissiveRadiance = winRadiance * glassMask * isLit * archNight;
+  }
+#endif`
+      );
+  };
+
+  mat.userData = mat.userData || {};
+  mat.userData.facadePatch = true;
+  mat.userData.facadePatchOpts = opts;
+  mat.onBeforeCompile = patchFn;
+  mat.customProgramCacheKey = function () {
+    return cacheKey;
+  };
+  return mat;
+}
+
+// ==================== Special Procedural Decal Canvas Textures ====================
+
+function createHelipadTexture(THREE) {
+  const c = document.createElement('canvas');
+  c.width = 256;
+  c.height = 256;
+  const g = c.getContext('2d');
+
+  g.fillStyle = '#525b66';
+  g.fillRect(0, 0, 256, 256);
+
+  g.strokeStyle = 'rgba(203, 213, 225, 0.42)';
+  g.lineWidth = 6;
+  g.strokeRect(14, 14, 228, 228);
+
+  g.strokeStyle = 'rgba(241, 245, 249, 0.78)';
+  g.lineWidth = 8;
+  g.beginPath();
+  g.arc(128, 128, 82, 0, Math.PI * 2);
+  g.stroke();
+
+  g.fillStyle = 'rgba(248, 250, 252, 0.86)';
+  g.fillRect(90, 78, 16, 100);
+  g.fillRect(150, 78, 16, 100);
+  g.fillRect(90, 120, 76, 16);
+
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 4;
+  return tex;
+}
+
+function createSoccerPitchTexture(THREE) {
+  const c = document.createElement('canvas');
+  c.width = 256;
+  c.height = 256;
+  const g = c.getContext('2d');
+
+  const stripes = 10;
+  const sw = 256 / stripes;
+  for (let i = 0; i < stripes; i++) {
+    g.fillStyle = i % 2 === 0 ? '#229944' : '#2cb452';
+    g.fillRect(i * sw, 0, sw + 1, 256);
+  }
+
+  g.strokeStyle = '#b85038';
+  g.lineWidth = 22;
+  g.strokeRect(6, 6, 244, 244);
+
+  g.strokeStyle = '#f8fafc';
+  g.lineWidth = 4;
+  g.strokeRect(26, 38, 204, 180);
+
+  g.beginPath();
+  g.moveTo(128, 38);
+  g.lineTo(128, 218);
+  g.stroke();
+
+  g.beginPath();
+  g.arc(128, 128, 28, 0, Math.PI * 2);
+  g.stroke();
+
+  g.strokeRect(26, 82, 34, 92);
+  g.strokeRect(196, 82, 34, 92);
+
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 4;
+  return tex;
+}
+
+function createSolarMirrorTexture(THREE) {
+  const c = document.createElement('canvas');
+  c.width = 128;
+  c.height = 128;
+  const g = c.getContext('2d');
+
+  const grad = g.createLinearGradient(0, 0, 128, 128);
+  grad.addColorStop(0, '#174ea6');
+  grad.addColorStop(0.5, '#2563eb');
+  grad.addColorStop(1, '#1e3a8a');
+  g.fillStyle = grad;
+  g.fillRect(0, 0, 128, 128);
+
+  g.strokeStyle = 'rgba(226, 238, 255, 0.68)';
+  g.lineWidth = 2;
+  for (let i = 0; i <= 128; i += 32) {
+    g.beginPath();
+    g.moveTo(i, 0); g.lineTo(i, 128);
+    g.moveTo(0, i); g.lineTo(128, i);
+    g.stroke();
+  }
+  g.strokeStyle = '#e2e8f0';
+  g.lineWidth = 5;
+  g.strokeRect(2, 2, 124, 124);
+
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.wrapT = THREE.RepeatWrapping;
+  return tex;
+}
+
+function createContainerRibsTexture(THREE) {
+  const c = document.createElement('canvas');
+  c.width = 128;
+  c.height = 64;
+  const g = c.getContext('2d');
+
+  g.fillStyle = '#e5e7eb';
+  g.fillRect(0, 0, 128, 64);
+
+  for (let x = 6; x < 122; x += 8) {
+    g.fillStyle = '#b4bcc8';
+    g.fillRect(x, 5, 4, 54);
+    g.fillStyle = '#ffffff';
+    g.fillRect(x + 4, 5, 2, 54);
+  }
+  g.fillStyle = '#9ca3af';
+  g.fillRect(0, 0, 128, 5);
+  g.fillRect(0, 59, 128, 5);
+  g.fillStyle = '#f8fafc';
+  g.fillRect(92, 14, 22, 8);
+
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.wrapT = THREE.RepeatWrapping;
+  return tex;
+}
+
+function createRunwayTexture(THREE) {
+  const c = document.createElement('canvas');
+  c.width = 128;
+  c.height = 512;
+  const g = c.getContext('2d');
+
+  g.fillStyle = '#252930';
+  g.fillRect(0, 0, 128, 512);
+
+  g.fillStyle = '#1d2026';
+  g.fillRect(30, 50, 68, 412);
+
+  g.fillStyle = '#f1f5f9';
+  g.fillRect(8, 0, 4, 512);
+  g.fillRect(116, 0, 4, 512);
+
+  for (let x = 18; x <= 102; x += 14) {
+    g.fillRect(x, 14, 8, 42);
+    g.fillRect(x, 456, 8, 42);
+  }
+
+  g.fillRect(24, 96, 16, 44);
+  g.fillRect(88, 96, 16, 44);
+  g.fillRect(24, 372, 16, 44);
+  g.fillRect(88, 372, 16, 44);
+
+  for (let y = 80; y < 430; y += 44) {
+    g.fillRect(61, y, 6, 24);
+  }
+
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 4;
+  return tex;
+}
+
+function createPoolTexture(THREE) {
+  const c = document.createElement('canvas');
+  c.width = 128;
+  c.height = 128;
+  const g = c.getContext('2d');
+
+  const grad = g.createRadialGradient(64, 64, 8, 64, 64, 82);
+  grad.addColorStop(0, '#38e8ff');
+  grad.addColorStop(0.7, '#0ea5e9');
+  grad.addColorStop(1, '#0284c7');
+  g.fillStyle = grad;
+  g.fillRect(0, 0, 128, 128);
+
+  g.strokeStyle = 'rgba(255, 255, 255, 0.42)';
+  g.lineWidth = 2.5;
+  for (let i = 18; i < 110; i += 22) {
+    g.beginPath();
+    g.arc(i, 42 + (i % 3) * 18, 14, 0, Math.PI * 1.4);
+    g.stroke();
+  }
+  g.strokeStyle = '#f8fafc';
+  g.lineWidth = 8;
+  g.strokeRect(3, 3, 122, 122);
+
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+// ==================== Main ArchitectureLibrary Class ====================
+
+export class ArchitectureLibrary {
+  constructor(THREE, glbProtos = {}, mats = {}) {
+    this.THREE = THREE || globalThis.THREE;
+    this.glbProtos = glbProtos;
+    this.baseMats = mats;
+    this.emissiveMaterials = [];
+    this._glbAbandonedCache = new WeakMap();
+
+    this._initTexturesAndMaterials();
+    this._initSculptedGeometries();
+  }
+
+  _loadPhotoTexture(loader, uri) {
+    const THREE = this.THREE;
+    let tex;
+    if (loader && uri) {
+      tex = loader.load(uri);
+    } else if (THREE.CanvasTexture) {
+      const c = document.createElement('canvas');
+      c.width = c.height = 4;
+      tex = new THREE.CanvasTexture(c);
+    } else {
+      tex = {};
+    }
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.wrapS = THREE.RepeatWrapping;
+    tex.wrapT = THREE.RepeatWrapping;
+    tex.anisotropy = 8;
+    tex.generateMipmaps = true;
+    if (THREE.LinearMipmapLinearFilter) tex.minFilter = THREE.LinearMipmapLinearFilter;
+    if (THREE.LinearFilter) tex.magFilter = THREE.LinearFilter;
+    return tex;
+  }
+
+  _initTexturesAndMaterials() {
+    const THREE = this.THREE;
+    const texSrc = (typeof FACADE_TEXTURES !== 'undefined' && FACADE_TEXTURES) ? FACADE_TEXTURES : {};
+    const loader = THREE.TextureLoader ? new THREE.TextureLoader() : null;
+
+    // 10 Offline Photorealistic Orthographic Textures (loaded once & shared city-wide!)
+    this.photoTex = {
+      res_beige: this._loadPhotoTexture(loader, texSrc.res_beige),
+      res_grey: this._loadPhotoTexture(loader, texSrc.res_grey),
+      office_glass: this._loadPhotoTexture(loader, texSrc.office_glass),
+      office_stone: this._loadPhotoTexture(loader, texSrc.office_stone),
+      retail_podium: this._loadPhotoTexture(loader, texSrc.retail_podium),
+      villa_plaster: this._loadPhotoTexture(loader, texSrc.villa_plaster),
+      industrial_panel: this._loadPhotoTexture(loader, texSrc.industrial_panel),
+      roof_concrete: this._loadPhotoTexture(loader, texSrc.roof_concrete),
+      paving_plaza: this._loadPhotoTexture(loader, texSrc.paving_plaza),
+      roof_solar_green: this._loadPhotoTexture(loader, texSrc.roof_solar_green)
+    };
+
+    this.texHelipad = createHelipadTexture(THREE);
+    this.texPitch = createSoccerPitchTexture(THREE);
+    this.texSolar = createSolarMirrorTexture(THREE);
+    this.texContainer = createContainerRibsTexture(THREE);
+    this.texRunway = createRunwayTexture(THREE);
+    this.texPool = createPoolTexture(THREE);
+
+    const makeWorldFacadeMat = (key, tex, colorHex, rough, metal, patchCfg) => {
+      const isLit = (patchCfg.nightMode || 0) > 0;
+      const m = new THREE.MeshStandardMaterial({
+        color: colorHex,
+        map: tex,
+        emissive: isLit ? 0xffffff : 0x000000,
+        emissiveIntensity: 0.0,
+        roughness: rough,
+        metalness: metal
+      });
+      applyWorldFacadePatch(m, { cacheKey: key, ...patchCfg });
+      if (isLit) this.emissiveMaterials.push(m);
+      return m;
+    };
+
+    const makePlanarMat = (key, tex, colorHex, rough, metal, scaleXZ) => {
+      const m = new THREE.MeshStandardMaterial({
+        color: colorHex,
+        map: tex,
+        roughness: rough,
+        metalness: metal
+      });
+      applyWorldFacadePatch(m, {
+        cacheKey: key,
+        tileW: scaleXZ,
+        tileH: scaleXZ,
+        roofTex: tex,
+        roofScale: scaleXZ,
+        nightMode: 0,
+        planarOnly: true
+      });
+      return m;
+    };
+
+    const makeContMat = (hex) => new THREE.MeshStandardMaterial({
+      color: hex,
+      map: this.texContainer,
+      roughness: 0.52,
+      metalness: 0.28
+    });
+
+    const roofConc = this.photoTex.roof_concrete;
+    const roofGreen = this.photoTex.roof_solar_green;
+
+    // World-Space Scales:
+    // - Residential (4 floors x 4 bays): floor = 0.15 -> tileH = 0.60, tileW = 0.64
+    // - Office Glass / Stone (4 floors x 4 bays): floor = 0.17 -> tileH = 0.68, tileW = 0.64
+    // - Retail Podium (1 storey x 4 bays): storey = 0.36 -> tileH = 0.36, tileW = 0.72
+    // - Villa Plaster (2 floors x 2 bays): 2 floors = 0.34 -> tileH = 0.34, tileW = 0.44
+    // - Industrial Panel (corrugated + clerestory): tileH = 0.42, tileW = 0.60
+
+    this.m = {
+      // Top-down world-space granite plaza paving, concrete roof membrane & green roof
+      pavingPlaza: makePlanarMat('arch_planar_plaza_v1', this.photoTex.paving_plaza, 0xffffff, 0.78, 0.05, 0.46),
+      pavingPlazaDusty: makePlanarMat('arch_planar_plaza_dusty_v1', this.photoTex.paving_plaza, 0x8e9298, 0.90, 0.03, 0.46),
+      roofConcrete: makePlanarMat('arch_planar_roof_conc_v1', roofConc, 0xf1f5f9, 0.84, 0.04, 0.72),
+      roofGreen: makePlanarMat('arch_planar_roof_green_v1', roofGreen, 0xffffff, 0.82, 0.04, 0.78),
+
+      // Contemporary Grade-A Office & Commercial Curtain-Wall Facades (CH & O)
+      cbdIceBlue: makeWorldFacadeMat('arch_fac_off_glass_ice_v1', this.photoTex.office_glass, 0xdceeff, 0.18, 0.38, {
+        tileW: 0.64, tileH: 0.68, roofTex: roofConc, roofScale: 0.72, nightMode: 2, cellsX: 4, cellsY: 4
+      }),
+      cbdSlateSilver: makeWorldFacadeMat('arch_fac_off_glass_sil_v1', this.photoTex.office_glass, 0xf1f5f9, 0.17, 0.42, {
+        tileW: 0.64, tileH: 0.68, roofTex: roofConc, roofScale: 0.72, nightMode: 2, cellsX: 4, cellsY: 4
+      }),
+      cbdDeepAzure: makeWorldFacadeMat('arch_fac_off_glass_az_v1', this.photoTex.office_glass, 0xbcd8f4, 0.19, 0.38, {
+        tileW: 0.64, tileH: 0.68, roofTex: roofConc, roofScale: 0.72, nightMode: 2, cellsX: 4, cellsY: 4
+      }),
+      cbdTealGlass: makeWorldFacadeMat('arch_fac_off_glass_tl_v1', this.photoTex.office_glass, 0xc4edea, 0.18, 0.36, {
+        tileW: 0.64, tileH: 0.68, roofTex: roofConc, roofScale: 0.72, nightMode: 2, cellsX: 4, cellsY: 4
+      }),
+      finStoneChampagne: makeWorldFacadeMat('arch_fac_off_stone_ch_v1', this.photoTex.office_stone, 0xfbf6ee, 0.52, 0.12, {
+        tileW: 0.64, tileH: 0.68, roofTex: roofConc, roofScale: 0.72, nightMode: 3, cellsX: 4, cellsY: 4
+      }),
+      finStoneSilver: makeWorldFacadeMat('arch_fac_off_stone_sl_v1', this.photoTex.office_stone, 0xe8eef5, 0.48, 0.16, {
+        tileW: 0.64, tileH: 0.68, roofTex: roofConc, roofScale: 0.72, nightMode: 3, cellsX: 4, cellsY: 4
+      }),
+
+      // Ground-Floor Luxury Retail Shopfront Podium (CL, RH, CH, O podiums)
+      retailPodium: makeWorldFacadeMat('arch_fac_retail_pod_v1', this.photoTex.retail_podium, 0xffffff, 0.38, 0.18, {
+        tileW: 0.72, tileH: 0.36, roofTex: roofGreen, roofScale: 0.78, nightMode: 4, cellsX: 4, cellsY: 1
+      }),
+      retailPodiumConc: makeWorldFacadeMat('arch_fac_retail_podc_v1', this.photoTex.retail_podium, 0xf8fafc, 0.38, 0.18, {
+        tileW: 0.72, tileH: 0.36, roofTex: roofConc, roofScale: 0.72, nightMode: 4, cellsX: 4, cellsY: 1
+      }),
+
+      // Contemporary Chinese High-Rise Residential Facades (RH: res_beige & res_grey)
+      condoWarmWhite: makeWorldFacadeMat('arch_fac_res_beige_w_v1', this.photoTex.res_beige, 0xffffff, 0.62, 0.06, {
+        tileW: 0.64, tileH: 0.60, roofTex: roofConc, roofScale: 0.72, nightMode: 1, cellsX: 4, cellsY: 4
+      }),
+      condoChampagne: makeWorldFacadeMat('arch_fac_res_beige_c_v1', this.photoTex.res_beige, 0xf5eadc, 0.64, 0.06, {
+        tileW: 0.64, tileH: 0.60, roofTex: roofConc, roofScale: 0.72, nightMode: 1, cellsX: 4, cellsY: 4
+      }),
+      condoWarmGrey: makeWorldFacadeMat('arch_fac_res_grey_g_v1', this.photoTex.res_grey, 0xf8fafc, 0.58, 0.08, {
+        tileW: 0.64, tileH: 0.60, roofTex: roofConc, roofScale: 0.72, nightMode: 1, cellsX: 4, cellsY: 4
+      }),
+      condoSandStone: makeWorldFacadeMat('arch_fac_res_grey_s_v1', this.photoTex.res_grey, 0xeee8df, 0.60, 0.08, {
+        tileW: 0.64, tileH: 0.60, roofTex: roofConc, roofScale: 0.72, nightMode: 1, cellsX: 4, cellsY: 4
+      }),
+
+      // Low-Density Villa / Townhouse Cream Plaster Facades (RL)
+      villaCream: makeWorldFacadeMat('arch_fac_villa_cr_v1', this.photoTex.villa_plaster, 0xffffff, 0.72, 0.04, {
+        tileW: 0.44, tileH: 0.34, roofTex: roofConc, roofScale: 0.64, nightMode: 5, cellsX: 2, cellsY: 2
+      }),
+      villaSand: makeWorldFacadeMat('arch_fac_villa_sd_v1', this.photoTex.villa_plaster, 0xf3e7d8, 0.74, 0.04, {
+        tileW: 0.44, tileH: 0.34, roofTex: roofConc, roofScale: 0.64, nightMode: 5, cellsX: 2, cellsY: 2
+      }),
+      villaCool: makeWorldFacadeMat('arch_fac_villa_cl_v1', this.photoTex.villa_plaster, 0xeaeff5, 0.70, 0.05, {
+        tileW: 0.44, tileH: 0.34, roofTex: roofConc, roofScale: 0.64, nightMode: 5, cellsX: 2, cellsY: 2
+      }),
+
+      // Industrial Cladding + Clerestory Strip Facades (I)
+      indPanelBlue: makeWorldFacadeMat('arch_fac_ind_bl_v1', this.photoTex.industrial_panel, 0xdce8f5, 0.52, 0.32, {
+        tileW: 0.60, tileH: 0.42, roofTex: roofConc, roofScale: 0.72, nightMode: 6, cellsX: 3, cellsY: 1
+      }),
+      indPanelSilver: makeWorldFacadeMat('arch_fac_ind_sl_v1', this.photoTex.industrial_panel, 0xf4f7fb, 0.44, 0.38, {
+        tileW: 0.60, tileH: 0.42, roofTex: roofConc, roofScale: 0.72, nightMode: 6, cellsX: 3, cellsY: 1
+      }),
+      indPanelWarm: makeWorldFacadeMat('arch_fac_ind_wm_v1', this.photoTex.industrial_panel, 0xd8cec4, 0.60, 0.26, {
+        tileW: 0.60, tileH: 0.42, roofTex: roofConc, roofScale: 0.72, nightMode: 6, cellsX: 3, cellsY: 1
+      }),
+
+      // Dusty Desaturated Abandoned Versions of the Exact Same Photorealistic Textures (nightMode: 0, NEVER black!)
+      dustyCBD: makeWorldFacadeMat('arch_fac_dusty_cbd_v1', this.photoTex.office_glass, 0x8b929a, 0.88, 0.08, {
+        tileW: 0.64, tileH: 0.68, roofTex: roofConc, roofScale: 0.72, nightMode: 0, cellsX: 4, cellsY: 4
+      }),
+      dustyStoneFin: makeWorldFacadeMat('arch_fac_dusty_st_v1', this.photoTex.office_stone, 0x908d88, 0.90, 0.05, {
+        tileW: 0.64, tileH: 0.68, roofTex: roofConc, roofScale: 0.72, nightMode: 0, cellsX: 4, cellsY: 4
+      }),
+      dustyRetail: makeWorldFacadeMat('arch_fac_dusty_ret_v1', this.photoTex.retail_podium, 0x8a8e94, 0.90, 0.05, {
+        tileW: 0.72, tileH: 0.36, roofTex: roofConc, roofScale: 0.72, nightMode: 0, cellsX: 4, cellsY: 1
+      }),
+      dustyCondo: makeWorldFacadeMat('arch_fac_dusty_res_v1', this.photoTex.res_beige, 0x92908b, 0.90, 0.04, {
+        tileW: 0.64, tileH: 0.60, roofTex: roofConc, roofScale: 0.72, nightMode: 0, cellsX: 4, cellsY: 4
+      }),
+      dustyCondoGrey: makeWorldFacadeMat('arch_fac_dusty_resg_v1', this.photoTex.res_grey, 0x8d9196, 0.90, 0.04, {
+        tileW: 0.64, tileH: 0.60, roofTex: roofConc, roofScale: 0.72, nightMode: 0, cellsX: 4, cellsY: 4
+      }),
+      dustyVilla: makeWorldFacadeMat('arch_fac_dusty_vil_v1', this.photoTex.villa_plaster, 0x938f88, 0.92, 0.03, {
+        tileW: 0.44, tileH: 0.34, roofTex: roofConc, roofScale: 0.64, nightMode: 0, cellsX: 2, cellsY: 2
+      }),
+      dustyInd: makeWorldFacadeMat('arch_fac_dusty_ind_v1', this.photoTex.industrial_panel, 0x888e95, 0.90, 0.08, {
+        tileW: 0.60, tileH: 0.42, roofTex: roofConc, roofScale: 0.72, nightMode: 0, cellsX: 3, cellsY: 1
+      }),
+
+      // Architectural trims, concrete, metals & glass
+      plazaStone: new THREE.MeshStandardMaterial({ color: 0xcbd5e1, roughness: 0.74, metalness: 0.05 }),
+      parapetStone: new THREE.MeshStandardMaterial({ color: 0xdad5cc, roughness: 0.64, metalness: 0.08 }),
+      darkGranite: new THREE.MeshStandardMaterial({ color: 0x3b4452, roughness: 0.46, metalness: 0.22 }),
+      charcoalFrame: new THREE.MeshStandardMaterial({ color: 0x2c343f, roughness: 0.44, metalness: 0.32 }),
+      refugeLouvers: new THREE.MeshStandardMaterial({ color: 0x26303c, roughness: 0.50, metalness: 0.40 }),
+      asphalt: new THREE.MeshStandardMaterial({ color: 0x323842, roughness: 0.86, metalness: 0.04 }),
+      brushedSilver: new THREE.MeshStandardMaterial({ color: 0xdce4ec, roughness: 0.26, metalness: 0.58 }),
+      whiteComposite: new THREE.MeshStandardMaterial({ color: 0xf4f7fa, roughness: 0.30, metalness: 0.18 }),
+      steelDark: new THREE.MeshStandardMaterial({ color: 0x4b5664, roughness: 0.44, metalness: 0.52 }),
+      atriumGlass: new THREE.MeshStandardMaterial({
+        color: 0x8ec5e8,
+        emissive: 0x3898d8,
+        emissiveIntensity: 0.22,
+        roughness: 0.14,
+        metalness: 0.38,
+        transparent: true,
+        opacity: 0.86
+      }),
+      cockpitGlass: new THREE.MeshStandardMaterial({ color: 0x111a2b, roughness: 0.10, metalness: 0.68 }),
+
+      // CR400 "Fuxing" Bullet Train Livery Materials
+      fuxingBody: new THREE.MeshStandardMaterial({ color: 0xf8fafc, roughness: 0.18, metalness: 0.22 }),
+      fuxingRedStripe: new THREE.MeshStandardMaterial({ color: 0xc81e2b, roughness: 0.24, metalness: 0.34 }),
+      fuxingRoofSilver: new THREE.MeshStandardMaterial({ color: 0xcbd5e1, roughness: 0.30, metalness: 0.48 }),
+      fuxingBogie: new THREE.MeshStandardMaterial({ color: 0x262c36, roughness: 0.62, metalness: 0.35 }),
+      fuxingHeadlight: new THREE.MeshBasicMaterial({ color: 0xfff8dc }),
+
+      // Landscaping, wood, roofs & special decals
+      lawn: new THREE.MeshStandardMaterial({ color: 0x3b9c4a, roughness: 0.86 }),
+      hedge: new THREE.MeshStandardMaterial({ color: 0x2b753b, roughness: 0.88 }),
+      teakDeck: new THREE.MeshStandardMaterial({ color: 0xb77946, roughness: 0.68 }),
+      terracottaRoof: new THREE.MeshStandardMaterial({ color: 0xb45640, roughness: 0.68 }),
+      slateRoof: new THREE.MeshStandardMaterial({ color: 0x455060, roughness: 0.62, metalness: 0.16 }),
+      poolWater: new THREE.MeshStandardMaterial({
+        map: this.texPool,
+        emissive: 0x0ea5e9,
+        emissiveIntensity: 0.26,
+        roughness: 0.12,
+        metalness: 0.22
+      }),
+      helipad: new THREE.MeshStandardMaterial({ map: this.texHelipad, roughness: 0.76, metalness: 0.06 }),
+      soccerPitch: new THREE.MeshStandardMaterial({ map: this.texPitch, roughness: 0.82 }),
+      solarPanel: new THREE.MeshStandardMaterial({
+        map: this.texSolar,
+        roughness: 0.18,
+        metalness: 0.56,
+        emissive: 0x0f2d6b,
+        emissiveIntensity: 0.14
+      }),
+      runway: new THREE.MeshStandardMaterial({ map: this.texRunway, roughness: 0.80 }),
+
+      // Industrial accents, cranes, ships & containers
+      craneRed: new THREE.MeshStandardMaterial({ color: 0xdc2626, roughness: 0.38, metalness: 0.40 }),
+      craneYellow: new THREE.MeshStandardMaterial({ color: 0xf59e0b, roughness: 0.40, metalness: 0.36 }),
+      factoryFasciaBlue: new THREE.MeshStandardMaterial({ color: 0x1d65b8, roughness: 0.36, metalness: 0.28 }),
+      factoryFasciaTeal: new THREE.MeshStandardMaterial({ color: 0x0f766e, roughness: 0.36, metalness: 0.28 }),
+      factoryBrick: new THREE.MeshStandardMaterial({ color: 0x9e6450, roughness: 0.76, metalness: 0.10 }),
+      hullNavy: new THREE.MeshStandardMaterial({ color: 0x172554, roughness: 0.46, metalness: 0.32 }),
+      hullCrimson: new THREE.MeshStandardMaterial({ color: 0x991b1b, roughness: 0.52, metalness: 0.24 }),
+      airlineBlue: new THREE.MeshStandardMaterial({ color: 0x1d4ed8, roughness: 0.24, metalness: 0.40 }),
+      contRed: makeContMat(0xdc2626),
+      contBlue: makeContMat(0x2563eb),
+      contAmber: makeContMat(0xd97706),
+      contTeal: makeContMat(0x0d9488),
+      contGreen: makeContMat(0x16a34a),
+
+      // Subtle architectural LED linear strips, storefront neon, warm molten-salt solar crown & aviation beacons
+      ledLinearCyan: new THREE.MeshBasicMaterial({ color: 0x7dd3fc }),
+      ledLinearWhite: new THREE.MeshBasicMaterial({ color: 0xe2f1ff }),
+      neonCyan: new THREE.MeshBasicMaterial({ color: 0x22d3ee }),
+      neonGold: new THREE.MeshBasicMaterial({ color: 0xfbbf24 }),
+      neonRose: new THREE.MeshBasicMaterial({ color: 0xfb7185 }),
+      neonEmerald: new THREE.MeshBasicMaterial({ color: 0x34d399 }),
+      neonViolet: new THREE.MeshBasicMaterial({ color: 0xc084fc }),
+      floodlightWhite: new THREE.MeshBasicMaterial({ color: 0xfffef5 }),
+      solarReceiverCrown: new THREE.MeshStandardMaterial({
+        color: 0xffb74d,
+        emissive: 0xff9800,
+        emissiveIntensity: 0.92,
+        roughness: 0.28,
+        metalness: 0.24
+      }),
+      beaconRed: new THREE.MeshBasicMaterial({ color: 0xff2438 }),
+      strobeGreen: new THREE.MeshBasicMaterial({ color: 0x22c55e }),
+
+      // Non-black dusty grey-taupe weathered materials for untextured parts when b.abandoned = true
+      abandoned: new THREE.MeshStandardMaterial({ color: 0x8b9098, roughness: 0.90, metalness: 0.05 }),
+      abandonedRust: new THREE.MeshStandardMaterial({ color: 0x7c7874, roughness: 0.92, metalness: 0.06 })
+    };
+
+    this.containerMats = [this.m.contRed, this.m.contBlue, this.m.contAmber, this.m.contTeal, this.m.contGreen];
+    this.neonMats = [this.m.neonCyan, this.m.neonRose, this.m.neonGold, this.m.neonEmerald, this.m.neonViolet];
+  }
+
+  _getDustyGLBMat(origMat) {
+    if (!origMat) return this.m.abandoned;
+    let cached = this._glbAbandonedCache.get(origMat);
+    if (!cached) {
+      cached = origMat.clone();
+      if (cached.color) cached.color.setHex(0x828890);
+      cached.roughness = 0.90;
+      cached.metalness = 0.05;
+      if (cached.emissive) cached.emissive.setHex(0x000000);
+      cached.emissiveIntensity = 0.0;
+      this._glbAbandonedCache.set(origMat, cached);
+    }
+    return cached;
+  }
+
+  _initSculptedGeometries() {
+    const THREE = this.THREE;
+    const box = new THREE.BoxGeometry(1, 1, 1);
+    const cyl16 = new THREE.CylinderGeometry(0.5, 0.5, 1, 16);
+    const cyl24 = new THREE.CylinderGeometry(0.5, 0.5, 1, 24);
+    const oct = new THREE.CylinderGeometry(0.5, 0.5, 1, 8);
+    const taperOct = new THREE.CylinderGeometry(0.32, 0.50, 1, 8);
+    const taperPyr = new THREE.CylinderGeometry(0.24, 0.52, 1, 4);
+    const cone8 = new THREE.ConeGeometry(0.5, 1, 8);
+    const sphere16 = new THREE.SphereGeometry(0.5, 18, 14);
+    const hemiDome = new THREE.SphereGeometry(0.5, 22, 12, 0, Math.PI * 2, 0, Math.PI * 0.5);
+    const capsule = new THREE.CapsuleGeometry(0.25, 0.5, 8, 14);
+    const treeCrown = new THREE.DodecahedronGeometry(0.11, 1);
+
+    // 1. Flat-shaded Axis-Aligned Tapered Square Shaft (CTF / CITIC / Ping An supertalls)
+    const rawTaperSq = new THREE.CylinderGeometry(0.52, 0.7071, 1, 4);
+    rawTaperSq.rotateY(Math.PI * 0.25);
+    const taperSquare = rawTaperSq.toNonIndexed();
+    taperSquare.computeVertexNormals();
+    rawTaperSq.dispose();
+
+    // 2. Pre-merged 4-Wall Rectangular Roof Parapet Frame (女儿墙)
+    const parapetFrame = mergeParts(THREE, [
+      { geo: box, px: 0, py: 0, pz: 0.47, sx: 1.0, sy: 1.0, sz: 0.06 },
+      { geo: box, px: 0, py: 0, pz: -0.47, sx: 1.0, sy: 1.0, sz: 0.06 },
+      { geo: box, px: 0.47, py: 0, pz: 0, sx: 0.06, sy: 1.0, sz: 0.88 },
+      { geo: box, px: -0.47, py: 0, pz: 0, sx: 0.06, sy: 1.0, sz: 0.88 }
+    ]);
+
+    // 3. Pre-merged 8-Fin Vertical Curtain-Wall Corner & Mullion Columns
+    const rectCornerFins = mergeParts(THREE, [
+      { geo: box, px: -0.495, py: 0, pz: -0.495, sx: 0.04, sy: 1.0, sz: 0.04 },
+      { geo: box, px: 0.495, py: 0, pz: -0.495, sx: 0.04, sy: 1.0, sz: 0.04 },
+      { geo: box, px: -0.495, py: 0, pz: 0.495, sx: 0.04, sy: 1.0, sz: 0.04 },
+      { geo: box, px: 0.495, py: 0, pz: 0.495, sx: 0.04, sy: 1.0, sz: 0.04 },
+      { geo: box, px: 0, py: 0, pz: 0.50, sx: 0.028, sy: 1.0, sz: 0.028 },
+      { geo: box, px: 0, py: 0, pz: -0.50, sx: 0.028, sy: 1.0, sz: 0.028 },
+      { geo: box, px: 0.50, py: 0, pz: 0, sx: 0.028, sy: 1.0, sz: 0.028 },
+      { geo: box, px: -0.50, py: 0, pz: 0, sx: 0.028, sy: 1.0, sz: 0.028 }
+    ]);
+
+    // 4. Pre-merged Street Tree Planters & Canopies for Plot Edges (ultra-low draw calls!)
+    const cornerCoords4 = [[-0.39, -0.39], [0.39, -0.39], [-0.39, 0.39], [0.39, 0.39]];
+    const frontCoords2 = [[-0.38, 0.39], [0.38, 0.39]];
+
+    const buildPlanterSet = (coords) => {
+      const curbParts = [];
+      const trunkParts = [];
+      const leafParts = [];
+      for (const [cx, cz] of coords) {
+        curbParts.push({ geo: box, px: cx, py: 0.032, pz: cz, sx: 0.11, sy: 0.036, sz: 0.11 });
+        trunkParts.push({ geo: cyl16, px: cx, py: 0.075, pz: cz, sx: 0.022, sy: 0.08, sz: 0.022 });
+        leafParts.push({ geo: treeCrown, px: cx, py: 0.145, pz: cz, sx: 0.68, sy: 0.68, sz: 0.68 });
+      }
+      return {
+        curbs: mergeParts(THREE, curbParts),
+        trunks: mergeParts(THREE, trunkParts),
+        leaves: mergeParts(THREE, leafParts)
+      };
+    };
+    const planters4 = buildPlanterSet(cornerCoords4);
+    const planters2 = buildPlanterSet(frontCoords2);
+
+    // 5. Sawtooth Industrial Roof (3 pitched ridges)
+    const triRidge = new THREE.CylinderGeometry(0.5, 0.5, 1, 3);
+    const sawParts = [];
+    for (let i = -1; i <= 1; i++) {
+      sawParts.push({
+        geo: triRidge,
+        px: 0,
+        py: 0,
+        pz: i * 0.22,
+        rz: Math.PI * 0.5,
+        rx: 0.22,
+        sx: 0.22,
+        sy: 0.68,
+        sz: 0.24
+      });
+    }
+    const sawtoothRoof = mergeParts(THREE, sawParts);
+    triRidge.dispose();
+
+    // 6. Spherical Horton Gas Tank Support Legs
+    const legParts = [];
+    for (let i = 0; i < 4; i++) {
+      const a = (i * Math.PI) / 2 + Math.PI / 4;
+      legParts.push({
+        geo: cyl16,
+        px: Math.cos(a) * 0.13,
+        py: 0.18,
+        pz: Math.sin(a) * 0.13,
+        sx: 0.028,
+        sy: 0.36,
+        sz: 0.028
+      });
+    }
+    const eqTorus = new THREE.TorusGeometry(0.175, 0.014, 8, 20);
+    legParts.push({ geo: eqTorus, px: 0, py: 0.28, pz: 0, rx: Math.PI * 0.5 });
+    const gasSphereSupport = mergeParts(THREE, legParts);
+    eqTorus.dispose();
+
+    // 7. Hyperboloid Cooling Tower & Olympic Stadium LatheGeometries
+    const coolingTower = new THREE.LatheGeometry([
+      new THREE.Vector2(0.24, 0.0),
+      new THREE.Vector2(0.20, 0.22),
+      new THREE.Vector2(0.165, 0.52),
+      new THREE.Vector2(0.148, 0.78),
+      new THREE.Vector2(0.172, 1.05),
+      new THREE.Vector2(0.158, 1.05),
+      new THREE.Vector2(0.138, 0.78)
+    ], 24);
+
+    const stadiumBowl = new THREE.LatheGeometry([
+      new THREE.Vector2(0.45, 0.00),
+      new THREE.Vector2(0.54, 0.22),
+      new THREE.Vector2(0.51, 0.38),
+      new THREE.Vector2(0.46, 0.38),
+      new THREE.Vector2(0.30, 0.03)
+    ], 32);
+
+    const stadiumRoof = new THREE.LatheGeometry([
+      new THREE.Vector2(0.34, 0.390),
+      new THREE.Vector2(0.51, 0.365),
+      new THREE.Vector2(0.525, 0.385),
+      new THREE.Vector2(0.44, 0.425),
+      new THREE.Vector2(0.335, 0.405)
+    ], 32);
+
+    // 8. Spoked 3D Ferris Wheel Frame
+    const rimOuter = new THREE.TorusGeometry(0.68, 0.022, 10, 32);
+    const rimInner = new THREE.TorusGeometry(0.50, 0.012, 8, 28);
+    const fwParts = [
+      { geo: rimOuter, px: 0, py: 0, pz: -0.06 },
+      { geo: rimOuter, px: 0, py: 0, pz: 0.06 },
+      { geo: rimInner, px: 0, py: 0, pz: -0.06 },
+      { geo: rimInner, px: 0, py: 0, pz: 0.06 },
+      { geo: cyl16, px: 0, py: 0, pz: 0, rx: Math.PI * 0.5, sx: 0.14, sy: 0.20, sz: 0.14 }
+    ];
+    for (let i = 0; i < 12; i++) {
+      const a = (i * Math.PI * 2) / 12;
+      const cx = Math.cos(a) * 0.34;
+      const cy = Math.sin(a) * 0.34;
+      fwParts.push({ geo: cyl16, px: cx, py: cy, pz: -0.06, rz: a - Math.PI * 0.5, sx: 0.014, sy: 0.68, sz: 0.014 });
+      fwParts.push({ geo: cyl16, px: cx, py: cy, pz: 0.06, rz: a - Math.PI * 0.5, sx: 0.014, sy: 0.68, sz: 0.014 });
+      fwParts.push({ geo: cyl16, px: Math.cos(a) * 0.68, py: Math.sin(a) * 0.68, pz: 0, rx: Math.PI * 0.5, sx: 0.016, sy: 0.14, sz: 0.016 });
+    }
+    const ferrisWheelFrame = mergeParts(THREE, fwParts);
+    rimOuter.dispose();
+    rimInner.dispose();
+
+    // 9. Twin Concentric Rings of 16 Angled Heliostats
+    const helioMirParts = [];
+    const helioPedParts = [];
+    const ringDefs = [
+      { count: 6, r: 0.26, tilt: 0.42 },
+      { count: 10, r: 0.43, tilt: 0.58 }
+    ];
+    for (const rd of ringDefs) {
+      for (let i = 0; i < rd.count; i++) {
+        const a = (i * Math.PI * 2) / rd.count + (rd.count === 10 ? 0.16 : 0);
+        const px = Math.cos(a) * rd.r;
+        const pz = Math.sin(a) * rd.r;
+        helioPedParts.push({ geo: cyl16, px, py: 0.055, pz, sx: 0.022, sy: 0.11, sz: 0.022 });
+        helioMirParts.push({ geo: box, px, py: 0.115, pz, ry: -a, rz: rd.tilt, sx: 0.105, sy: 0.012, sz: 0.115 });
+      }
+    }
+    const heliostatMirrors = mergeParts(THREE, helioMirParts);
+    const heliostatPedestals = mergeParts(THREE, helioPedParts);
+
+    // 10. Port Container Gantry Crane Frame
+    const gcParts = [
+      { geo: box, px: -0.11, py: 0.48, pz: -0.14, sx: 0.032, sy: 0.96, sz: 0.032 },
+      { geo: box, px: 0.11, py: 0.48, pz: -0.14, sx: 0.032, sy: 0.96, sz: 0.032 },
+      { geo: box, px: -0.11, py: 0.48, pz: 0.16, sx: 0.032, sy: 0.96, sz: 0.032 },
+      { geo: box, px: 0.11, py: 0.48, pz: 0.16, sx: 0.032, sy: 0.96, sz: 0.032 },
+      { geo: box, px: 0, py: 0.42, pz: -0.14, sx: 0.24, sy: 0.028, sz: 0.028 },
+      { geo: box, px: 0, py: 0.42, pz: 0.16, sx: 0.24, sy: 0.028, sz: 0.028 },
+      { geo: box, px: -0.07, py: 0.96, pz: 0.26, sx: 0.028, sy: 0.036, sz: 1.24 },
+      { geo: box, px: 0.07, py: 0.96, pz: 0.26, sx: 0.028, sy: 0.036, sz: 1.24 },
+      { geo: box, px: 0, py: 0.96, pz: 0.84, sx: 0.17, sy: 0.032, sz: 0.04 },
+      { geo: box, px: -0.06, py: 1.18, pz: 0.02, sx: 0.026, sy: 0.44, sz: 0.026 },
+      { geo: box, px: 0.06, py: 1.18, pz: 0.02, sx: 0.026, sy: 0.44, sz: 0.026 },
+      { geo: box, px: 0, py: 1.39, pz: 0.02, sx: 0.15, sy: 0.028, sz: 0.03 },
+      { geo: box, px: 0, py: 1.17, pz: 0.38, rx: 0.50, sx: 0.016, sy: 0.016, sz: 0.82 },
+      { geo: box, px: 0, py: 1.17, pz: -0.18, rx: -0.78, sx: 0.016, sy: 0.016, sz: 0.56 }
+    ];
+    const gantryCraneRed = mergeParts(THREE, gcParts);
+
+    // 11. Gull-Wing Terminal Roof & CopenHill Sloped Eco-Incinerator Wedge
+    const gullShape = new THREE.Shape();
+    gullShape.moveTo(-0.56, 0.0);
+    gullShape.quadraticCurveTo(-0.28, 0.19, 0.0, 0.05);
+    gullShape.quadraticCurveTo(0.28, 0.19, 0.56, 0.0);
+    gullShape.lineTo(0.54, -0.035);
+    gullShape.quadraticCurveTo(0.28, 0.14, 0.0, 0.01);
+    gullShape.quadraticCurveTo(-0.28, 0.14, -0.54, -0.035);
+    gullShape.closePath();
+    const gullWingRoof = new THREE.ExtrudeGeometry(gullShape, { depth: 0.52, bevelEnabled: true, bevelThickness: 0.015, bevelSize: 0.015, bevelSegments: 2 });
+    gullWingRoof.translate(0, 0, -0.26);
+
+    const wedgeShape = new THREE.Shape();
+    wedgeShape.moveTo(-0.38, 0.0);
+    wedgeShape.lineTo(0.38, 0.0);
+    wedgeShape.lineTo(0.38, 1.18);
+    wedgeShape.quadraticCurveTo(0.02, 0.78, -0.38, 0.34);
+    wedgeShape.closePath();
+    const copenhillWedge = new THREE.ExtrudeGeometry(wedgeShape, { depth: 0.58, bevelEnabled: true, bevelThickness: 0.015, bevelSize: 0.015, bevelSegments: 2 });
+    copenhillWedge.translate(0, 0, -0.29);
+
+    // 12. Widebody Airliner & Ocean Container Ship Hulls
+    const wingShape = new THREE.Shape();
+    wingShape.moveTo(0, -0.24);
+    wingShape.lineTo(0.68, 0.15);
+    wingShape.lineTo(0.68, 0.25);
+    wingShape.lineTo(0.11, 0.11);
+    wingShape.lineTo(-0.11, 0.11);
+    wingShape.lineTo(-0.68, 0.25);
+    wingShape.lineTo(-0.68, 0.15);
+    wingShape.closePath();
+    const airlinerWing = new THREE.ExtrudeGeometry(wingShape, { depth: 0.018, bevelEnabled: true, bevelThickness: 0.006, bevelSize: 0.008, bevelSegments: 2 });
+    airlinerWing.rotateX(-Math.PI * 0.5);
+
+    const hTailShape = new THREE.Shape();
+    hTailShape.moveTo(0, -0.08);
+    hTailShape.lineTo(0.26, 0.09);
+    hTailShape.lineTo(0.26, 0.15);
+    hTailShape.lineTo(0, 0.07);
+    hTailShape.lineTo(-0.26, 0.15);
+    hTailShape.lineTo(-0.26, 0.09);
+    hTailShape.closePath();
+    const airlinerHTail = new THREE.ExtrudeGeometry(hTailShape, { depth: 0.012, bevelEnabled: false });
+    airlinerHTail.rotateX(-Math.PI * 0.5);
+
+    const vTailShape = new THREE.Shape();
+    vTailShape.moveTo(0.14, 0.0);
+    vTailShape.lineTo(-0.08, 0.29);
+    vTailShape.lineTo(-0.19, 0.29);
+    vTailShape.lineTo(-0.10, 0.0);
+    vTailShape.closePath();
+    const airlinerVTail = new THREE.ExtrudeGeometry(vTailShape, { depth: 0.016, bevelEnabled: true, bevelThickness: 0.004, bevelSize: 0.005, bevelSegments: 1 });
+    airlinerVTail.translate(0, 0, -0.008);
+    airlinerVTail.rotateY(-Math.PI * 0.5);
+
+    const makeShipHullGeo = (halfBeam, sternY, bowY, depth) => {
+      const sh = new THREE.Shape();
+      sh.moveTo(-halfBeam * 0.88, sternY);
+      sh.lineTo(-halfBeam, sternY * 0.65);
+      sh.lineTo(-halfBeam, -0.35);
+      sh.quadraticCurveTo(-halfBeam * 0.92, bowY * 0.72, 0, bowY);
+      sh.quadraticCurveTo(halfBeam * 0.92, bowY * 0.72, halfBeam, -0.35);
+      sh.lineTo(halfBeam, sternY * 0.65);
+      sh.lineTo(halfBeam * 0.88, sternY);
+      sh.closePath();
+      const g = new THREE.ExtrudeGeometry(sh, { depth, bevelEnabled: true, bevelThickness: 0.012, bevelSize: 0.012, bevelSegments: 2 });
+      g.rotateX(-Math.PI * 0.5);
+      return g;
+    };
+
+    const fuselage = new THREE.CapsuleGeometry(0.095, 1.08, 10, 18);
+    fuselage.rotateX(Math.PI * 0.5);
+
+    const windNacelle = new THREE.CapsuleGeometry(0.058, 0.15, 8, 12);
+    windNacelle.rotateX(Math.PI * 0.5);
+
+    // 13. CR400 "Fuxing" High-Speed Train Shared Aerodynamic Coach & Nose Geometries
+    // Cross-section: width = 0.208 (-0.104..+0.104), height = 0.218 (y = 0.022..0.240 above rail-head y=0)
+    const crShape = new THREE.Shape();
+    crShape.moveTo(-0.086, 0.022);
+    crShape.lineTo(0.086, 0.022);
+    crShape.lineTo(0.104, 0.072);
+    crShape.lineTo(0.098, 0.194);
+    crShape.quadraticCurveTo(0, 0.246, -0.098, 0.194);
+    crShape.lineTo(-0.104, 0.072);
+    crShape.closePath();
+
+    const fuxingMidBody = new THREE.ExtrudeGeometry(crShape, { depth: 0.65, bevelEnabled: false });
+    fuxingMidBody.translate(0, 0, -0.325);
+
+    const fuxingHeadAft = new THREE.ExtrudeGeometry(crShape, { depth: 0.38, bevelEnabled: false });
+    fuxingHeadAft.translate(0, 0, -0.340); // spans [-0.340, +0.040], meeting lofted nose at z = +0.040!
+    const fuxingNose = buildCR400NoseGeometry(THREE);
+    const fuxingHeadBody = mergeParts(THREE, [
+      { geo: fuxingHeadAft },
+      { geo: fuxingNose }
+    ]);
+    fuxingHeadAft.dispose();
+    fuxingNose.dispose();
+
+    // Pre-merged bogies + underframe skirts + inter-car gangway bellows + dark window ribbon
+    const fuxingMidDark = mergeParts(THREE, [
+      // Bogies at z = -0.20 & +0.20 (sitting right above y=0 rail-head)
+      { geo: box, px: 0, py: 0.017, pz: -0.20, sx: 0.165, sy: 0.026, sz: 0.11 },
+      { geo: box, px: 0, py: 0.017, pz: 0.20, sx: 0.165, sy: 0.026, sz: 0.11 },
+      // Inter-car dark rubber gangway diaphragms (extending total length to 0.68)
+      { geo: box, px: 0, py: 0.125, pz: -0.333, sx: 0.176, sy: 0.185, sz: 0.016 },
+      { geo: box, px: 0, py: 0.125, pz: 0.333, sx: 0.176, sy: 0.185, sz: 0.016 },
+      // Continuous flush dark tinted passenger window strip on both sides
+      { geo: box, px: 0, py: 0.150, pz: 0, sx: 0.206, sy: 0.042, sz: 0.58 }
+    ]);
+
+    const fuxingHeadDark = mergeParts(THREE, [
+      // Rear & front bogies + nose cowling snowplow
+      { geo: box, px: 0, py: 0.017, pz: -0.21, sx: 0.165, sy: 0.026, sz: 0.11 },
+      { geo: box, px: 0, py: 0.017, pz: 0.15, sx: 0.155, sy: 0.026, sz: 0.10 },
+      { geo: box, px: 0, py: 0.036, pz: 0.28, rx: 0.28, sx: 0.11, sy: 0.024, sz: 0.10 },
+      // Rear inter-car gangway at z = -0.34
+      { geo: box, px: 0, py: 0.125, pz: -0.344, sx: 0.176, sy: 0.185, sz: 0.014 },
+      // Aft side passenger window strip
+      { geo: box, px: 0, py: 0.150, pz: -0.14, sx: 0.206, sy: 0.042, sz: 0.35 },
+      // Wrap-around dark aerodynamic cab windscreen at +Z nose
+      { geo: sphere16, px: 0, py: 0.168, pz: 0.165, rx: -0.34, sx: 0.148, sy: 0.062, sz: 0.145 }
+    ]);
+
+    const fuxingMidStripe = mergeParts(THREE, [
+      { geo: box, px: 0, py: 0.106, pz: 0, sx: 0.211, sy: 0.018, sz: 0.648 },
+      { geo: box, px: 0, py: 0.202, pz: 0, sx: 0.199, sy: 0.010, sz: 0.648 }
+    ]);
+
+    const fuxingHeadStripe = mergeParts(THREE, [
+      // Aft horizontal crimson cheatline + sweeping angled nose stripe converging toward nose tip
+      { geo: box, px: 0, py: 0.106, pz: -0.14, sx: 0.211, sy: 0.018, sz: 0.39 },
+      { geo: box, px: 0.082, py: 0.088, pz: 0.165, rx: 0.13, ry: -0.14, sx: 0.018, sy: 0.016, sz: 0.25 },
+      { geo: box, px: -0.082, py: 0.088, pz: 0.165, rx: 0.13, ry: 0.14, sx: 0.018, sy: 0.016, sz: 0.25 }
+    ]);
+
+    const fuxingHeadlights = mergeParts(THREE, [
+      { geo: sphere16, px: -0.045, py: 0.076, pz: 0.308, sx: 0.026, sy: 0.018, sz: 0.032 },
+      { geo: sphere16, px: 0.045, py: 0.076, pz: 0.308, sx: 0.026, sy: 0.018, sz: 0.032 }
+    ]);
+
+    this.geos = {
+      box,
+      cyl16,
+      cyl24,
+      oct,
+      taperOct,
+      taperPyr,
+      taperSquare,
+      parapetFrame,
+      rectCornerFins,
+      planters4,
+      planters2,
+      cone8,
+      sphere16,
+      hemiDome,
+      capsule,
+      sawtoothRoof,
+      gasSphereSupport,
+      coolingTower,
+      stadiumBowl,
+      stadiumRoof,
+      ferrisWheelFrame,
+      heliostatMirrors,
+      heliostatPedestals,
+      gantryCraneRed,
+      gullWingRoof,
+      copenhillWedge,
+      fuselage,
+      airlinerWing,
+      airlinerHTail,
+      airlinerVTail,
+      shipHullBoot: makeShipHullGeo(0.24, 0.96, -1.04, 0.09),
+      shipHullMain: makeShipHullGeo(0.26, 0.98, -1.10, 0.14),
+      fuxingMidBody,
+      fuxingHeadBody,
+      fuxingMidDark,
+      fuxingHeadDark,
+      fuxingMidStripe,
+      fuxingHeadStripe,
+      fuxingHeadlights,
+      windMast: new THREE.CylinderGeometry(0.030, 0.068, 1.58, 14),
+      windNacelle,
+      windBlade: new THREE.ConeGeometry(0.036, 0.44, 7),
+      spireNeedle: new THREE.ConeGeometry(0.026, 0.88, 4),
+      umbrellaCanopy: new THREE.ConeGeometry(0.11, 0.06, 8),
+      treeCrown
+    };
+  }
+
+  setNightFactor(night) {
+    const emi = Math.max(0, Math.min(1, night)) * 1.28;
+    for (let i = 0; i < this.emissiveMaterials.length; i++) {
+      this.emissiveMaterials[i].emissiveIntensity = emi;
+    }
+  }
+
+  // ==================== Helpers for Building Assembly ====================
+
+  _addMesh(grp, geo, mat, px, py, pz, sx = 1, sy = 1, sz = 1, shadow = true, ry = 0) {
+    const m = new this.THREE.Mesh(geo, mat);
+    m.position.set(px, py, pz);
+    m.scale.set(sx, sy, sz);
+    if (ry !== 0) m.rotation.y = ry;
+    m.castShadow = shadow;
+    m.receiveShadow = true;
+    grp.add(m);
+    return m;
+  }
+
+  // Granite plaza plot pad (~0.92 footprint) + 2 or 4 manicured street trees/planters at parcel edges
+  _addZonedPlotPad(grp, ab = false, fourCorners = true) {
+    this._addMesh(grp, this.geos.box, ab ? this.m.pavingPlazaDusty : this.m.pavingPlaza, 0, 0.012, 0, 0.92, 0.024, 0.92, false);
+    const pSet = fourCorners ? this.geos.planters4 : this.geos.planters2;
+    this._addMesh(grp, pSet.curbs, ab ? this.m.abandoned : this.m.parapetStone, 0, 0, 0, 1, 1, 1, false);
+    this._addMesh(grp, pSet.trunks, this.m.teakDeck, 0, 0, 0, 1, 1, 1, false);
+    this._addMesh(grp, pSet.leaves, ab ? this.m.abandonedRust : this.m.lawn, 0, 0, 0, 1, 1, 1, true);
+  }
+
+  _localToWorld(lx, ly, lz, x, y0, z, rotRad) {
+    const c = Math.cos(rotRad);
+    const s = Math.sin(rotRad);
+    return new this.THREE.Vector3(
+      x + lx * c + lz * s,
+      y0 + ly,
+      z - lx * s + lz * c
+    );
+  }
+
+  _pushSmoke(hooks, lx, ly, lz, x, y0, z, rotRad, isSteam = false) {
+    if (!hooks || !hooks.smokeSources) return;
+    const wp = this._localToWorld(lx, ly, lz, x, y0, z, rotRad);
+    wp.isSteam = isSteam;
+    hooks.smokeSources.push(wp);
+  }
+
+  _addBeacon(grp, hooks, lx, ly, lz, x, y0, z, rotRad, ab = false) {
+    if (ab) return null;
+    const bm = this._addMesh(grp, this.geos.sphere16, this.m.beaconRed, lx, ly, lz, 0.065, 0.065, 0.065, false);
+    bm.userData.worldPos = this._localToWorld(lx, ly, lz, x, y0, z, rotRad);
+    if (hooks && hooks.beacons) hooks.beacons.push(bm);
+    return bm;
+  }
+
+  _addTinyTree(grp, lx, ly, lz, sc = 0.7) {
+    this._addMesh(grp, this.geos.cyl16, this.m.teakDeck, lx, ly + 0.05 * sc, lz, 0.03 * sc, 0.10 * sc, 0.03 * sc, false);
+    this._addMesh(grp, this.geos.treeCrown, this.m.lawn, lx, ly + 0.14 * sc, lz, sc, sc, sc, true);
+  }
+
+  _addHelipad(grp, lx, ly, lz, width = 0.30, ab = false) {
+    this._addMesh(grp, this.geos.box, ab ? this.m.abandoned : this.m.roofConcrete, lx, ly + 0.014, lz, width + 0.04, 0.026, width + 0.04, true);
+    const pad = this._addMesh(grp, this.geos.box, ab ? this.m.abandoned : this.m.helipad, lx, ly + 0.029, lz, width, 0.006, width, false);
+    return pad;
+  }
+
+  _addRooftopHVAC(grp, lx, ly, lz, ab = false) {
+    const mat = ab ? this.m.abandoned : this.m.brushedSilver;
+    const fanMat = ab ? this.m.abandonedRust : this.m.steelDark;
+    this._addMesh(grp, this.geos.box, mat, lx, ly + 0.042, lz, 0.16, 0.084, 0.11, true);
+    this._addMesh(grp, this.geos.cyl16, fanMat, lx - 0.038, ly + 0.087, lz, 0.055, 0.010, 0.055, false);
+    this._addMesh(grp, this.geos.cyl16, fanMat, lx + 0.038, ly + 0.087, lz, 0.055, 0.010, 0.055, false);
+  }
+
+  _placeGLB(grp, key, px, py, pz, sx, sy, sz, ab = false, ry = 0) {
+    const proto = this.glbProtos && this.glbProtos[key];
+    if (!proto) return false;
+    const inst = proto.clone();
+    if (ab) {
+      inst.traverse((ch) => {
+        if (ch.isMesh && ch.material) {
+          if (Array.isArray(ch.material)) {
+            ch.material = ch.material.map((mt) => this._getDustyGLBMat(mt));
+          } else {
+            ch.material = this._getDustyGLBMat(ch.material);
+          }
+        }
+      });
+    }
+    inst.position.set(px, py, pz);
+    inst.scale.set(sx, sy, sz);
+    if (ry !== 0) inst.rotation.y = ry;
+    grp.add(inst);
+    return true;
+  }
+
+  // ==================== Master Building Factory ====================
+
+  buildBuilding(b, x, z, y0, rotRad = 0, hooks = {}) {
+    const THREE = this.THREE;
+    const grp = new THREE.Group();
+    grp.position.set(x, y0, z);
+    grp.rotation.y = rotRad;
+
+    const lv = Math.max(1, b.level || 1);
+    const v = Math.abs(b.variant || 0);
+    const ab = Boolean(b.abandoned);
+    const type = b.type || 'RL';
+
+    switch (type) {
+      case 'RL':
+        this._buildVillaRL(grp, lv, v, ab);
+        break;
+      case 'CL':
+        this._buildShopCL(grp, lv, v, ab);
+        break;
+      case 'RH':
+        this._buildCondoRH(grp, lv, v, ab);
+        break;
+      case 'CH':
+      case 'O':
+        this._buildSkyscraperCHO(grp, type, lv, v, ab, x, y0, z, rotRad, hooks);
+        break;
+      case 'I':
+        this._buildIndustrialI(grp, lv, v, ab, x, y0, z, rotRad, hooks);
+        break;
+      case 'landmark':
+        this._buildLandmarkObelisk(grp, ab, x, y0, z, rotRad, hooks);
+        break;
+      case 'stadium':
+        this._buildOlympicStadium(grp, ab);
+        break;
+      case 'amusement_park':
+        this._buildAmusementPark(grp, ab, hooks);
+        break;
+      case 'airport':
+        this._buildAirport(grp, ab, x, y0, z, rotRad, hooks);
+        break;
+      case 'seaport':
+        this._buildSeaport(grp, ab, x, y0, z, rotRad, hooks);
+        break;
+      case 'nuclear_plant':
+        this._buildNuclearPlant(grp, ab, x, y0, z, rotRad, hooks);
+        break;
+      case 'solar_plant':
+        this._buildSolarPlant(grp, ab, x, y0, z, rotRad, hooks);
+        break;
+      case 'waste_plant':
+        this._buildWastePlant(grp, ab, x, y0, z, rotRad, hooks);
+        break;
+      case 'power_wind':
+        this._buildWindTurbine(grp, ab, x, y0, z, rotRad, hooks);
+        break;
+      case 'power_plant':
+        this._buildThermalPowerPlant(grp, ab, x, y0, z, rotRad, hooks);
+        break;
+      case 'water_pump':
+      case 'sewage_out':
+      case 'water_treat':
+        this._buildWaterFacility(grp, type, ab);
+        break;
+      case 'fire_station':
+        this._buildFireStation(grp, ab, x, y0, z, rotRad, hooks);
+        break;
+      case 'police_station':
+        this._buildPoliceStation(grp, ab);
+        break;
+      case 'hospital':
+        this._buildHospital(grp, ab);
+        break;
+      case 'school':
+        this._buildSchool(grp, ab);
+        break;
+      case 'park':
+        this._buildPark(grp);
+        break;
+      case 'metro_station':
+        this._buildMetroStation(grp, ab);
+        break;
+      case 'hsr_station':
+        this._buildHSRStation(grp, ab);
+        break;
+      default:
+        this._addZonedPlotPad(grp, ab, true);
+        this._addMesh(grp, this.geos.box, ab ? this.m.dustyCBD : this.m.cbdIceBlue, 0, 0.024 + 0.34, 0, 0.64, 0.68, 0.64, true);
+        break;
+    }
+
+    return grp;
+  }
+
+  // ==================== 1. Photorealistic Zoned Buildings ====================
+
+  // RL: Contemporary Villas & Townhouses (villa_plaster 2-floor = 0.34 world H, pitched hip OR flat parapet roofs)
+  _buildVillaRL(grp, lv, v, ab) {
+    this._addZonedPlotPad(grp, ab, false);
+
+    const lawnMat = ab ? this.m.abandonedRust : this.m.lawn;
+    const hedgeMat = ab ? this.m.abandoned : this.m.hedge;
+    const villaMats = [this.m.villaCream, this.m.villaSand, this.m.villaCool];
+    const wallMat = ab ? this.m.dustyVilla : villaMats[v % villaMats.length];
+    const trimMat = ab ? this.m.abandoned : this.m.parapetStone;
+
+    // Rear private lawn + low perimeter garden hedges
+    this._addMesh(grp, this.geos.box, lawnMat, 0, 0.022, -0.14, 0.80, 0.012, 0.54, false);
+    this._addMesh(grp, this.geos.box, hedgeMat, 0, 0.052, -0.42, 0.84, 0.06, 0.04, true);
+    this._addMesh(grp, this.geos.box, hedgeMat, -0.42, 0.052, -0.05, 0.04, 0.06, 0.72, true);
+    this._addMesh(grp, this.geos.box, hedgeMat, 0.42, 0.052, -0.05, 0.04, 0.06, 0.72, true);
+
+    const baseY = 0.024;
+    // Exact floor-aligned heights: 2 floors = 0.34 (Lv.1-2), 3 floors = 0.51 (Lv.3)
+    const mainH = lv >= 3 ? 0.51 : 0.34;
+    const wingH = 0.34;
+    const houseZ = lv >= 3 ? 0.11 : 0.04;
+    const houseX = (v & 1) === 0 ? -0.08 : 0.08;
+    const wingX = (v & 1) === 0 ? 0.19 : -0.19;
+
+    // Main 2/3-storey plaster villa volume + side garage/townhouse wing + entrance porch canopy
+    this._addMesh(grp, this.geos.box, wallMat, houseX, baseY + mainH * 0.5, houseZ, 0.46, mainH, 0.42, true);
+    this._addMesh(grp, this.geos.box, wallMat, wingX, baseY + wingH * 0.5, houseZ + 0.04, 0.26, wingH * 0.65, 0.34, true);
+    this._addMesh(grp, this.geos.box, this.m.charcoalFrame, houseX, baseY + 0.15, houseZ + 0.24, 0.20, 0.020, 0.09, true);
+
+    const isFlatModern = (v % 2) === 1;
+    let roofTopY = baseY + mainH;
+
+    if (isFlatModern) {
+      // Crisp contemporary flat parapet villa roof
+      this._addMesh(grp, this.geos.parapetFrame, trimMat, houseX, baseY + mainH + 0.024, houseZ, 0.47, 0.048, 0.43, true);
+      this._addMesh(grp, this.geos.parapetFrame, trimMat, wingX, baseY + wingH * 0.65 + 0.02, houseZ + 0.04, 0.27, 0.04, 0.35, true);
+      roofTopY = baseY + mainH + 0.03;
+    } else {
+      // Sculpted hipped terracotta or dark-slate roof
+      const pitchMat = ab ? this.m.abandonedRust : ((v % 4 === 0) ? this.m.terracottaRoof : this.m.slateRoof);
+      this._addMesh(grp, this.geos.taperPyr, pitchMat, houseX, baseY + mainH + 0.085, houseZ, 0.54, 0.17, 0.50, true, Math.PI * 0.25);
+      this._addMesh(grp, this.geos.box, trimMat, wingX, baseY + wingH * 0.65 + 0.015, houseZ + 0.04, 0.28, 0.03, 0.36, true);
+      roofTopY = baseY + mainH + 0.11;
+    }
+
+    // Lv.2+: Rooftop solar array
+    if (lv >= 2 && !ab) {
+      const sol = this._addMesh(grp, this.geos.box, this.m.solarPanel, wingX, baseY + wingH * 0.65 + 0.04, houseZ + 0.04, 0.20, 0.014, 0.18, false);
+      sol.rotation.x = 0.22;
+    }
+
+    // Lv.3: Backyard azure swimming pool + teak sun deck + colorful patio umbrella
+    if (lv >= 3) {
+      this._addMesh(grp, this.geos.box, ab ? this.m.abandonedRust : this.m.teakDeck, -0.19, 0.032, -0.24, 0.32, 0.020, 0.22, false);
+      this._addMesh(grp, this.geos.box, trimMat, 0.15, 0.032, -0.24, 0.36, 0.024, 0.23, false);
+      if (!ab) {
+        this._addMesh(grp, this.geos.box, this.m.poolWater, 0.15, 0.040, -0.24, 0.31, 0.014, 0.18, false);
+        this._addMesh(grp, this.geos.cyl16, this.m.whiteComposite, -0.22, 0.095, -0.25, 0.015, 0.13, 0.015, false);
+        this._addMesh(grp, this.geos.umbrellaCanopy, this.neonMats[v % this.neonMats.length], -0.22, 0.165, -0.25, 1, 1, 1, true);
+      }
+    } else if (!ab && roofTopY > 0) {
+      this._addTinyTree(grp, 0.24, 0.024, -0.24, 0.62);
+    }
+  }
+
+  // CL: 2-4 Storey Contemporary Street Retail Blocks (ground floor = retail_podium 0.36H, upper floors = 0.17H * lv)
+  _buildShopCL(grp, lv, v, ab) {
+    this._addZonedPlotPad(grp, ab, false);
+
+    const podMat = ab ? this.m.dustyRetail : this.m.retailPodiumConc;
+    const upperMats = [this.m.finStoneChampagne, this.m.cbdIceBlue, this.m.condoWarmGrey, this.m.finStoneSilver];
+    const upperMat = ab ? (v % 2 === 0 ? this.m.dustyStoneFin : this.m.dustyCBD) : upperMats[v % upperMats.length];
+    const trimMat = ab ? this.m.abandoned : this.m.parapetStone;
+
+    const baseY = 0.024;
+    const podH = 0.36; // 1 full retail_podium storey!
+    const upperFloors = Math.min(3, lv); // 1..3 upper storeys -> 2..4 storey retail block
+    const upperH = upperFloors * 0.17;
+
+    // Ground-floor luxury boutique storefront podium
+    this._addMesh(grp, this.geos.box, podMat, 0, baseY + podH * 0.5, -0.05, 0.76, podH, 0.62, true);
+
+    // Upper commercial storeys (stepped or L-shaped corner retail massing)
+    const uBase = baseY + podH;
+    if ((v & 1) === 0) {
+      this._addMesh(grp, this.geos.box, upperMat, 0, uBase + upperH * 0.5, -0.07, 0.72, upperH, 0.56, true);
+      this._addMesh(grp, this.geos.parapetFrame, trimMat, 0, uBase + upperH + 0.025, -0.07, 0.73, 0.05, 0.57, true);
+    } else {
+      this._addMesh(grp, this.geos.box, upperMat, -0.08, uBase + upperH * 0.5, -0.07, 0.56, upperH, 0.56, true);
+      this._addMesh(grp, this.geos.box, upperMat, 0.18, uBase + (upperH * 0.66) * 0.5, -0.02, 0.34, upperH * 0.66, 0.48, true);
+      this._addMesh(grp, this.geos.parapetFrame, trimMat, -0.08, uBase + upperH + 0.025, -0.07, 0.57, 0.05, 0.57, true);
+    }
+
+    // Subtle illuminated fascia accent & vertical blade sign
+    const neonMat = ab ? this.m.abandonedRust : this.neonMats[(v + lv) % this.neonMats.length];
+    this._addMesh(grp, this.geos.box, neonMat, 0, baseY + 0.27, 0.265, 0.54, 0.032, 0.018, false);
+    this._addMesh(grp, this.geos.box, neonMat, 0.35, uBase + 0.16, 0.18, 0.020, 0.20, 0.065, false);
+
+    // Outdoor cafe bistro parasols on front granite plaza
+    if (!ab) {
+      for (const cx of [-0.22, 0.20]) {
+        this._addMesh(grp, this.geos.cyl16, this.m.whiteComposite, cx, 0.052, 0.34, 0.055, 0.045, 0.055, false);
+        this._addMesh(grp, this.geos.cyl16, this.m.brushedSilver, cx, 0.10, 0.34, 0.012, 0.10, 0.012, false);
+        this._addMesh(grp, this.geos.umbrellaCanopy, this.neonMats[(v + (cx > 0 ? 1 : 3)) % this.neonMats.length], cx, 0.16, 0.34, 0.80, 0.80, 0.80, true);
+      }
+    }
+
+    this._addRooftopHVAC(grp, -0.14, uBase + upperH + 0.01, -0.10, ab);
+  }
+
+  // RH: Contemporary Chinese Tier-1 Residential Towers (retail/lobby podium + slender multi-wing tower, floorH = 0.15)
+  _buildCondoRH(grp, lv, v, ab) {
+    this._addZonedPlotPad(grp, ab, true);
+
+    const facadeMats = [this.m.condoWarmWhite, this.m.condoWarmGrey, this.m.condoChampagne, this.m.condoSandStone];
+    const wallMat = ab ? ((v & 1) ? this.m.dustyCondoGrey : this.m.dustyCondo) : facadeMats[v % facadeMats.length];
+    const podMat = ab ? this.m.dustyRetail : this.m.retailPodium;
+    const pilasterMat = ab ? this.m.abandoned : this.m.parapetStone;
+    const frameMat = ab ? this.m.abandonedRust : this.m.charcoalFrame;
+
+    // Ground-floor Residential Lobby / Community Retail Podium (exact 0.36H, topped with roof_solar_green)
+    const baseY = 0.024;
+    const podH = 0.36;
+    this._addMesh(grp, this.geos.box, podMat, 0, baseY + podH * 0.5, 0.02, 0.80, podH, 0.72, true);
+    this._addMesh(grp, this.geos.box, frameMat, 0, baseY + 0.24, 0.41, 0.36, 0.022, 0.09, true);
+
+    // Exact integer floor counts (floorH = 0.15; 4 floors = 0.60 texture repeat -> zero cut windows!)
+    const floorsByLv = [0, 8, 13, 19, 25, 31];
+    const nFloors = floorsByLv[Math.min(5, lv)];
+    const shaftH = nFloors * 0.15;
+    const tBase = baseY + podH;
+    const plan = v % 4;
+
+    if (plan === 0) {
+      // Plan 0: 现代南北通透板式高层住宅 (Slender Slab Tower + Twin Recessed/Projected Bays)
+      const sideH = (nFloors - 1) * 0.15;
+      this._addMesh(grp, this.geos.box, wallMat, 0, tBase + shaftH * 0.5, -0.02, 0.72, shaftH, 0.32, true);
+      this._addMesh(grp, this.geos.box, wallMat, -0.20, tBase + sideH * 0.5, -0.02, 0.24, sideH, 0.40, true);
+      this._addMesh(grp, this.geos.box, wallMat, 0.20, tBase + sideH * 0.5, -0.02, 0.24, sideH, 0.40, true);
+
+      const topY = tBase + shaftH;
+      this._addMesh(grp, this.geos.parapetFrame, pilasterMat, 0, topY + 0.038, -0.02, 0.73, 0.075, 0.33, true);
+      // Elevator machine room + cylindrical silver rooftop water tank + HVAC
+      this._addMesh(grp, this.geos.box, pilasterMat, 0, topY + 0.085, -0.03, 0.20, 0.15, 0.15, true);
+      this._addMesh(grp, this.geos.box, frameMat, 0, topY + 0.165, -0.03, 0.22, 0.018, 0.17, false);
+      this._addMesh(grp, this.geos.cyl16, this.m.brushedSilver, 0.20, topY + 0.055, -0.04, 0.09, 0.10, 0.09, true);
+      this._addRooftopHVAC(grp, -0.20, topY + 0.005, -0.02, ab);
+    } else if (plan === 1) {
+      // Plan 1: 品字形 / T字蝶式高层住宅 (Butterfly T-Plan Point Tower)
+      const northH = (nFloors - 2) * 0.15;
+      this._addMesh(grp, this.geos.box, wallMat, 0, tBase + shaftH * 0.5, 0.06, 0.68, shaftH, 0.32, true);
+      this._addMesh(grp, this.geos.box, wallMat, 0, tBase + northH * 0.5, -0.15, 0.32, northH, 0.42, true);
+
+      const topY = tBase + shaftH;
+      this._addMesh(grp, this.geos.parapetFrame, pilasterMat, 0, topY + 0.038, 0.06, 0.69, 0.075, 0.33, true);
+      this._addMesh(grp, this.geos.parapetFrame, pilasterMat, 0, tBase + northH + 0.032, -0.15, 0.33, 0.065, 0.43, true);
+      this._addMesh(grp, this.geos.box, pilasterMat, 0, topY + 0.088, 0.02, 0.20, 0.16, 0.16, true);
+      this._addMesh(grp, this.geos.cyl16, this.m.brushedSilver, -0.20, topY + 0.055, 0.06, 0.09, 0.10, 0.09, true);
+      this._addRooftopHVAC(grp, 0.20, topY + 0.005, 0.06, ab);
+    } else if (plan === 2) {
+      // Plan 2: 90° L形转角高层住宅楼
+      const wingH = (nFloors - 3) * 0.15;
+      this._addMesh(grp, this.geos.box, wallMat, 0.02, tBase + shaftH * 0.5, -0.12, 0.68, shaftH, 0.32, true);
+      this._addMesh(grp, this.geos.box, wallMat, -0.16, tBase + wingH * 0.5, 0.08, 0.32, wingH, 0.50, true);
+
+      const topY = tBase + shaftH;
+      this._addMesh(grp, this.geos.parapetFrame, pilasterMat, 0.02, topY + 0.038, -0.12, 0.69, 0.075, 0.33, true);
+      this._addMesh(grp, this.geos.parapetFrame, pilasterMat, -0.16, tBase + wingH + 0.032, 0.08, 0.33, 0.065, 0.51, true);
+      this._addMesh(grp, this.geos.box, pilasterMat, -0.12, topY + 0.085, -0.12, 0.19, 0.15, 0.15, true);
+      this._addMesh(grp, this.geos.cyl16, this.m.brushedSilver, 0.18, topY + 0.055, -0.12, 0.09, 0.10, 0.09, true);
+    } else {
+      // Plan 3: 现代错位双拼点式公寓塔楼 (Twin Offset Slender Residential Point Towers)
+      const hB = Math.max(0.90, (nFloors - 4) * 0.15);
+      this._addMesh(grp, this.geos.box, wallMat, -0.15, tBase + shaftH * 0.5, -0.06, 0.38, shaftH, 0.36, true);
+      this._addMesh(grp, this.geos.box, wallMat, 0.16, tBase + hB * 0.5, 0.06, 0.36, hB, 0.36, true);
+
+      const topA = tBase + shaftH;
+      const topB = tBase + hB;
+      this._addMesh(grp, this.geos.parapetFrame, pilasterMat, -0.15, topA + 0.035, -0.06, 0.39, 0.07, 0.37, true);
+      this._addMesh(grp, this.geos.parapetFrame, pilasterMat, 0.16, topB + 0.035, 0.06, 0.37, 0.07, 0.37, true);
+      this._addMesh(grp, this.geos.box, pilasterMat, -0.15, topA + 0.075, -0.06, 0.16, 0.13, 0.14, true);
+      this._addMesh(grp, this.geos.cyl16, this.m.brushedSilver, 0.16, topB + 0.05, 0.06, 0.085, 0.095, 0.085, true);
+    }
+  }
+
+  // CH & O: Contemporary Tier-1 CBD Glass & Limestone Curtain-Wall Towers on Retail Podium (floorH = 0.17)
+  _buildSkyscraperCHO(grp, type, lv, v, ab, x, y0, z, rotRad, hooks) {
+    this._addZonedPlotPad(grp, ab, true);
+
+    const isOffice = type === 'O';
+    const metalMat = ab ? this.m.abandoned : this.m.brushedSilver;
+    const darkBandMat = ab ? this.m.abandonedRust : this.m.refugeLouvers;
+    const ledMat = ab ? this.m.abandoned : (isOffice ? this.m.ledLinearCyan : this.m.ledLinearWhite);
+    const podMat = ab ? this.m.dustyRetail : this.m.retailPodium;
+
+    // Ground-Floor Commercial Shopfront & Lobby Podium (0.36H, green sky-garden roof)
+    const baseY = 0.024;
+    const podH = 0.36;
+    this._addMesh(grp, this.geos.box, podMat, 0, baseY + podH * 0.5, 0, 0.80, podH, 0.76, true);
+    this._addMesh(grp, this.geos.box, metalMat, 0, baseY + 0.24, 0.41, 0.40, 0.024, 0.09, true);
+
+    // Exact integer floor counts (floorH = 0.17; 4 floors = 0.68 texture repeat!)
+    const floorsByLv = [0, 8, 14, 21, 28, 35];
+    const nFloors = floorsByLv[Math.min(5, lv)];
+    const shaftH = nFloors * 0.17;
+    const tBase = baseY + podH;
+    const sil = (v + (isOffice ? 2 : 0)) % 4;
+    let helipadY = tBase + shaftH;
+    let helipadX = 0, helipadZ = -0.02;
+
+    if (sil === 0) {
+      // Archetype 0: 现代单元式超白玻商务主塔 + 避难层腰线 + 竖向金属肋 + 挑冠
+      const mat = ab ? this.m.dustyCBD : (isOffice ? this.m.cbdSlateSilver : this.m.cbdIceBlue);
+      const w = 0.60, d = 0.56;
+      this._addMesh(grp, this.geos.box, mat, 0, tBase + shaftH * 0.5, -0.02, w, shaftH, d, true);
+      this._addMesh(grp, this.geos.rectCornerFins, metalMat, 0, tBase + shaftH * 0.5, -0.02, w, shaftH, d, true);
+      this._addMesh(grp, this.geos.box, darkBandMat, 0, tBase + Math.floor(nFloors * 0.5) * 0.17, -0.02, w + 0.012, 0.065, d + 0.012, true);
+      if (lv >= 4) {
+        this._addMesh(grp, this.geos.box, darkBandMat, 0, tBase + Math.floor(nFloors * 0.78) * 0.17, -0.02, w + 0.012, 0.065, d + 0.012, true);
+      }
+
+      const topY = tBase + shaftH;
+      this._addMesh(grp, this.geos.parapetFrame, metalMat, 0, topY + 0.06, -0.02, w + 0.01, 0.12, d + 0.01, true);
+      if (!ab) this._addMesh(grp, this.geos.parapetFrame, ledMat, 0, topY + 0.125, -0.02, w + 0.016, 0.016, d + 0.016, false);
+      this._addRooftopHVAC(grp, -0.14, topY + 0.005, -0.14, ab);
+      helipadY = topY + 0.005;
+      helipadX = 0.06; helipadZ = 0.04;
+    } else if (sil === 1) {
+      // Archetype 1: 现代高低双子玻璃幕墙写字楼 + 空中玻璃连廊
+      const mat = ab ? this.m.dustyCBD : (isOffice ? this.m.cbdTealGlass : this.m.cbdDeepAzure);
+      const hA = shaftH;
+      const hB = Math.max(1.02, Math.floor(nFloors * 0.80) * 0.17);
+
+      this._addMesh(grp, this.geos.box, mat, -0.17, tBase + hA * 0.5, -0.09, 0.36, hA, 0.40, true);
+      this._addMesh(grp, this.geos.rectCornerFins, metalMat, -0.17, tBase + hA * 0.5, -0.09, 0.36, hA, 0.40, true);
+      this._addMesh(grp, this.geos.box, mat, 0.17, tBase + hB * 0.5, 0.10, 0.36, hB, 0.40, true);
+      this._addMesh(grp, this.geos.rectCornerFins, metalMat, 0.17, tBase + hB * 0.5, 0.10, 0.36, hB, 0.40, true);
+
+      const sbY = tBase + Math.floor(nFloors * 0.52) * 0.17;
+      this._addMesh(grp, this.geos.box, ab ? this.m.dustyCBD : this.m.atriumGlass, 0, sbY, 0.005, 0.38, 0.10, 0.15, true, -0.46);
+      this._addMesh(grp, this.geos.box, metalMat, 0, sbY - 0.055, 0.005, 0.39, 0.018, 0.16, true, -0.46);
+
+      const topA = tBase + hA;
+      const topB = tBase + hB;
+      this._addMesh(grp, this.geos.parapetFrame, metalMat, -0.17, topA + 0.045, -0.09, 0.365, 0.09, 0.405, true);
+      this._addMesh(grp, this.geos.parapetFrame, metalMat, 0.17, topB + 0.045, 0.10, 0.365, 0.09, 0.405, true);
+      if (!ab) {
+        this._addMesh(grp, this.geos.parapetFrame, ledMat, -0.17, topA + 0.095, -0.09, 0.37, 0.015, 0.41, false);
+        this._addMesh(grp, this.geos.parapetFrame, ledMat, 0.17, topB + 0.095, 0.10, 0.37, 0.015, 0.41, false);
+      }
+      this._addRooftopHVAC(grp, 0.17, topB + 0.005, 0.10, ab);
+      helipadY = topA + 0.005;
+      helipadX = -0.17; helipadZ = -0.09;
+    } else if (sil === 2) {
+      // Archetype 2: 竖向石材幕墙阶梯退台金融中心 (office_stone facade with 2 crisp setbacks)
+      const mat = ab ? this.m.dustyStoneFin : (isOffice ? this.m.finStoneSilver : this.m.finStoneChampagne);
+      const n1 = Math.max(4, Math.round(nFloors * 0.52));
+      const n2 = Math.max(2, Math.round(nFloors * 0.28));
+      const n3 = Math.max(2, nFloors - n1 - n2);
+      const h1 = n1 * 0.17, h2 = n2 * 0.17, h3 = n3 * 0.17;
+
+      this._addMesh(grp, this.geos.box, mat, 0, tBase + h1 * 0.5, 0, 0.68, h1, 0.64, true);
+      this._addMesh(grp, this.geos.parapetFrame, this.m.parapetStone, 0, tBase + h1 + 0.02, 0, 0.69, 0.04, 0.65, true);
+
+      this._addMesh(grp, this.geos.box, mat, 0, tBase + h1 + h2 * 0.5, 0, 0.54, h2, 0.52, true);
+      this._addMesh(grp, this.geos.parapetFrame, this.m.parapetStone, 0, tBase + h1 + h2 + 0.02, 0, 0.55, 0.04, 0.53, true);
+
+      this._addMesh(grp, this.geos.box, mat, 0, tBase + h1 + h2 + h3 * 0.5, 0, 0.42, h3, 0.42, true);
+
+      const topY = tBase + h1 + h2 + h3;
+      this._addMesh(grp, this.geos.parapetFrame, metalMat, 0, topY + 0.055, 0, 0.43, 0.11, 0.43, true);
+      if (!ab) this._addMesh(grp, this.geos.parapetFrame, ledMat, 0, topY + 0.115, 0, 0.435, 0.015, 0.435, false);
+      this._addRooftopHVAC(grp, 0.20, tBase + h1 + 0.005, 0.18, ab);
+      helipadY = topY + 0.005;
+      helipadX = 0; helipadZ = 0;
+    } else {
+      // Archetype 3: 现代总部科技错动方塔 (Interlocking Shifted Glass Curtain-Wall Boxes + Sky-Lobby Waist)
+      const mat = ab ? this.m.dustyCBD : (isOffice ? this.m.cbdSlateSilver : this.m.cbdTealGlass);
+      const nLo = Math.max(4, Math.floor(nFloors * 0.52));
+      const nHi = Math.max(3, nFloors - nLo);
+      const hLo = nLo * 0.17, hHi = nHi * 0.17;
+
+      this._addMesh(grp, this.geos.box, mat, -0.025, tBase + hLo * 0.5, 0.015, 0.64, hLo, 0.58, true);
+      this._addMesh(grp, this.geos.box, ab ? this.m.dustyCBD : this.m.atriumGlass, 0, tBase + hLo + 0.04, 0, 0.58, 0.08, 0.52, false);
+      const hiBase = tBase + hLo + 0.08;
+      this._addMesh(grp, this.geos.box, mat, 0.025, hiBase + hHi * 0.5, -0.015, 0.64, hHi, 0.58, true);
+      this._addMesh(grp, this.geos.rectCornerFins, metalMat, 0.025, hiBase + hHi * 0.5, -0.015, 0.64, hHi, 0.58, true);
+
+      const topY = hiBase + hHi;
+      this._addMesh(grp, this.geos.parapetFrame, metalMat, 0.025, topY + 0.05, -0.015, 0.645, 0.10, 0.585, true);
+      if (!ab) this._addMesh(grp, this.geos.parapetFrame, ledMat, 0.025, topY + 0.105, -0.015, 0.65, 0.015, 0.59, false);
+      this._addRooftopHVAC(grp, -0.14, topY + 0.005, -0.12, ab);
+      helipadY = topY + 0.005;
+      helipadX = 0.08; helipadZ = 0.05;
+    }
+
+    if (lv >= 4) {
+      const padW = sil === 1 ? 0.24 : 0.27;
+      this._addHelipad(grp, helipadX, helipadY, helipadZ, padW, ab);
+      const mastX = sil === 1 ? -0.30 : (helipadX - 0.18);
+      const mastZ = sil === 1 ? -0.24 : (helipadZ - 0.18);
+      this._addMesh(grp, this.geos.spireNeedle, metalMat, mastX, helipadY + 0.38, mastZ, 0.85, 0.82, 0.85, true);
+      this._addBeacon(grp, hooks, mastX, helipadY + 0.80, mastZ, x, y0, z, rotRad, ab);
+    } else if (lv >= 3) {
+      this._addMesh(grp, this.geos.spireNeedle, metalMat, helipadX, helipadY + 0.28, helipadZ, 0.75, 0.62, 0.75, true);
+      this._addBeacon(grp, hooks, helipadX, helipadY + 0.60, helipadZ, x, y0, z, rotRad, ab);
+    }
+  }
+
+  // I: 4 Contemporary Industrial & Smart-Manufacturing Archetypes using photoreal industrial_panel + plot pad
+  _buildIndustrialI(grp, lv, v, ab, x, y0, z, rotRad, hooks) {
+    const flip = (Math.floor(v / 3) % 2 === 1) ? -1 : 1;
+
+    // Granite plot edge pad + front street planters + heavy truck asphalt yard
+    this._addZonedPlotPad(grp, ab, false);
+    this._addMesh(grp, this.geos.box, ab ? this.m.abandoned : this.m.asphalt, 0, 0.025, -0.02, 0.82, 0.008, 0.76, false);
+    const baseY = 0.028;
+
+    // Lv.4+: High-Tech Clean Manufacturing Park (Semiconductor Fab / EV Gigafactory, ZERO smokestack)
+    if (lv >= 4) {
+      const fabMat = ab ? this.m.dustyInd : this.m.indPanelSilver;
+      const officeMat = ab ? this.m.dustyCBD : ((v & 1) === 0 ? this.m.cbdDeepAzure : this.m.cbdSlateSilver);
+      const fasciaMat = ab ? this.m.abandonedRust : ((v & 1) === 0 ? this.m.factoryFasciaBlue : this.m.factoryFasciaTeal);
+      const silver = ab ? this.m.abandoned : this.m.brushedSilver;
+
+      if ((v & 1) === 0) {
+        const fabH = 0.42 + (lv - 4) * 0.14;
+        this._addMesh(grp, this.geos.box, fabMat, 0, baseY + fabH * 0.5, -0.08, 0.76, fabH, 0.52, true);
+        this._addMesh(grp, this.geos.box, fasciaMat, 0, baseY + fabH + 0.015, -0.08, 0.775, 0.03, 0.535, true);
+        this._addMesh(grp, this.geos.parapetFrame, silver, 0, baseY + fabH + 0.04, -0.08, 0.76, 0.04, 0.52, true);
+
+        for (const dx of [-0.22, 0, 0.22]) {
+          this._addMesh(grp, this.geos.box, this.m.charcoalFrame, dx, baseY + 0.10, 0.185, 0.12, 0.17, 0.02, false);
+        }
+        this._addMesh(grp, this.geos.box, silver, 0, baseY + 0.21, 0.24, 0.62, 0.022, 0.12, true);
+        const cMat = ab ? this.m.abandonedRust : this.containerMats[v % this.containerMats.length];
+        this._addMesh(grp, this.geos.box, cMat, 0.20 * flip, baseY + 0.05, 0.27, 0.11, 0.09, 0.20, true);
+
+        const topY = baseY + fabH + 0.02;
+        this._addRooftopHVAC(grp, -0.23, topY, -0.18, ab);
+        this._addRooftopHVAC(grp, -0.23, topY, 0.02, ab);
+        if (!ab) {
+          for (const pz of [-0.18, 0.02]) {
+            const pv = this._addMesh(grp, this.geos.box, this.m.solarPanel, 0.14, topY + 0.03, pz, 0.38, 0.014, 0.14, false);
+            pv.rotation.x = 0.20;
+          }
+        }
+      } else {
+        const hallH = 0.42;
+        const rdH = 0.68;
+        this._addMesh(grp, this.geos.box, fabMat, 0.02 * flip, baseY + hallH * 0.5, -0.13, 0.74, hallH, 0.44, true);
+        this._addMesh(grp, this.geos.box, officeMat, -0.19 * flip, baseY + rdH * 0.5, 0.15, 0.34, rdH, 0.30, true);
+        this._addMesh(grp, this.geos.parapetFrame, silver, -0.19 * flip, baseY + rdH + 0.025, 0.15, 0.35, 0.045, 0.31, true);
+
+        this._addMesh(grp, this.geos.box, silver, 0.18 * flip, baseY + 0.20, 0.14, 0.32, 0.022, 0.13, true);
+        const c1 = ab ? this.m.abandonedRust : this.containerMats[(v + 1) % this.containerMats.length];
+        this._addMesh(grp, this.geos.box, c1, 0.18 * flip, baseY + 0.05, 0.22, 0.11, 0.09, 0.20, true);
+
+        this._addRooftopHVAC(grp, -0.19 * flip, baseY + rdH + 0.005, 0.15, ab);
+        if (!ab) {
+          for (const px of [-0.20, 0.02, 0.24]) {
+            const pv = this._addMesh(grp, this.geos.box, this.m.solarPanel, px * flip, baseY + hallH + 0.025, -0.13, 0.17, 0.014, 0.30, false);
+            pv.rotation.x = 0.18;
+          }
+        }
+      }
+      return;
+    }
+
+    // Lv.1-3: 3 Distinct Industrial Archetypes
+    const arch = v % 3;
+
+    if (arch === 0) {
+      // Archetype 0: Modern Corrugated Steel Logistics & Cold-Chain Warehouse (industrial_panel, NO smokestack)
+      const whMat = ab ? this.m.dustyInd : (((v >> 1) & 1) === 0 ? this.m.indPanelBlue : this.m.indPanelSilver);
+      const fascia = ab ? this.m.abandonedRust : (((v >> 1) & 1) === 0 ? this.m.factoryFasciaBlue : this.m.factoryFasciaTeal);
+      const whH = 0.36 + (lv - 1) * 0.05;
+
+      this._addMesh(grp, this.geos.box, whMat, 0, baseY + whH * 0.5, -0.12, 0.76, whH, 0.48, true);
+      this._addMesh(grp, this.geos.box, fascia, 0, baseY + whH + 0.016, -0.12, 0.775, 0.032, 0.495, false);
+
+      this._addRooftopHVAC(grp, -0.22 * flip, baseY + whH + 0.02, -0.14, ab);
+      for (const vx of [0.02, 0.22]) {
+        this._addMesh(grp, this.geos.cyl16, this.m.brushedSilver, vx * flip, baseY + whH + 0.045, -0.12, 0.07, 0.04, 0.07, true);
+      }
+
+      this._addMesh(grp, this.geos.box, this.m.brushedSilver, 0, baseY + 0.19, 0.17, 0.68, 0.022, 0.13, true);
+      const bayXs = [-0.22, 0.0, 0.22];
+      for (let i = 0; i < 3; i++) {
+        this._addMesh(grp, this.geos.box, this.m.charcoalFrame, bayXs[i], baseY + 0.09, 0.125, 0.11, 0.15, 0.02, false);
+        const cMat = ab ? this.m.abandonedRust : this.containerMats[(v + i) % this.containerMats.length];
+        this._addMesh(grp, this.geos.box, cMat, bayXs[i], baseY + 0.05, 0.24, 0.105, 0.09, 0.20, true);
+      }
+    } else if (arch === 1) {
+      // Archetype 1: Heavy Machinery / Foundry Works (industrial_panel warm + sawtooth roof + overhead yellow gantry + chimney)
+      const hallMat = ab ? this.m.dustyInd : this.m.indPanelWarm;
+      const darkRoof = ab ? this.m.abandoned : this.m.steelDark;
+      const hallH = 0.38 + (lv - 1) * 0.06;
+
+      this._addMesh(grp, this.geos.box, hallMat, -0.13 * flip, baseY + hallH * 0.5, -0.06, 0.52, hallH, 0.62, true);
+      this._addMesh(grp, this.geos.sawtoothRoof, darkRoof, -0.13 * flip, baseY + hallH + 0.045, -0.06, 0.72, 0.58, 0.82, true);
+
+      const gMat = ab ? this.m.abandonedRust : this.m.craneYellow;
+      for (const gz of [-0.14, 0.18]) {
+        this._addMesh(grp, this.geos.box, gMat, 0.17 * flip, baseY + 0.16, gz, 0.024, 0.32, 0.024, true);
+        this._addMesh(grp, this.geos.box, gMat, 0.37 * flip, baseY + 0.16, gz, 0.024, 0.32, 0.024, true);
+      }
+      this._addMesh(grp, this.geos.box, this.m.steelDark, 0.17 * flip, baseY + 0.32, 0.02, 0.024, 0.022, 0.40, true);
+      this._addMesh(grp, this.geos.box, this.m.steelDark, 0.37 * flip, baseY + 0.32, 0.02, 0.024, 0.022, 0.40, true);
+      this._addMesh(grp, this.geos.box, gMat, 0.27 * flip, baseY + 0.34, 0.04, 0.24, 0.030, 0.05, true);
+
+      this._addMesh(grp, this.geos.box, this.m.brushedSilver, 0.27 * flip, baseY + 0.035, -0.04, 0.13, 0.055, 0.16, true);
+      this._addMesh(grp, this.geos.box, this.m.teakDeck, 0.27 * flip, baseY + 0.04, 0.14, 0.12, 0.07, 0.12, true);
+
+      const stackH = hallH + 0.50;
+      const sx = -0.27 * flip, sz = -0.28;
+      this._addMesh(grp, this.geos.taperOct, ab ? this.m.abandonedRust : this.m.factoryBrick, sx, baseY + stackH * 0.5, sz, 0.14, stackH, 0.14, true);
+      this._addMesh(grp, this.geos.cyl16, this.m.charcoalFrame, sx, baseY + stackH - 0.025, sz, 0.09, 0.045, 0.09, false);
+      if (!ab) this._pushSmoke(hooks, sx, baseY + stackH + 0.04, sz, x, y0, z, rotRad, false);
+    } else {
+      // Archetype 2: Chemical & New-Materials Processing Plant (Control Bldg + Twin Horton Spheres + Pipe Rack + Column)
+      const ctrlMat = ab ? this.m.dustyInd : this.m.indPanelBlue;
+      const tankMat = ab ? this.m.abandoned : this.m.whiteComposite;
+      const silver = ab ? this.m.abandoned : this.m.brushedSilver;
+      const ctrlH = 0.36 + (lv - 1) * 0.05;
+
+      this._addMesh(grp, this.geos.box, ctrlMat, -0.21 * flip, baseY + ctrlH * 0.5, 0.14, 0.34, ctrlH, 0.34, true);
+      this._addMesh(grp, this.geos.parapetFrame, silver, -0.21 * flip, baseY + ctrlH + 0.02, 0.14, 0.35, 0.035, 0.35, true);
+
+      for (const [tx, tz, sc] of [[-0.18 * flip, -0.20, 0.82], [0.13 * flip, -0.20, 0.74]]) {
+        this._addMesh(grp, this.geos.gasSphereSupport, this.m.steelDark, tx, baseY, tz, sc, sc, sc, true);
+        this._addMesh(grp, this.geos.sphere16, tankMat, tx, baseY + 0.33 * sc, tz, 0.34 * sc, 0.34 * sc, 0.34 * sc, true);
+        if (!ab) {
+          this._addMesh(grp, this.geos.cyl24, this.m.factoryFasciaTeal, tx, baseY + 0.33 * sc, tz, 0.348 * sc, 0.02, 0.348 * sc, false);
+        }
+      }
+
+      const pipeEW = this._addMesh(grp, this.geos.cyl16, silver, -0.02 * flip, baseY + 0.22, -0.04, 0.028, 0.50, 0.028, true);
+      pipeEW.rotation.z = Math.PI * 0.5;
+      const pipeNS = this._addMesh(grp, this.geos.cyl16, silver, 0.18 * flip, baseY + 0.22, -0.02, 0.026, 0.38, 0.026, true);
+      pipeNS.rotation.x = Math.PI * 0.5;
+
+      const colH = 0.60 + lv * 0.10;
+      const cx = 0.19 * flip, cz = 0.15;
+      this._addMesh(grp, this.geos.cyl24, silver, cx, baseY + colH * 0.5, cz, 0.14, colH, 0.14, true);
+      this._addMesh(grp, this.geos.hemiDome, silver, cx, baseY + colH, cz, 0.14, 0.07, 0.14, true);
+      for (let r = 1; r <= 3; r++) {
+        this._addMesh(grp, this.geos.cyl24, this.m.steelDark, cx, baseY + (colH * r) * 0.26, cz, 0.175, 0.015, 0.175, false);
+      }
+
+      const stackH = colH + 0.22;
+      const sx = 0.31 * flip, sz = -0.02;
+      this._addMesh(grp, this.geos.cyl16, silver, sx, baseY + stackH * 0.5, sz, 0.052, stackH, 0.052, true);
+      if (!ab) this._pushSmoke(hooks, sx, baseY + stackH + 0.03, sz, x, y0, z, rotRad, true);
+    }
+  }
+
+  // ==================== 2. Landmark, Civic & Energy Monuments ====================
+
+  _buildLandmarkObelisk(grp, ab, x, y0, z, rotRad, hooks) {
+    const silver = ab ? this.m.abandoned : this.m.brushedSilver;
+    const glassMain = ab ? this.m.dustyCBD : this.m.cbdIceBlue;
+    const glassUpper = ab ? this.m.dustyCBD : this.m.cbdSlateSilver;
+    const podMat = ab ? this.m.dustyRetail : this.m.retailPodium;
+    const refugeMat = ab ? this.m.abandonedRust : this.m.refugeLouvers;
+    const ledTrim = ab ? this.m.abandoned : this.m.ledLinearCyan;
+
+    this._addMesh(grp, this.geos.box, ab ? this.m.pavingPlazaDusty : this.m.pavingPlaza, 0, 0.03, 0, 1.06, 0.06, 1.06, true);
+    this._addMesh(grp, this.geos.box, podMat, 0, 0.24, 0, 0.88, 0.36, 0.88, true);
+    this._addMesh(grp, this.geos.box, silver, 0, 0.43, 0, 0.90, 0.025, 0.90, true);
+    if (!ab) {
+      for (const [tx, tz] of [[-0.44, -0.44], [0.44, -0.44], [-0.44, 0.44], [0.44, 0.44]]) {
+        this._addTinyTree(grp, tx, 0.06, tz, 0.65);
+      }
+    }
+
+    this._addMesh(grp, this.geos.taperSquare, glassMain, 0, 0.45 + 1.53, 0, 0.84, 3.06, 0.72, true);
+    this._addMesh(grp, this.geos.taperSquare, glassMain, 0, 0.45 + 1.53, 0, 0.72, 3.06, 0.84, true);
+    this._addMesh(grp, this.geos.rectCornerFins, silver, 0, 0.45 + 1.53, 0, 0.68, 3.06, 0.68, true);
+    this._addMesh(grp, this.geos.box, refugeMat, 0, 3.51, 0, 0.64, 0.08, 0.64, true);
+    if (!ab) this._addMesh(grp, this.geos.parapetFrame, ledTrim, 0, 3.56, 0, 0.65, 0.02, 0.65, false);
+
+    this._addMesh(grp, this.geos.taperSquare, glassUpper, 0, 3.56 + 1.19, 0, 0.64, 2.38, 0.54, true);
+    this._addMesh(grp, this.geos.taperSquare, glassUpper, 0, 3.56 + 1.19, 0, 0.54, 2.38, 0.64, true);
+    this._addMesh(grp, this.geos.rectCornerFins, silver, 0, 3.56 + 1.19, 0, 0.52, 2.38, 0.52, true);
+    this._addMesh(grp, this.geos.box, refugeMat, 0, 5.94, 0, 0.48, 0.075, 0.48, true);
+    if (!ab) this._addMesh(grp, this.geos.parapetFrame, ledTrim, 0, 5.985, 0, 0.49, 0.02, 0.49, false);
+
+    this._addMesh(grp, this.geos.taperSquare, glassMain, 0, 5.99 + 0.85, 0, 0.48, 1.70, 0.40, true);
+    this._addMesh(grp, this.geos.taperSquare, glassMain, 0, 5.99 + 0.85, 0, 0.40, 1.70, 0.48, true);
+    this._addMesh(grp, this.geos.parapetFrame, silver, 0, 7.72, 0, 0.36, 0.14, 0.36, true);
+    if (!ab) {
+      this._addMesh(grp, this.geos.box, this.m.atriumGlass, 0, 7.72, 0, 0.32, 0.12, 0.32, false);
+      this._addMesh(grp, this.geos.parapetFrame, this.m.ledLinearWhite, 0, 7.80, 0, 0.37, 0.02, 0.37, false);
+    }
+    this._addHelipad(grp, 0, 7.76, 0, 0.24, ab);
+
+    this._addMesh(grp, this.geos.spireNeedle, silver, 0, 7.79 + 0.42, 0, 1.35, 0.96, 1.35, true, Math.PI * 0.25);
+    this._addBeacon(grp, hooks, 0, 8.64, 0, x, y0, z, rotRad, ab);
+  }
+
+  _buildOlympicStadium(grp, ab) {
+    const shellMat = ab ? this.m.abandoned : this.m.whiteComposite;
+    const roofMat = ab ? this.m.abandoned : this.m.brushedSilver;
+    const lightMat = ab ? this.m.abandonedRust : this.m.floodlightWhite;
+
+    this._addMesh(grp, this.geos.cyl24, ab ? this.m.pavingPlazaDusty : this.m.pavingPlaza, 0, 0.015, 0, 1.24, 0.03, 1.04, false);
+    this._addMesh(grp, this.geos.stadiumBowl, shellMat, 0, 0.02, 0, 1.16, 1.05, 0.94, true);
+    this._addMesh(grp, this.geos.stadiumRoof, roofMat, 0, 0.02, 0, 1.16, 1.05, 0.94, true);
+    this._addMesh(grp, this.geos.cyl24, ab ? this.m.abandonedRust : this.m.soccerPitch, 0, 0.045, 0, 0.68, 0.015, 0.54, false);
+
+    for (const [sx, sz] of [[-0.48, -0.38], [0.48, -0.38], [-0.48, 0.38], [0.48, 0.38]]) {
+      const ang = Math.atan2(-sx, -sz);
+      const mast = this._addMesh(grp, this.geos.cyl16, this.m.steelDark, sx, 0.36, sz, 0.026, 0.68, 0.026, true, ang);
+      mast.rotation.x = 0.16;
+      const head = this._addMesh(grp, this.geos.box, lightMat, sx * 0.88, 0.69, sz * 0.88, 0.13, 0.075, 0.035, false, ang);
+      head.rotation.x = 0.45;
+    }
+  }
+
+  _buildAmusementPark(grp, ab, hooks) {
+    const THREE = this.THREE;
+    this._addMesh(grp, this.geos.box, ab ? this.m.pavingPlazaDusty : this.m.pavingPlaza, 0, 0.018, 0, 1.06, 0.035, 1.06, false);
+
+    const t1 = ab ? this.m.abandonedRust : this.m.neonRose;
+    const t2 = ab ? this.m.abandonedRust : this.m.neonGold;
+    const t3 = ab ? this.m.abandonedRust : this.m.neonCyan;
+
+    this._addMesh(grp, this.geos.cyl16, this.m.whiteComposite, -0.32, 0.09, 0.30, 0.22, 0.12, 0.22, true);
+    this._addMesh(grp, this.geos.cone8, t1, -0.32, 0.21, 0.30, 0.28, 0.14, 0.28, true);
+
+    this._addMesh(grp, this.geos.cyl16, this.m.whiteComposite, 0.32, 0.09, 0.30, 0.22, 0.12, 0.22, true);
+    this._addMesh(grp, this.geos.cone8, t2, 0.32, 0.21, 0.30, 0.28, 0.14, 0.28, true);
+
+    this._addMesh(grp, this.geos.cyl16, t3, 0.34, 0.08, -0.28, 0.20, 0.10, 0.20, true);
+    this._addMesh(grp, this.geos.hemiDome, this.m.whiteComposite, 0.34, 0.13, -0.28, 0.22, 0.14, 0.22, true);
+
+    const hubY = 0.92;
+    const pylonMat = ab ? this.m.abandoned : this.m.whiteComposite;
+    for (const pz of [-0.13, 0.13]) {
+      for (const side of [-1, 1]) {
+        const leg = this._addMesh(grp, this.geos.cyl16, pylonMat, side * 0.19, hubY * 0.5, pz, 0.032, 0.98, 0.032, true);
+        leg.rotation.z = side * 0.38;
+      }
+    }
+
+    const wheelGroup = new THREE.Group();
+    wheelGroup.position.set(-0.04, hubY, 0);
+    this._addMesh(wheelGroup, this.geos.ferrisWheelFrame, ab ? this.m.abandoned : this.m.brushedSilver, 0, 0, 0, 1, 1, 1, true);
+    if (!ab) {
+      const ledTorus = this._addMesh(wheelGroup, this.geos.cyl24, this.m.neonCyan, 0, 0, 0, 0.22, 0.16, 0.22, false);
+      ledTorus.rotation.x = Math.PI * 0.5;
+    }
+
+    const gondolas = [];
+    for (let i = 0; i < 12; i++) {
+      const a = (i * Math.PI * 2) / 12;
+      const gx = Math.cos(a) * 0.68;
+      const gy = Math.sin(a) * 0.68;
+      const gMat = ab ? this.m.abandonedRust : this.neonMats[i % this.neonMats.length];
+      const pod = new THREE.Mesh(this.geos.capsule, gMat);
+      pod.position.set(gx, gy, 0);
+      pod.scale.set(0.24, 0.16, 0.28);
+      pod.rotation.x = Math.PI * 0.5;
+      pod.castShadow = true;
+      wheelGroup.add(pod);
+      gondolas.push(pod);
+    }
+    wheelGroup.userData.gondolas = gondolas;
+    grp.add(wheelGroup);
+
+    if (!ab && hooks && hooks.ferrisWheels) {
+      hooks.ferrisWheels.push(wheelGroup);
+    }
+  }
+
+  _buildAirport(grp, ab, x, y0, z, rotRad, hooks) {
+    const THREE = this.THREE;
+    const silver = ab ? this.m.abandoned : this.m.brushedSilver;
+    const glass = ab ? this.m.dustyCBD : this.m.cbdIceBlue;
+
+    this._addMesh(grp, this.geos.box, ab ? this.m.pavingPlazaDusty : this.m.pavingPlaza, -0.18, 0.015, 0, 0.86, 0.03, 1.18, false);
+    this._addMesh(grp, this.geos.box, glass, -0.22, 0.19, 0, 0.44, 0.34, 0.82, true);
+    const roof = this._addMesh(grp, this.geos.gullWingRoof, silver, -0.22, 0.35, 0, 0.96, 1.0, 1.68, true);
+    roof.rotation.y = Math.PI * 0.5;
+
+    this._addMesh(grp, this.geos.box, this.m.whiteComposite, 0.05, 0.14, -0.20, 0.18, 0.045, 0.045, true);
+    this._addMesh(grp, this.geos.box, this.m.whiteComposite, 0.05, 0.14, 0.22, 0.18, 0.045, 0.045, true);
+
+    const tx = -0.40, tz = -0.44;
+    this._addMesh(grp, this.geos.taperOct, ab ? this.m.abandoned : this.m.whiteComposite, tx, 0.58, tz, 0.24, 1.14, 0.24, true);
+    const atcCab = this._addMesh(grp, this.geos.taperOct, glass, tx, 1.22, tz, 0.38, 0.18, 0.38, true);
+    atcCab.rotation.z = Math.PI;
+    this._addMesh(grp, this.geos.cyl24, silver, tx, 1.33, tz, 0.22, 0.04, 0.22, true);
+
+    const radar = new THREE.Group();
+    radar.position.set(tx, 1.40, tz);
+    this._addMesh(radar, this.geos.cyl16, silver, 0, -0.02, 0, 0.025, 0.06, 0.025, false);
+    this._addMesh(radar, this.geos.box, ab ? this.m.abandonedRust : this.m.craneRed, 0, 0.02, 0, 0.24, 0.032, 0.028, true);
+    this._addMesh(radar, this.geos.box, this.m.whiteComposite, 0, 0.02, 0, 0.14, 0.036, 0.032, false);
+    grp.add(radar);
+
+    if (!ab && hooks && hooks.radarDishes) hooks.radarDishes.push(radar);
+    this._addBeacon(grp, hooks, tx, 1.48, tz, x, y0, z, rotRad, ab);
+
+    const rx = 0.36;
+    this._addMesh(grp, this.geos.box, this.m.runway, rx, 0.022, 0, 0.34, 0.018, 1.38, false);
+    if (!ab) {
+      for (const rz of [-0.66, 0.66]) {
+        this._addMesh(grp, this.geos.sphere16, this.m.strobeGreen, rx - 0.12, 0.038, rz, 0.028, 0.028, 0.028, false);
+        this._addMesh(grp, this.geos.sphere16, this.m.strobeGreen, rx + 0.12, 0.038, rz, 0.028, 0.028, 0.028, false);
+      }
+      for (const rz of [-0.42, -0.14, 0.14, 0.42]) {
+        this._addMesh(grp, this.geos.sphere16, this.m.neonGold, rx - 0.15, 0.036, rz, 0.024, 0.024, 0.024, false);
+        this._addMesh(grp, this.geos.sphere16, this.m.neonGold, rx + 0.15, 0.036, rz, 0.024, 0.024, 0.024, false);
+      }
+    }
+  }
+
+  _buildSeaport(grp, ab, x, y0, z, rotRad, hooks) {
+    this._addMesh(grp, this.geos.box, ab ? this.m.abandoned : this.m.roofConcrete, 0, 0.03, -0.02, 1.08, 0.18, 0.96, true);
+    if (!ab) {
+      this._addMesh(grp, this.geos.box, this.m.craneYellow, 0, 0.125, 0.44, 1.06, 0.018, 0.035, false);
+    }
+    for (const fx of [-0.38, -0.12, 0.14, 0.40]) {
+      this._addMesh(grp, this.geos.box, this.m.asphalt, fx, 0.02, 0.47, 0.05, 0.14, 0.03, false);
+    }
+
+    for (let row = 0; row < 2; row++) {
+      for (let col = 0; col < 3; col++) {
+        const cx = -0.32 + col * 0.32;
+        const cz = -0.34 + row * 0.15;
+        const m1 = ab ? this.m.abandonedRust : this.containerMats[(row * 3 + col) % this.containerMats.length];
+        const m2 = ab ? this.m.abandoned : this.containerMats[(row * 3 + col + 2) % this.containerMats.length];
+        this._addMesh(grp, this.geos.box, m1, cx, 0.165, cz, 0.25, 0.09, 0.105, true);
+        if ((row + col) % 2 === 0) {
+          this._addMesh(grp, this.geos.box, m2, cx, 0.255, cz, 0.25, 0.09, 0.105, true);
+        }
+      }
+    }
+
+    const craneRed = ab ? this.m.abandonedRust : this.m.craneRed;
+    const craneWhite = ab ? this.m.abandoned : this.m.whiteComposite;
+    for (const gx of [-0.27, 0.27]) {
+      this._addMesh(grp, this.geos.gantryCraneRed, craneRed, gx, 0.12, 0.16, 0.92, 0.95, 0.92, true);
+      this._addMesh(grp, this.geos.box, craneWhite, gx, 1.05, 0.16, 0.20, 0.09, 0.22, true);
+      this._addMesh(grp, this.geos.box, craneWhite, gx, 1.035, 0.56, 0.16, 0.038, 0.24, false);
+      this._addMesh(grp, this.geos.box, this.m.craneYellow, gx, 0.84, 0.64, 0.12, 0.035, 0.08, true);
+      this._addBeacon(grp, hooks, gx, 1.46, 0.18, x, y0, z, rotRad, ab);
+    }
+  }
+
+  _buildNuclearPlant(grp, ab, x, y0, z, rotRad, hooks) {
+    const conc = ab ? this.m.abandoned : this.m.plazaStone;
+    const white = ab ? this.m.abandoned : this.m.whiteComposite;
+
+    this._addMesh(grp, this.geos.box, ab ? this.m.pavingPlazaDusty : this.m.roofConcrete, 0, 0.015, 0, 1.04, 0.03, 1.04, false);
+    this._addMesh(grp, this.geos.cyl24, white, -0.24, 0.30, 0.20, 0.42, 0.58, 0.42, true);
+    this._addMesh(grp, this.geos.hemiDome, conc, -0.24, 0.59, 0.20, 0.42, 0.36, 0.42, true);
+    if (!ab) {
+      this._addMesh(grp, this.geos.cyl24, this.m.ledLinearCyan, -0.24, 0.58, 0.20, 0.43, 0.02, 0.43, false);
+    }
+    this._addMesh(grp, this.geos.box, ab ? this.m.dustyInd : this.m.indPanelSilver, 0.20, 0.22, 0.24, 0.42, 0.42, 0.34, true);
+
+    this._addMesh(grp, this.geos.coolingTower, conc, -0.22, 0.02, -0.22, 0.96, 1.08, 0.96, true);
+    this._addMesh(grp, this.geos.coolingTower, conc, 0.24, 0.02, -0.20, 0.96, 1.08, 0.96, true);
+
+    if (!ab) {
+      this._pushSmoke(hooks, -0.22, 1.16, -0.22, x, y0, z, rotRad, true);
+      this._pushSmoke(hooks, 0.24, 1.16, -0.20, x, y0, z, rotRad, true);
+    }
+  }
+
+  _buildSolarPlant(grp, ab, x, y0, z, rotRad, hooks) {
+    this._addMesh(grp, this.geos.cyl24, ab ? this.m.pavingPlazaDusty : this.m.roofConcrete, 0, 0.012, 0, 1.08, 0.024, 1.08, false);
+    this._addMesh(grp, this.geos.heliostatPedestals, this.m.steelDark, 0, 0.02, 0, 1, 1, 1, false);
+    this._addMesh(grp, this.geos.heliostatMirrors, ab ? this.m.abandoned : this.m.solarPanel, 0, 0.02, 0, 1, 1, 1, true);
+
+    this._addMesh(grp, this.geos.taperOct, ab ? this.m.abandoned : this.m.whiteComposite, 0, 0.91, 0, 0.22, 1.78, 0.22, true);
+
+    const collarMat = ab ? this.m.abandonedRust : this.m.refugeLouvers;
+    const crownMat = ab ? this.m.abandonedRust : this.m.solarReceiverCrown;
+    this._addMesh(grp, this.geos.cyl24, collarMat, 0, 1.82, 0, 0.185, 0.045, 0.185, true);
+    this._addMesh(grp, this.geos.cyl24, crownMat, 0, 1.97, 0, 0.155, 0.25, 0.155, false);
+    if (!ab) {
+      this._addMesh(grp, this.geos.cyl24, this.m.neonGold, 0, 1.97, 0, 0.162, 0.032, 0.162, false);
+      this._addMesh(grp, this.geos.box, collarMat, 0, 1.97, 0, 0.164, 0.25, 0.014, false);
+      this._addMesh(grp, this.geos.box, collarMat, 0, 1.97, 0, 0.014, 0.25, 0.164, false);
+    }
+    this._addMesh(grp, this.geos.cyl24, collarMat, 0, 2.12, 0, 0.185, 0.045, 0.185, true);
+    this._addMesh(grp, this.geos.cyl24, ab ? this.m.abandoned : this.m.brushedSilver, 0, 2.155, 0, 0.15, 0.025, 0.15, true);
+    this._addBeacon(grp, hooks, 0, 2.21, 0, x, y0, z, rotRad, ab);
+  }
+
+  _buildWastePlant(grp, ab, x, y0, z, rotRad, hooks) {
+    this._addMesh(grp, this.geos.box, ab ? this.m.pavingPlazaDusty : this.m.pavingPlaza, 0, 0.015, 0, 0.94, 0.03, 0.94, false);
+    const wedgeMat = ab ? this.m.dustyInd : this.m.indPanelSilver;
+    this._addMesh(grp, this.geos.copenhillWedge, wedgeMat, -0.04, 0.02, 0.06, 0.95, 0.92, 0.92, true);
+
+    const slopePark = this._addMesh(grp, this.geos.box, ab ? this.m.abandonedRust : this.m.roofGreen, -0.04, 0.73, 0.06, 0.82, 0.035, 0.48, false);
+    slopePark.rotation.z = 0.78;
+    if (!ab) {
+      this._addTinyTree(grp, -0.26, 0.46, 0.14, 0.48);
+      this._addTinyTree(grp, 0.08, 0.82, 0.14, 0.48);
+    }
+
+    const siloMat = ab ? this.m.abandoned : this.m.whiteComposite;
+    this._addMesh(grp, this.geos.cyl24, siloMat, -0.22, 0.24, -0.30, 0.20, 0.46, 0.20, true);
+    this._addMesh(grp, this.geos.cyl24, siloMat, 0.02, 0.28, -0.30, 0.20, 0.54, 0.20, true);
+    this._addMesh(grp, this.geos.cyl16, siloMat, 0.30, 0.78, -0.24, 0.10, 1.54, 0.10, true);
+    if (!ab) {
+      this._addMesh(grp, this.geos.cyl16, this.m.neonEmerald, 0.30, 1.48, -0.24, 0.112, 0.04, 0.112, false);
+      this._pushSmoke(hooks, 0.30, 1.58, -0.24, x, y0, z, rotRad, true);
+    }
+  }
+
+  // ==================== 3. Upgraded Civic & Utility Buildings ====================
+
+  _buildWindTurbine(grp, ab, x, y0, z, rotRad, hooks) {
+    const THREE = this.THREE;
+    const mat = ab ? this.m.abandoned : this.m.whiteComposite;
+    this._addMesh(grp, this.geos.cyl24, this.m.roofConcrete, 0, 0.025, 0, 0.32, 0.05, 0.32, true);
+    this._addMesh(grp, this.geos.windMast, mat, 0, 0.80, 0, 1, 1, 1, true);
+    this._addMesh(grp, this.geos.windNacelle, mat, 0, 1.60, 0, 1, 1, 1, true);
+    this._addBeacon(grp, hooks, 0, 1.68, -0.05, x, y0, z, rotRad, ab);
+
+    const hub = new THREE.Group();
+    hub.position.set(0, 1.60, 0.13);
+    this._addMesh(hub, this.geos.cone8, mat, 0, 0, 0.03, 0.12, 0.10, 0.12, false).rotation.x = Math.PI * 0.5;
+    for (let k = 0; k < 3; k++) {
+      const arm = new THREE.Group();
+      arm.rotation.z = (k * Math.PI * 2) / 3;
+      this._addMesh(arm, this.geos.windBlade, mat, 0, 0.22, 0, 1, 1, 0.45, true);
+      hub.add(arm);
+    }
+    grp.add(hub);
+    if (!ab && hooks && hooks.windRotors) hooks.windRotors.push(hub);
+  }
+
+  _buildThermalPowerPlant(grp, ab, x, y0, z, rotRad, hooks) {
+    const wall = ab ? this.m.dustyInd : this.m.indPanelWarm;
+    this._addMesh(grp, this.geos.box, this.m.asphalt, 0, 0.015, 0, 0.92, 0.03, 0.92, false);
+    this._addMesh(grp, this.geos.box, wall, -0.18, 0.34, 0.04, 0.46, 0.66, 0.72, true);
+    this._addMesh(grp, this.geos.box, this.m.brushedSilver, -0.18, 0.69, 0.04, 0.40, 0.06, 0.64, true);
+
+    this._addMesh(grp, this.geos.cyl16, this.m.plazaStone, -0.26, 0.66, -0.26, 0.09, 1.30, 0.09, true);
+    this._addMesh(grp, this.geos.coolingTower, ab ? this.m.abandoned : this.m.plazaStone, 0.22, 0.02, 0.12, 0.88, 0.96, 0.88, true);
+
+    if (!ab) {
+      this._addMesh(grp, this.geos.cyl16, this.m.craneRed, -0.26, 1.25, -0.26, 0.096, 0.08, 0.096, false);
+      this._pushSmoke(hooks, -0.26, 1.34, -0.26, x, y0, z, rotRad, false);
+      this._pushSmoke(hooks, 0.22, 1.04, 0.12, x, y0, z, rotRad, true);
+    }
+  }
+
+  _buildWaterFacility(grp, type, ab) {
+    const isSewage = type === 'sewage_out';
+    const isTreat = type === 'water_treat';
+    const mainMat = ab ? this.m.dustyInd : (isSewage ? this.m.indPanelWarm : this.m.indPanelSilver);
+    const poolMat = ab ? this.m.abandonedRust : (isSewage ? this.m.teakDeck : this.m.poolWater);
+
+    this._addMesh(grp, this.geos.box, ab ? this.m.pavingPlazaDusty : this.m.pavingPlaza, 0, 0.015, 0, 0.90, 0.03, 0.90, false);
+    this._addMesh(grp, this.geos.box, mainMat, -0.18, 0.22, -0.08, 0.40, 0.42, 0.62, true);
+
+    for (const bz of [-0.18, 0.20]) {
+      this._addMesh(grp, this.geos.cyl24, this.m.plazaStone, 0.22, 0.09, bz, 0.34, 0.16, 0.34, true);
+      this._addMesh(grp, this.geos.cyl24, poolMat, 0.22, 0.165, bz, 0.29, 0.02, 0.29, false);
+      this._addMesh(grp, this.geos.box, this.m.brushedSilver, 0.22, 0.18, bz, 0.32, 0.015, 0.03, false);
+    }
+
+    if (isTreat) {
+      this._addMesh(grp, this.geos.sphere16, this.m.whiteComposite, -0.18, 0.58, -0.16, 0.30, 0.30, 0.30, true);
+      if (!ab) this._addMesh(grp, this.geos.box, this.m.ledLinearCyan, -0.18, 0.44, 0.16, 0.34, 0.022, 0.12, false);
+    } else {
+      const pipeMat = isSewage ? this.m.steelDark : this.m.airlineBlue;
+      for (const px of [-0.26, -0.10]) {
+        const p = this._addMesh(grp, this.geos.cyl16, pipeMat, px, 0.10, 0.34, 0.07, 0.34, 0.07, true);
+        p.rotation.x = Math.PI * 0.5;
+      }
+    }
+  }
+
+  _buildFireStation(grp, ab, x, y0, z, rotRad, hooks) {
+    this._addMesh(grp, this.geos.box, ab ? this.m.pavingPlazaDusty : this.m.pavingPlaza, 0, 0.015, 0, 0.92, 0.03, 0.92, false);
+    this._addMesh(grp, this.geos.box, ab ? this.m.dustyStoneFin : this.m.finStoneSilver, -0.08, 0.27, -0.02, 0.64, 0.51, 0.58, true);
+    const redMat = ab ? this.m.abandonedRust : this.m.craneRed;
+    for (const dx of [-0.26, -0.08, 0.10]) {
+      this._addMesh(grp, this.geos.box, redMat, dx, 0.14, 0.28, 0.13, 0.22, 0.03, false);
+    }
+    this._addMesh(grp, this.geos.box, redMat, 0.28, 0.52, -0.20, 0.22, 1.02, 0.22, true);
+    this._addMesh(grp, this.geos.box, this.m.whiteComposite, 0.28, 0.88, -0.20, 0.24, 0.06, 0.24, false);
+    this._addBeacon(grp, hooks, 0.28, 1.07, -0.20, x, y0, z, rotRad, ab);
+  }
+
+  _buildPoliceStation(grp, ab) {
+    this._addZonedPlotPad(grp, ab, false);
+    this._addMesh(grp, this.geos.box, ab ? this.m.dustyRetail : this.m.retailPodiumConc, 0, 0.20, 0, 0.76, 0.36, 0.68, true);
+    this._addMesh(grp, this.geos.box, ab ? this.m.dustyCBD : this.m.cbdIceBlue, 0, 0.38 + 0.51, -0.04, 0.62, 1.02, 0.52, true);
+    if (!ab) {
+      this._addMesh(grp, this.geos.parapetFrame, this.m.airlineBlue, 0, 1.43, -0.04, 0.63, 0.06, 0.53, true);
+    }
+    this._addHelipad(grp, 0, 1.41, -0.04, 0.26, ab);
+    this._addMesh(grp, this.geos.spireNeedle, this.m.brushedSilver, 0.20, 1.66, -0.18, 0.7, 0.50, 0.7, false);
+  }
+
+  _buildHospital(grp, ab) {
+    this._addZonedPlotPad(grp, ab, true);
+    const white = ab ? this.m.abandoned : this.m.whiteComposite;
+    const glass = ab ? this.m.dustyCBD : this.m.cbdSlateSilver;
+    const red = ab ? this.m.abandonedRust : this.m.craneRed;
+
+    this._addMesh(grp, this.geos.box, ab ? this.m.dustyRetail : this.m.retailPodium, 0.04, 0.20, 0.12, 0.76, 0.36, 0.48, true);
+    this._addMesh(grp, this.geos.box, red, 0.04, 0.18, 0.39, 0.34, 0.030, 0.10, true);
+
+    const wardH = 1.70; // exact 10 storeys * 0.17
+    this._addMesh(grp, this.geos.box, glass, -0.04, 0.024 + wardH * 0.5, -0.08, 0.68, wardH, 0.42, true);
+    this._addMesh(grp, this.geos.box, white, -0.36, 0.024 + wardH * 0.5, -0.08, 0.06, wardH + 0.02, 0.44, true);
+    this._addMesh(grp, this.geos.box, white, 0.28, 0.024 + wardH * 0.5, -0.08, 0.06, wardH + 0.02, 0.44, true);
+    this._addMesh(grp, this.geos.parapetFrame, white, -0.04, 0.024 + wardH + 0.035, -0.08, 0.70, 0.07, 0.44, true);
+
+    const crossMat = ab ? this.m.abandonedRust : this.m.beaconRed;
+    this._addMesh(grp, this.geos.box, crossMat, -0.04, 1.44, 0.14, 0.22, 0.065, 0.025, false);
+    this._addMesh(grp, this.geos.box, crossMat, -0.04, 1.44, 0.14, 0.065, 0.22, 0.025, false);
+    this._addHelipad(grp, -0.04, 0.024 + wardH + 0.01, -0.08, 0.28, ab);
+  }
+
+  _buildSchool(grp, ab) {
+    this._addZonedPlotPad(grp, ab, false);
+    this._addMesh(grp, this.geos.box, ab ? this.m.abandonedRust : this.m.lawn, 0, 0.028, 0.24, 0.54, 0.014, 0.26, false);
+
+    const mat = ab ? this.m.dustyStoneFin : this.m.finStoneChampagne;
+    const hMain = 0.68; // 4 storeys * 0.17
+    const hWing = 0.51; // 3 storeys * 0.17
+    this._addMesh(grp, this.geos.box, mat, 0, 0.024 + hMain * 0.5, -0.14, 0.74, hMain, 0.36, true);
+    this._addMesh(grp, this.geos.box, mat, -0.24, 0.024 + hWing * 0.5, 0.08, 0.26, hWing, 0.36, true);
+    this._addMesh(grp, this.geos.parapetFrame, this.m.parapetStone, 0, 0.024 + hMain + 0.025, -0.14, 0.75, 0.05, 0.37, true);
+    this._addMesh(grp, this.geos.box, ab ? this.m.abandoned : this.m.parapetStone, 0, 0.024 + hMain + 0.10, -0.14, 0.22, 0.16, 0.20, true);
+    this._addMesh(grp, this.geos.taperPyr, ab ? this.m.abandonedRust : this.m.slateRoof, 0, 0.024 + hMain + 0.23, -0.14, 0.28, 0.11, 0.26, true, Math.PI * 0.25);
+  }
+
+  _buildPark(grp) {
+    this._addMesh(grp, this.geos.box, this.m.lawn, 0, 0.015, 0, 0.92, 0.03, 0.92, false);
+    this._addMesh(grp, this.geos.box, this.m.pavingPlaza, 0, 0.026, 0, 0.90, 0.012, 0.16, false);
+    this._addMesh(grp, this.geos.box, this.m.pavingPlaza, 0, 0.026, 0, 0.16, 0.012, 0.90, false);
+
+    if (!this._placeGLB(grp, 'park_fountain', 0, 0.02, 0, 0.92, 1.0, 0.92, false)) {
+      this._addMesh(grp, this.geos.cyl24, this.m.plazaStone, 0, 0.06, 0, 0.36, 0.08, 0.36, true);
+      this._addMesh(grp, this.geos.cyl24, this.m.poolWater, 0, 0.105, 0, 0.30, 0.02, 0.30, false);
+      this._addMesh(grp, this.geos.cyl16, this.m.whiteComposite, 0, 0.16, 0, 0.08, 0.14, 0.08, true);
+    }
+
+    for (const [tx, tz] of [[-0.31, -0.31], [0.31, -0.31], [-0.31, 0.31], [0.31, 0.31]]) {
+      this._addTinyTree(grp, tx, 0.02, tz, 0.82);
+    }
+  }
+
+  _buildMetroStation(grp, ab) {
+    this._addMesh(grp, this.geos.box, ab ? this.m.pavingPlazaDusty : this.m.pavingPlaza, 0, 0.015, 0, 0.90, 0.03, 0.90, false);
+    const vault = this._addMesh(grp, this.geos.capsule, ab ? this.m.dustyCBD : this.m.atriumGlass, 0, 0.14, 0, 1.25, 0.82, 0.72, true);
+    vault.rotation.x = Math.PI * 0.5;
+    this._addMesh(grp, this.geos.box, this.m.asphalt, 0, 0.09, 0.24, 0.28, 0.14, 0.14, false);
+    this._addMesh(grp, this.geos.box, this.m.steelDark, 0.32, 0.26, 0.28, 0.05, 0.48, 0.05, true);
+    if (!ab) {
+      this._addMesh(grp, this.geos.box, this.m.neonViolet, 0.32, 0.46, 0.28, 0.12, 0.12, 0.07, false);
+    }
+  }
+
+  _buildHSRStation(grp, ab) {
+    this._addMesh(grp, this.geos.box, ab ? this.m.pavingPlazaDusty : this.m.pavingPlaza, 0, 0.02, 0, 0.98, 0.04, 0.98, false);
+    this._addMesh(grp, this.geos.box, ab ? this.m.dustyCBD : this.m.cbdSlateSilver, 0, 0.24, 0, 0.84, 0.42, 0.62, true);
+    this._addMesh(grp, this.geos.gullWingRoof, ab ? this.m.abandoned : this.m.brushedSilver, 0, 0.44, 0, 0.92, 1.15, 1.52, true);
+    if (!ab) {
+      this._addMesh(grp, this.geos.box, this.m.ledLinearCyan, 0, 0.52, 0.38, 0.86, 0.025, 0.035, false);
+      this._addMesh(grp, this.geos.box, this.m.ledLinearCyan, 0, 0.52, -0.38, 0.86, 0.025, 0.035, false);
+    }
+  }
+
+  // ==================== 4. CR400 "Fuxing" Bullet Train, Airliner & Cargo Ship ====================
+
+  // CR400AF "Fuxing" High-Speed Train Car: rail-head at y=0, facing +Z, L≈0.68, W≈0.21, H≈0.22
+  createBulletTrainCarObject(isHead = false) {
+    const THREE = this.THREE;
+    const grp = new THREE.Group();
+    grp.rotation.order = 'YXZ';
+
+    if (isHead) {
+      this._addMesh(grp, this.geos.fuxingHeadBody, this.m.fuxingBody, 0, 0, 0, 1, 1, 1, true);
+      this._addMesh(grp, this.geos.fuxingHeadStripe, this.m.fuxingRedStripe, 0, 0, 0, 1, 1, 1, false);
+      this._addMesh(grp, this.geos.fuxingHeadDark, this.m.cockpitGlass, 0, 0, 0, 1, 1, 1, true);
+      this._addMesh(grp, this.geos.fuxingHeadlights, this.m.fuxingHeadlight, 0, 0, 0, 1, 1, 1, false);
+    } else {
+      this._addMesh(grp, this.geos.fuxingMidBody, this.m.fuxingBody, 0, 0, 0, 1, 1, 1, true);
+      this._addMesh(grp, this.geos.fuxingMidStripe, this.m.fuxingRedStripe, 0, 0, 0, 1, 1, 1, false);
+      this._addMesh(grp, this.geos.fuxingMidDark, this.m.cockpitGlass, 0, 0, 0, 1, 1, 1, true);
+      // Subtle rooftop AC / pantograph shroud
+      this._addMesh(grp, this.geos.box, this.m.fuxingRoofSilver, 0, 0.242, 0, 0.11, 0.012, 0.36, false);
+    }
+
+    return grp;
+  }
+
+  createAirlinerObject() {
+    const THREE = this.THREE;
+    const grp = new THREE.Group();
+    grp.rotation.order = 'YXZ';
+
+    this._addMesh(grp, this.geos.fuselage, this.m.whiteComposite, 0, 0.14, -0.02, 1.0, 1.0, 1.0, true);
+    this._addMesh(grp, this.geos.fuselage, this.m.airlineBlue, 0, 0.115, -0.02, 0.96, 0.68, 0.97, false);
+    this._addMesh(grp, this.geos.sphere16, this.m.cockpitGlass, 0, 0.175, 0.52, 0.135, 0.075, 0.16, false);
+
+    this._addMesh(grp, this.geos.airlinerWing, this.m.whiteComposite, 0, 0.12, 0.08, 1.0, 1.0, 1.0, true);
+    const wlL = this._addMesh(grp, this.geos.box, this.m.airlineBlue, 0.68, 0.165, -0.12, 0.015, 0.09, 0.08, true);
+    wlL.rotation.z = -0.22;
+    const wlR = this._addMesh(grp, this.geos.box, this.m.airlineBlue, -0.68, 0.165, -0.12, 0.015, 0.09, 0.08, true);
+    wlR.rotation.z = 0.22;
+
+    for (const sx of [-0.28, 0.28]) {
+      const pod = this._addMesh(grp, this.geos.cyl16, this.m.whiteComposite, sx, 0.075, 0.06, 0.095, 0.20, 0.095, true);
+      pod.rotation.x = Math.PI * 0.5;
+      const intake = this._addMesh(grp, this.geos.cyl16, this.m.brushedSilver, sx, 0.075, 0.162, 0.098, 0.018, 0.098, false);
+      intake.rotation.x = Math.PI * 0.5;
+      const fan = this._addMesh(grp, this.geos.cyl16, this.m.cockpitGlass, sx, 0.075, 0.168, 0.078, 0.012, 0.078, false);
+      fan.rotation.x = Math.PI * 0.5;
+    }
+
+    this._addMesh(grp, this.geos.airlinerVTail, this.m.airlineBlue, 0, 0.19, -0.48, 1.0, 1.0, 1.0, true);
+    this._addMesh(grp, this.geos.airlinerHTail, this.m.whiteComposite, 0, 0.15, -0.52, 1.0, 1.0, 1.0, true);
+
+    this._addMesh(grp, this.geos.sphere16, this.m.beaconRed, 0.69, 0.21, -0.14, 0.038, 0.038, 0.038, false);
+    this._addMesh(grp, this.geos.sphere16, this.m.strobeGreen, -0.69, 0.21, -0.14, 0.038, 0.038, 0.038, false);
+    const tailStrobe = this._addMesh(grp, this.geos.sphere16, this.m.beaconRed, 0, 0.485, -0.62, 0.042, 0.042, 0.042, false);
+    tailStrobe.name = 'strobe';
+
+    return grp;
+  }
+
+  createCargoShipObject() {
+    const THREE = this.THREE;
+    const grp = new THREE.Group();
+    grp.rotation.order = 'YXZ';
+
+    this._addMesh(grp, this.geos.shipHullBoot, this.m.hullCrimson, 0, 0.0, 0, 1.0, 1.0, 1.0, true);
+    this._addMesh(grp, this.geos.shipHullMain, this.m.hullNavy, 0, 0.075, 0, 1.0, 1.0, 1.0, true);
+
+    this._addMesh(grp, this.geos.cyl16, this.m.whiteComposite, 0, 0.28, 0.88, 0.022, 0.16, 0.022, false);
+    this._addMesh(grp, this.geos.sphere16, this.m.neonGold, 0, 0.37, 0.88, 0.035, 0.035, 0.035, false);
+
+    this._addMesh(grp, this.geos.box, this.m.whiteComposite, 0, 0.30, -0.62, 0.38, 0.22, 0.22, true);
+    this._addMesh(grp, this.geos.box, this.m.whiteComposite, 0, 0.44, -0.60, 0.48, 0.07, 0.14, true);
+    this._addMesh(grp, this.geos.box, this.m.cockpitGlass, 0, 0.45, -0.528, 0.44, 0.035, 0.015, false);
+    this._addMesh(grp, this.geos.box, this.m.craneRed, 0, 0.47, -0.70, 0.10, 0.16, 0.11, true);
+    this._addMesh(grp, this.geos.box, this.m.asphalt, 0, 0.56, -0.70, 0.102, 0.035, 0.112, false);
+
+    const baysZ = [0.50, 0.18, -0.14, -0.86];
+    for (let bIdx = 0; bIdx < baysZ.length; bIdx++) {
+      const bz = baysZ[bIdx];
+      const cols = bIdx === 0 ? [-0.08, 0.08] : [-0.13, 0.0, 0.13];
+      const tiers = bIdx === 3 ? 2 : (bIdx === 0 ? 2 : 3);
+      for (let cIdx = 0; cIdx < cols.length; cIdx++) {
+        for (let t = 0; t < tiers; t++) {
+          const mat = this.containerMats[(bIdx * 3 + cIdx + t * 2) % this.containerMats.length];
+          this._addMesh(grp, this.geos.box, mat, cols[cIdx], 0.25 + t * 0.082, bz, 0.118, 0.08, 0.27, true);
+        }
+      }
+    }
+
+    return grp;
+  }
+
+  // ==================== 5. Atmospheric Procedural Sky Dome ====================
+
+  createSkyDome() {
+    const THREE = this.THREE;
+    const geo = new THREE.SphereGeometry(145, 32, 20);
+
+    const uniforms = {
+      uTime: { value: 0.0 },
+      uNight: { value: 0.0 },
+      uSunset: { value: 0.0 },
+      uSunDir: { value: new THREE.Vector3(0.45, 0.75, 0.48).normalize() }
+    };
+
+    const vertexShader = `
+      varying vec3 vDir;
+      void main() {
+        vDir = position;
+        vec4 mvPos = modelViewMatrix * vec4(position, 1.0);
+        gl_Position = projectionMatrix * mvPos;
+      }
+    `;
+
+    const fragmentShader = `
+      uniform float uTime;
+      uniform float uNight;
+      uniform float uSunset;
+      uniform vec3 uSunDir;
+      varying vec3 vDir;
+
+      float hash21(vec2 p) {
+        p = fract(p * vec2(123.34, 456.21));
+        p += dot(p, p + 45.32);
+        return fract(p.x * p.y);
+      }
+
+      float noise2D(vec2 p) {
+        vec2 i = floor(p);
+        vec2 f = fract(p);
+        vec2 u = f * f * (3.0 - 2.0 * f);
+        float a = hash21(i);
+        float b = hash21(i + vec2(1.0, 0.0));
+        float c = hash21(i + vec2(0.0, 1.0));
+        float d = hash21(i + vec2(1.0, 1.0));
+        return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+      }
+
+      float fbm(vec2 p) {
+        float v = 0.0;
+        float a = 0.5;
+        mat2 rot = mat2(0.80, 0.60, -0.60, 0.80);
+        for (int i = 0; i < 4; i++) {
+          v += a * noise2D(p);
+          p = rot * p * 2.03 + vec2(17.1, 31.7);
+          a *= 0.5;
+        }
+        return v;
+      }
+
+      vec3 hash33(vec3 p) {
+        p = fract(p * vec3(0.1031, 0.1030, 0.0973));
+        p += dot(p, p.yxz + 33.33);
+        return fract((p.xxy + p.yxx) * p.zyx);
+      }
+
+      float starLayer(vec3 dir, float scale, float time) {
+        vec3 p = dir * scale;
+        vec3 id = floor(p);
+        vec3 f = fract(p) - 0.5;
+        vec3 rnd = hash33(id);
+        if (rnd.z < 0.76) return 0.0;
+        vec3 center = (rnd - 0.5) * 0.56;
+        float dist = length(f - center);
+        float size = mix(0.055, 0.115, rnd.x);
+        float star = smoothstep(size, size * 0.15, dist);
+        float twinkle = 0.66 + 0.34 * sin(time * (1.8 + rnd.y * 4.2) + rnd.z * 62.83);
+        return star * twinkle * smoothstep(0.76, 1.0, rnd.z);
+      }
+
+      void main() {
+        vec3 d = normalize(vDir);
+        float up = clamp(d.y, 0.0, 1.0);
+        float horizonFactor = pow(1.0 - up, 2.6);
+
+        vec3 dayZenith = vec3(0.16, 0.45, 0.85);
+        vec3 dayMid = vec3(0.41, 0.70, 0.95);
+        vec3 dayHorizon = vec3(0.76, 0.89, 0.99);
+        vec3 dayCol = mix(dayZenith, dayMid, smoothstep(0.85, 0.22, up));
+        dayCol = mix(dayCol, dayHorizon, horizonFactor);
+
+        vec3 nightZenith = vec3(0.014, 0.026, 0.068);
+        vec3 nightHorizon = vec3(0.052, 0.092, 0.180);
+        vec3 nightCol = mix(nightZenith, nightHorizon, pow(1.0 - up, 2.1));
+
+        vec3 sky = mix(dayCol, nightCol, uNight);
+
+        float sunCos = dot(d, uSunDir);
+        float sunAzimuth = max(0.0, dot(normalize(vec2(d.x, d.z) + 1e-5), normalize(vec2(uSunDir.x, uSunDir.z) + 1e-5)));
+        vec3 sunsetGlowCol = mix(vec3(0.95, 0.38, 0.26), vec3(1.0, 0.76, 0.38), pow(sunAzimuth, 2.0));
+        float sunsetBand = uSunset * pow(1.0 - up, 2.2) * (0.35 + 0.65 * sunAzimuth);
+        sky = mix(sky, sunsetGlowCol, clamp(sunsetBand * 0.82, 0.0, 0.85));
+
+        float sunVis = smoothstep(-0.10, 0.06, uSunDir.y) * (1.0 - uNight * 0.92);
+        float sunDisc = smoothstep(0.9980, 0.9993, sunCos);
+        float sunCorona = pow(max(0.0, sunCos), 36.0) * 0.55 + pow(max(0.0, sunCos), 6.0) * 0.14;
+        vec3 sunTint = mix(vec3(1.0, 0.97, 0.88), vec3(1.0, 0.58, 0.24), uSunset * 0.80);
+        sky += sunTint * (sunDisc * 1.65 + sunCorona) * sunVis;
+
+        if (uNight > 0.02 && d.y > 0.02) {
+          float starFade = uNight * smoothstep(0.02, 0.24, d.y);
+          float s1 = starLayer(d, 155.0, uTime);
+          float s2 = starLayer(d + vec3(0.37, 0.19, -0.23), 240.0, uTime * 1.15);
+          vec3 starCol = mix(vec3(0.76, 0.88, 1.0), vec3(1.0, 0.91, 0.74), fract(d.x * 37.0 + d.z * 19.0));
+          sky += starCol * (s1 * 1.25 + s2 * 0.95) * starFade;
+
+          vec3 moonDir = normalize(vec3(-uSunDir.x, max(0.34, -uSunDir.y * 0.72 + 0.26), -uSunDir.z));
+          float moonCos = dot(d, moonDir);
+          float moonDisc = smoothstep(0.9986, 0.9993, moonCos);
+          float moonHalo = pow(max(0.0, moonCos), 28.0) * 0.28 + pow(max(0.0, moonCos), 6.0) * 0.06;
+          float crater = 0.86 + 0.14 * noise2D(d.xy * 180.0);
+          sky += vec3(0.82, 0.90, 1.0) * (moonDisc * crater * 1.15 + moonHalo) * uNight;
+        }
+
+        if (d.y > 0.015) {
+          vec2 cloudUV = d.xz / (d.y + 0.20);
+          float cBase = fbm(cloudUV * 1.05 + vec2(uTime * 0.011, uTime * 0.006));
+          float cirrus = noise2D(cloudUV * vec2(2.6, 0.75) - vec2(uTime * 0.018, 0.0));
+
+          float cumulusMask = smoothstep(0.50, 0.78, cBase);
+          float cirrusMask = smoothstep(0.62, 0.88, cirrus) * 0.35;
+          float cloudAlpha = clamp(cumulusMask * 0.78 + cirrusMask, 0.0, 0.86) * smoothstep(0.015, 0.20, d.y);
+
+          vec3 cloudDay = mix(vec3(0.76, 0.84, 0.94), vec3(1.0, 0.99, 0.98), smoothstep(0.48, 0.76, cBase));
+          vec3 cloudSunset = mix(vec3(0.52, 0.34, 0.48), vec3(1.0, 0.64, 0.38), smoothstep(0.45, 0.74, cBase));
+          vec3 cloudNight = vec3(0.07, 0.11, 0.20);
+
+          vec3 cloudCol = mix(cloudDay, cloudSunset, uSunset * 0.82);
+          cloudCol = mix(cloudCol, cloudNight, uNight * 0.88);
+          sky = mix(sky, cloudCol, cloudAlpha * (1.0 - uNight * 0.42));
+        }
+
+        if (d.y < 0.0) {
+          vec3 abyss = mix(vec3(0.56, 0.74, 0.90), vec3(0.03, 0.05, 0.10), uNight);
+          sky = mix(sky, abyss, smoothstep(0.0, -0.22, d.y));
+        }
+
+        gl_FragColor = vec4(sky, 1.0);
+      }
+    `;
+
+    const mat = new THREE.ShaderMaterial({
+      uniforms,
+      vertexShader,
+      fragmentShader,
+      side: THREE.BackSide,
+      depthWrite: false,
+      fog: false
+    });
+
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.renderOrder = -1000;
+    mesh.frustumCulled = false;
+
+    let elapsed = 0;
+    let lastStamp = typeof performance !== 'undefined' ? performance.now() : 0;
+
+    const update = (dayProgress = 0.35, night, sunDir) => {
+      const now = typeof performance !== 'undefined' ? performance.now() : lastStamp + 16;
+      const dt = Math.min(0.1, Math.max(0.001, (now - lastStamp) * 0.001));
+      lastStamp = now;
+      elapsed += dt;
+      uniforms.uTime.value = elapsed;
+
+      const sunAngle = (dayProgress - 0.25) * Math.PI * 2;
+      const sunElev = Math.sin(sunAngle);
+      const calcNight = night !== undefined
+        ? Math.max(0, Math.min(1, night))
+        : Math.max(0, Math.min(1, (-sunElev + 0.16) / 0.42));
+
+      uniforms.uNight.value = calcNight;
+      uniforms.uSunset.value = Math.max(0, 1 - Math.abs(sunElev - 0.06) / 0.30);
+
+      if (sunDir) {
+        if (typeof sunDir.x === 'number') {
+          uniforms.uSunDir.value.set(sunDir.x, sunDir.y, sunDir.z).normalize();
+        } else if (Array.isArray(sunDir) && sunDir.length >= 3) {
+          uniforms.uSunDir.value.set(sunDir[0], sunDir[1], sunDir[2]).normalize();
+        }
+      } else {
+        uniforms.uSunDir.value.set(Math.cos(sunAngle) * 34, sunElev * 42, 22).normalize();
+      }
+
+      this.setNightFactor(calcNight);
+    };
+
+    return { mesh, update };
+  }
+}

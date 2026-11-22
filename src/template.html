@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="theme-color" content="#0b1324" />
+  <title>山河天际线 Pro 3D · 旗舰离线城市模拟</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230f172a'/%3E%3Crect x='10' y='28' width='12' height='26' fill='%2322c55e'/%3E%3Crect x='26' y='12' width='14' height='42' fill='%2338bdf8'/%3E%3Crect x='44' y='22' width='10' height='32' fill='%23fbbf24'/%3E%3C/svg%3E" />
+  <!--PWA_HEAD-->
+  <style>
+/*INLINE_CSS*/
+  </style>
+  <style>
+    .issue-badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 18px;
+      height: 18px;
+      padding: 0 5px;
+      margin-left: 3px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 700;
+      line-height: 1;
+      background: rgba(34, 197, 94, 0.22);
+      color: #86efac;
+      border: 1px solid rgba(74, 222, 128, 0.35);
+      transition: all 0.2s ease;
+    }
+    #toast-container .toast {
+      pointer-events: auto !important;
+      cursor: pointer;
+      user-select: none;
+    }
+    .issue-tabs {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-bottom: 10px;
+    }
+    .issue-tab-btn {
+      background: rgba(30, 41, 59, 0.85);
+      border: 1px solid rgba(71, 85, 105, 0.7);
+      color: #cbd5e1;
+      padding: 6px 10px;
+      border-radius: 8px;
+      font-size: 12px;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+    .issue-tab-btn:hover {
+      border-color: #38bdf8;
+      color: #f8fafc;
+    }
+    .issue-tab-btn.active {
+      background: linear-gradient(135deg, #0284c7, #2563eb);
+      border-color: #7dd3fc;
+      color: #ffffff;
+      font-weight: 700;
+    }
+    .issue-list-wrap {
+      max-height: 50vh;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding-right: 2px;
+    }
+    .issue-item-card {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 10px 12px;
+      background: rgba(15, 23, 42, 0.72);
+      border: 1px solid rgba(71, 85, 105, 0.55);
+      border-radius: 10px;
+    }
+    .issue-item-card:hover {
+      border-color: rgba(56, 189, 248, 0.65);
+    }
+  </style>
+</head>
+<body>
+  <canvas id="game-canvas"></canvas>
+
+  <!-- Top HUD -->
+  <header id="top-hud">
+    <div class="hud-card">
+      <div class="city-brand" id="city-brand-btn" title="点击切换难度、存档或加载示范大都会">
+        <div class="city-name-row">
+          <span>🏞️</span>
+          <span id="hud-city-name">山河天际市</span>
+        </div>
+        <div class="city-tier" id="hud-city-tier">初创村落 · 2026年3月1日</div>
+      </div>
+
+      <div class="mayor-badge" id="mayor-level-btn" title="点击查看《🎖️ 市长等级解锁路线图 (人口+经验双轨晋升)》">
+        <div class="mayor-badge-top">
+          <span class="mayor-lv-pill" id="hud-mayor-lv">🎖️ Lv.1</span>
+          <span class="mayor-lv-title" id="hud-mayor-title">初创村落</span>
+        </div>
+        <div class="mayor-xp-track">
+          <div class="mayor-xp-fill" id="hud-xp-fill" style="width:0%"></div>
+        </div>
+        <div class="mayor-xp-lbl" id="hud-xp-text">👥0/180 · ⭐0/220</div>
+      </div>
+
+      <div class="stats-row">
+        <div class="stat-pill">
+          <span class="stat-label">💰 国库</span>
+          <span class="stat-val" id="hud-money">¥32,000</span>
+        </div>
+        <div class="stat-pill">
+          <span class="stat-label">📈 收支</span>
+          <span class="stat-val positive" id="hud-income">+¥0</span>
+        </div>
+        <div class="stat-pill">
+          <span class="stat-label">👥 人口</span>
+          <span class="stat-val" id="hud-pop">0</span>
+        </div>
+        <div class="stat-pill">
+          <span class="stat-label">😊 幸福</span>
+          <span class="stat-val" id="hud-happy">75%</span>
+        </div>
+        <div class="stat-pill">
+          <span class="stat-label">⚡ 电力</span>
+          <span class="stat-val positive" id="hud-power">0/100</span>
+        </div>
+        <div class="stat-pill">
+          <span class="stat-label">🔵 供水</span>
+          <span class="stat-val positive" id="hud-water">0/300</span>
+        </div>
+        <div class="stat-pill">
+          <span class="stat-label">♻️ 环卫</span>
+          <span class="stat-val positive" id="hud-trash">0/0</span>
+        </div>
+      </div>
+
+      <div class="rci-box" title="R住宅 / C商业 / I工业与办公 需求柱">
+        <div class="rci-col">
+          <div class="rci-track"><div class="rci-fill r" id="rci-r" style="height:75%"></div></div>
+          <span class="rci-lbl r">R</span>
+        </div>
+        <div class="rci-col">
+          <div class="rci-track"><div class="rci-fill c" id="rci-c" style="height:45%"></div></div>
+          <span class="rci-lbl c">C</span>
+        </div>
+        <div class="rci-col">
+          <div class="rci-track"><div class="rci-fill i" id="rci-i" style="height:60%"></div></div>
+          <span class="rci-lbl i">I</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="hud-card quick-actions">
+      <button class="icon-btn" data-speed="0" title="暂停规划">⏸</button>
+      <button class="icon-btn active" data-speed="1" title="标准慢速">1x</button>
+      <button class="icon-btn" data-speed="2" title="2倍速">2x</button>
+      <button class="icon-btn" data-speed="4" title="4倍速">4x</button>
+      <button class="icon-btn" id="btn-time-mode" title="切换昼夜光影与星空">🌤️</button>
+      <button class="icon-btn" id="btn-issues" title="查看分类城市问题并一键跳转定位">🔔 问题 <span class="issue-badge" id="hud-issue-count">0</span></button>
+      <button class="icon-btn" id="btn-budget" title="财政预算、部门经费与银行贷款">📊 财政</button>
+      <button class="icon-btn" id="btn-disaster" title="陨石/海啸/龙卷风/地震天灾">☄️ 灾害</button>
+      <button class="icon-btn" id="btn-menu" title="难度/全解锁/示范城/存档">💾 示范/存档</button>
+    </div>
+  </header>
+
+  <!-- Cities: Skylines Classic Chirper Citizen Feed Pill -->
+  <div id="chirper-pill" title="市民心声广播（点击可刷新下一条动态）">
+    <span class="chirp-bird">🐦</span>
+    <span id="chirper-user" style="font-weight:700;color:#38bdf8;">@市民小张</span>
+    <span id="chirper-text">听说新市长上任了！期待我们的山河新城早日通上地铁和高铁🚄</span>
+  </div>
+
+  <!-- Active Build Tool Hint Banner -->
+  <div id="tool-hint">
+    <span id="tool-hint-text">🛣️ 规划提示</span>
+    <button id="cancel-drag-btn">✖ 取消</button>
+  </div>
+
+  <!-- Left-side Mayor Onboarding Guide Card & Data Overlay Legend -->
+  <div id="left-float-stack">
+    <section id="guide-card">
+      <div class="guide-header">
+        <span class="guide-step-badge" id="guide-step-lbl">📋 建城指引 (第 1/10 步)</span>
+        <button class="guide-collapse-btn" id="guide-collapse-btn" title="收起指引面板">➖ 收起</button>
+      </div>
+      <div class="guide-step-bar">
+        <div class="guide-step-fill" id="guide-step-fill" style="width:10%"></div>
+      </div>
+      <div class="guide-title" id="guide-title">修筑首条街道</div>
+      <div class="guide-tip" id="guide-tip">从南侧高速路延伸铺设双车道街道（注意：路有维护费，前期紧凑修10~15格即可！）</div>
+      <div class="guide-prog-text" id="guide-prog-text">📊 已铺街道：0 / 12 格</div>
+      <div class="guide-footer">
+        <span class="guide-reward" id="guide-reward">🎁 +¥2,000 · +90XP</span>
+        <button class="guide-go-btn" id="guide-go-btn">👆 去建造</button>
+      </div>
+    </section>
+
+    <button id="guide-chip" style="display:none;" title="点击展开《📋 市长建城指引》">
+      <span>📋 指引</span>
+      <span class="guide-chip-step" id="guide-chip-step">1/10</span>
+    </button>
+
+    <!-- Data Overlay Legend -->
+    <div id="overlay-legend"></div>
+  </div>
+
+  <!-- Toast Notifications -->
+  <div id="toast-container"></div>
+
+  <!-- Right-side Camera & Data Layer Controls -->
+  <aside id="side-controls">
+    <button class="side-btn" id="btn-zoom-in" title="放大街景看建筑细节">➕</button>
+    <button class="side-btn" id="btn-zoom-out" title="缩小俯瞰山河全景">➖</button>
+    <button class="side-btn" id="btn-rot" title="旋转视角 45°">🔄</button>
+    <button class="side-btn" id="btn-tilt" title="切换街景仰视/高空俯视">🎥</button>
+    <button class="side-btn" id="btn-overlay" title="切换地下水管地铁透视 / 电网 / 地价 / 堵车视图">🗺️</button>
+<button class="side-btn" id="btn-xray" title="遮挡虚化：自动（拉近时挡住视线的楼自动半透明）/ 全城X光 / 关闭">👁️</button>
+    <button class="side-btn" id="btn-sfx" title="音效开关">🔊</button>
+  </aside>
+
+  <!-- Building & Tile Inspector -->
+  <section id="inspector-card">
+    <div class="insp-header">
+      <div class="insp-title" id="insp-title">详情</div>
+      <button class="insp-close" id="insp-close-btn">✕</button>
+    </div>
+    <div class="insp-badges" id="insp-badges"></div>
+    <div class="insp-grid" id="insp-grid"></div>
+    <div id="insp-actions" style="display:none;"></div>
+    <div id="insp-prog-wrap" style="display:none;">
+      <div style="font-size:10px;color:#94a3b8;margin-top:7px;">建筑升级进度</div>
+      <div class="progress-bar"><div class="progress-fill" id="insp-prog-fill" style="width:20%"></div></div>
+    </div>
+    <div id="insp-hint" style="margin-top:8px;font-size:11px;color:#7dd3fc;line-height:1.45;"></div>
+  </section>
+
+  <!-- Category Sub-Toolbar -->
+  <div id="sub-toolbar"></div>
+
+  <!-- Bottom 9-Category Skylines Dock -->
+  <nav id="bottom-dock">
+    <button class="dock-btn active" data-dock="pan">
+      <span class="dock-icon">🖐️</span>
+      <span class="dock-label">漫游查看</span>
+    </button>
+    <button class="dock-btn" data-dock="terrain">
+      <span class="dock-icon">⛰️</span>
+      <span class="dock-label">挖河造山</span>
+    </button>
+    <button class="dock-btn" data-dock="road">
+      <span class="dock-icon">🌉</span>
+      <span class="dock-label">高架道路</span>
+    </button>
+    <button class="dock-btn" data-dock="rail">
+      <span class="dock-icon">✈️</span>
+      <span class="dock-label">轨交航运</span>
+    </button>
+    <button class="dock-btn zone-r" data-dock="zones">
+      <span class="dock-icon">🏘️</span>
+      <span class="dock-label">六大区划</span>
+    </button>
+    <button class="dock-btn zone-c" data-dock="water">
+      <span class="dock-icon">♻️</span>
+      <span class="dock-label">水务环卫</span>
+    </button>
+    <button class="dock-btn zone-i" data-dock="power">
+      <span class="dock-icon">☢️</span>
+      <span class="dock-label">大坝能源</span>
+    </button>
+    <button class="dock-btn" data-dock="civic">
+      <span class="dock-icon">🎡</span>
+      <span class="dock-label">市政奇观</span>
+    </button>
+    <button class="dock-btn bulldoze" data-dock="bulldoze">
+      <span class="dock-icon">🚜</span>
+      <span class="dock-label">推土抢修</span>
+    </button>
+  </nav>
+
+  <!-- Modal Backdrop -->
+  <div id="modal-backdrop">
+    <div class="modal-panel">
+      <div class="modal-header">
+        <h3 id="modal-title">面板</h3>
+        <button class="insp-close" onclick="document.getElementById('modal-backdrop').classList.remove('open')">✕</button>
+      </div>
+      <div id="modal-body"></div>
+    </div>
+  </div>
+
+  <script>
+/*INLINE_JS*/
+  </script>
+  <!--PWA_SW-->
+</body>
+</html>

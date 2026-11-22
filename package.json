@@ -1,0 +1,12 @@
+{
+  "name": "mini-skylines-pro-3d",
+  "version": "3.0.0",
+  "private": true,
+  "description": "Offline 3D City Builder powered by Three.js + Kenney CC0 3D GLB Assets",
+  "dependencies": {
+    "three": "^0.170.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.0"
+  }
+}
