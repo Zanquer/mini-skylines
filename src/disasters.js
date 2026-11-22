@@ -239,23 +239,30 @@ export class DisasterManager {
       const { x, z } = worldToTile(tor.wx, tor.wz);
       if (inBounds(x, z)) {
         const t = this.sim.grid[idx(x, z)];
-        let changed = false;
+        let treeChanged = false;
+        let pylonChanged = false;
+        let bldgChanged = false;
         if (t.trees > 0) {
           t.trees = 0;
-          changed = true;
+          treeChanged = true;
         }
         if (t.pylon && Math.random() < dt * 2.5) {
           t.pylon = false;
           this.sim.recomputeNetworksAndFields();
-          changed = true;
+          pylonChanged = true;
         }
         if (t.building && Math.random() < dt * 1.8 && t.building.type !== 'landmark') {
           t.building = null;
           this.sim.recomputeNetworksAndFields();
-          changed = true;
+          bldgChanged = true;
         }
-        if (changed) {
-          this._notifyTransportChanged();
+        if (treeChanged) this.sim.forestDirty = true;
+        if (pylonChanged) this.sim.infraDirty = true;
+        if (bldgChanged) {
+          this.sim.buildingDirty = true;
+          if (this.sim.traffic && typeof this.sim.traffic.refreshRoadGraph === 'function') {
+            this.sim.traffic.refreshRoadGraph();
+          }
         }
       }
 

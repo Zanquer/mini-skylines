@@ -1,5 +1,5 @@
-// Auto-generated Service Worker for 山河天际线 Pro 3D (v7.0-5d66b1890b-bc7569af)
-const CACHE_NAME = 'mini-skylines-v7.0-5d66b1890b-bc7569af';
+// Auto-generated Service Worker for 山河天际线 Pro 3D (v7.0-5d66b1890b-90e77013)
+const CACHE_NAME = 'mini-skylines-v7.0-5d66b1890b-90e77013';
 const CORE_SHELL = [
   './',
   './index.html',

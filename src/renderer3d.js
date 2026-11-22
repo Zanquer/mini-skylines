@@ -299,6 +299,7 @@ export class CityRenderer3D {
     this.glowTex = makeGlowHaloTexture();
 
     this.mats = {
+      terrain: new THREE.MeshStandardMaterial({ vertexColors: true, map: this.terrainDetailTex || null, roughness: 0.88, metalness: 0.02 }),
       road2: new THREE.MeshStandardMaterial({ map: this.texRoad2, roughness: 0.84, metalness: 0.05, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 }),
       road4: new THREE.MeshStandardMaterial({ map: this.texRoad4, roughness: 0.82, metalness: 0.06, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 }),
       roadHub: new THREE.MeshStandardMaterial({ map: this.texRoadHub, roughness: 0.84, metalness: 0.05, polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3 }),
@@ -502,6 +503,17 @@ export class CityRenderer3D {
       this.uiOverlayGroup.add(ring);
       this.tornadoRings.push(ring);
     }
+
+    // Pre-warm fixed VFX & overlay pools once at startup -> ZERO Material allocations during render() even in disasters!
+    this._poolCaps = { glow: 56, fire: 64, smoke: 96, spray: 48, damWarn: 16, preview: 64, scaffold: 32, meteor: 8 };
+    for (let i = 0; i < this._poolCaps.glow; i++) this._acquirePoolSprite(this.glowPool, i, { map: this.glowTex, additive: true });
+    for (let i = 0; i < this._poolCaps.fire; i++) this._acquirePoolSprite(this.firePool, i, { map: this.smokeTex });
+    for (let i = 0; i < this._poolCaps.smoke; i++) this._acquirePoolSprite(this.smokePool, i, { map: this.smokeTex });
+    for (let i = 0; i < this._poolCaps.spray; i++) this._acquirePoolSprite(this.sprayPool, i, { map: this.smokeTex });
+    for (let i = 0; i < this._poolCaps.damWarn; i++) this._acquirePoolMesh(this.damWarnPool, i, this.geos.waterSphere, this.mats.redCross);
+    for (let i = 0; i < this._poolCaps.preview; i++) this._acquirePoolMesh(this.previewMeshPool, i, this.geos.unitBox, this.mats.previewMat);
+    for (let i = 0; i < this._poolCaps.scaffold; i++) this._acquirePoolMesh(this.scaffoldPool, i, this.geos.unitBox, this.mats.goldGlow);
+    for (let i = 0; i < this._poolCaps.meteor; i++) this._acquirePoolMesh(this.meteorPool, i, this.geos.waterSphere, this.mats.meteorGlow);
   }
 
   _acquirePoolSprite(pool, index, { map, additive = false } = {}) {
@@ -603,7 +615,7 @@ export class CityRenderer3D {
     if (this.archLib && typeof this.archLib.applyLoadedPBRTextures === 'function') {
       const filtered = {};
       for (const [k, v] of Object.entries(texMap)) {
-        const packed = usePbrMaps ? v : { map: v.map };
+        const packed = usePbrMaps ? v : { map: v.map, normalMap: null, roughnessMap: null };
         filtered[k] = packed;
         if (k.startsWith('facade_')) {
           filtered[k.slice('facade_'.length)] = packed;
@@ -788,7 +800,7 @@ export class CityRenderer3D {
 
   rebuildTerrainGroup() {
     this._disposeGroup(this.terrainGroup);
-    const terMesh = buildHighResTerrainMesh(THREE, this.sim, this.overlayMode, this.terrainDetailTex);
+    const terMesh = buildHighResTerrainMesh(THREE, this.sim, this.overlayMode, this.terrainDetailTex, this.mats.terrain);
     this.terrainGroup.add(terMesh);
 
     const baseSkirt = new THREE.Mesh(this.geos.unitBox, this.mats.darkConcrete);
@@ -1648,13 +1660,15 @@ export class CityRenderer3D {
           const y0 = this.sim.getTileElev(t.x, t.z);
 
           if (b.underConstruction) {
-            const h = 0.25 + (b.buildProgress || 0.2) * 0.9;
-            const scaf = this._acquirePoolMesh(this.scaffoldPool, scafCount++, this.geos.unitBox, this.mats.goldGlow);
-            scaf.scale.set(0.62, h, 0.62);
-            scaf.position.set(wx, y0 + h * 0.5, wz);
-            scaf.visible = true;
+            if (scafCount < this._poolCaps.scaffold) {
+              const h = 0.25 + (b.buildProgress || 0.2) * 0.9;
+              const scaf = this._acquirePoolMesh(this.scaffoldPool, scafCount++, this.geos.unitBox, this.mats.goldGlow);
+              scaf.scale.set(0.62, h, 0.62);
+              scaf.position.set(wx, y0 + h * 0.5, wz);
+              scaf.visible = true;
+            }
           } else if (b.fire > 0.05) {
-            for (let f = 0; f < 2; f++) {
+            for (let f = 0; f < 2 && fireCount < this._poolCaps.fire; f++) {
               const ph = (this.clock * 2.4 + f * 0.5 + i * 0.17) % 1.0;
               const fl = this._acquirePoolSprite(this.firePool, fireCount++, { map: this.smokeTex });
               fl.material.color.setHex(ph < 0.5 ? 0xff6b1a : 0x333333);
@@ -1670,24 +1684,26 @@ export class CityRenderer3D {
           const damHp = t.damHealth !== undefined ? t.damHealth : 100;
           if ((t.damStress || 0) >= 0.75 || damHp < 65) {
             const { wx, wz } = tileToWorld(t.x, t.z);
-            if (strobeRed) {
+            if (strobeRed && damWarnCount < this._poolCaps.damWarn) {
               const warn = this._acquirePoolMesh(this.damWarnPool, damWarnCount++, this.geos.waterSphere, this.mats.redCross);
               warn.scale.setScalar(0.32);
               warn.position.set(wx, t.damCrest + 0.16, wz);
               warn.visible = true;
             }
-            const ph = (this.clock * 3.0 + i * 0.23) % 1.0;
-            const spray = this._acquirePoolSprite(this.sprayPool, sprayCount++, { map: this.smokeTex });
-            spray.material.color.setHex(0xe0f2fe);
-            spray.material.opacity = 0.72 * (1 - ph);
-            spray.position.set(wx, t.damCrest + 0.06 - ph * 0.28, wz + 0.35 * ph);
-            spray.scale.setScalar(0.32 + ph * 0.48);
-            spray.visible = true;
+            if (sprayCount < this._poolCaps.spray) {
+              const ph = (this.clock * 3.0 + i * 0.23) % 1.0;
+              const spray = this._acquirePoolSprite(this.sprayPool, sprayCount++, { map: this.smokeTex });
+              spray.material.color.setHex(0xe0f2fe);
+              spray.material.opacity = 0.72 * (1 - ph);
+              spray.position.set(wx, t.damCrest + 0.06 - ph * 0.28, wz + 0.35 * ph);
+              spray.scale.setScalar(0.32 + ph * 0.48);
+              spray.visible = true;
+            }
           }
         }
       }
 
-      for (let i = 0; i < this.animHooks.smokeSources.length; i++) {
+      for (let i = 0; i < this.animHooks.smokeSources.length && smokeCount < this._poolCaps.smoke; i++) {
         const s = this.animHooks.smokeSources[i];
         const ph = (this.clock * 0.42 + i * 0.29) % 1.0;
         const sp = this._acquirePoolSprite(this.smokePool, smokeCount++, { map: this.smokeTex });

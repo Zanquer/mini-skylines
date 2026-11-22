@@ -663,7 +663,9 @@ export class ArchitectureLibrary {
 
       if (albedo) this.photoTex[k] = this._configureTexture(albedo, true);
       if (norm) this.normTex[k] = this._configureTexture(norm, false);
+      else if (entry && !entry.isTexture && ('normalMap' in entry || 'norm' in entry)) this.normTex[k] = null;
       if (rough) this.roughTex[k] = this._configureTexture(rough, false);
+      else if (entry && !entry.isTexture && ('roughnessMap' in entry || 'rough' in entry)) this.roughTex[k] = null;
     }
 
     let updatedCount = 0;
@@ -685,12 +687,19 @@ export class ArchitectureLibrary {
         mat.normalMap = wNorm;
         mat.normalScale = new THREE.Vector2(normalStrength, normalStrength);
         changed = true;
+      } else if (!wNorm && mat.normalMap) {
+        mat.normalMap = null;
+        changed = true;
       }
       if (wRough && mat.roughnessMap !== wRough) {
         mat.roughnessMap = wRough;
         mat.roughness = 1.0;
         changed = true;
       } else if (!wRough) {
+        if (mat.roughnessMap) {
+          mat.roughnessMap = null;
+          changed = true;
+        }
         mat.roughness = fallbackRough;
       }
 
@@ -1022,6 +1031,10 @@ export class ArchitectureLibrary {
       abandoned: new THREE.MeshStandardMaterial({ color: 0x8b9098, roughness: 0.90, metalness: 0.05 }),
       abandonedRust: new THREE.MeshStandardMaterial({ color: 0x7c7874, roughness: 0.92, metalness: 0.06 })
     };
+
+    // Canonical PBR material aliases for external inspection & theming
+    this.m.officeGlass = this.m.cbdIceBlue;
+    this.m.resBeige = this.m.condoWarmWhite;
 
     this.carBodyPalette = [
       this.m.carPearlWhite,

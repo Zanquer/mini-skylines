@@ -243,7 +243,7 @@ function evaluateSmoothTerrainHeight(sim, flatMask, u, v) {
  * - Stratified slate & warm ochre cliff bands, flat-weighted peak snow, lush multi-tone grass,
  *   dark damp riparian soil along water shorelines, golden coastal sand, and data overlays!
  */
-export function buildHighResTerrainMesh(THREE, sim, overlayMode, detailTex) {
+export function buildHighResTerrainMesh(THREE, sim, overlayMode, detailTex, sharedMat = null) {
   const SUB = 3;
   const SEG = GRID_SIZE * SUB; // 168
   const STRIDE = SEG + 1;      // 169
@@ -639,7 +639,7 @@ export function buildHighResTerrainMesh(THREE, sim, overlayMode, detailTex) {
   geo.setIndex(new THREE.BufferAttribute(indices, 1));
   geo.computeBoundingSphere();
 
-  const mat = new THREE.MeshStandardMaterial({
+  const mat = sharedMat || new THREE.MeshStandardMaterial({
     vertexColors: true,
     map: detailTex || null,
     roughness: 0.88,
@@ -649,7 +649,7 @@ export function buildHighResTerrainMesh(THREE, sim, overlayMode, detailTex) {
   const mesh = new THREE.Mesh(geo, mat);
   mesh.receiveShadow = true;
   mesh.castShadow = true;
-  mesh.userData = { ownGeo: true, ownMat: true };
+  mesh.userData = { ownGeo: true, ownMat: !sharedMat };
   return mesh;
 }
 
