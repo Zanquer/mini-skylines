@@ -1015,8 +1015,8 @@ export function createPhysicalWaterMaterial(THREE) {
 
     void main() {
       // Smooth shoreline alpha feathering right into sloped riverbanks & beaches
-      float shoreAlpha = smoothstep(0.004, 0.11, vDepth);
-      if (shoreAlpha <= 0.001) discard;
+      float shoreAlpha = smoothstep(0.010, 0.115, vDepth);
+      if (shoreAlpha <= 0.002) discard;
 
       vec2 xz = vWorldPos.xz;
       float flowSpeed = clamp(length(vFlow), 0.0, 1.2);
@@ -1070,33 +1070,34 @@ export function createPhysicalWaterMaterial(THREE) {
       vec3 reflColor = uSkyColor * mix(0.95, 0.55, pollFactor * 0.5);
       vec3 col = mix(litBody, reflColor, fresnel);
 
-      // Crisp sun / moon Blinn-Phong specular sparkle
-      vec3 H = normalize(L + V);
-      float NdotH = max(dot(N, H), 0.0);
-      float specBroad = pow(NdotH, 52.0) * 0.20;
-      float specSparkle = pow(NdotH, 280.0) * 1.55;
-      float specMask = smoothstep(0.015, 0.09, vDepth) * (1.0 - pollFactor * 0.45);
-      col += uSunColor * (specBroad + specSparkle) * specMask * mix(1.0, 0.45, uNight);
-
       // Animated whitewater rapids/tailrace foam (vFoam > 0.35) & shoreline lap foam (vDepth < 0.09)
       vec2 foamUV = xz * 4.6 - vFlow * uTime * 1.45;
       float fNoise1 = valueNoise(foamUV + vec2(uTime * 0.35, -uTime * 0.25));
       float fNoise2 = valueNoise(foamUV * 2.3 - vec2(uTime * 0.55, uTime * 0.42));
       float foamPattern = fNoise1 * 0.62 + fNoise2 * 0.38;
 
-      float rapidFoam = smoothstep(0.35, 0.78, vFoam + (foamPattern - 0.48) * 0.36) * smoothstep(0.012, 0.06, vDepth);
-      float shoreRipple = 0.5 + 0.5 * sin(vDepth * 62.0 - uTime * 2.8 + foamPattern * 4.0);
+      float rapidFoam = smoothstep(0.36, 0.80, vFoam + (foamPattern - 0.48) * 0.32) * smoothstep(0.016, 0.068, vDepth);
+      float shoreRipple = 0.5 + 0.5 * sin(vDepth * 58.0 - uTime * 2.6 + foamPattern * 4.0);
       float shoreFoam =
-        smoothstep(0.09, 0.018, vDepth) *
-        smoothstep(0.005, 0.020, vDepth) *
-        smoothstep(0.46, 0.80, foamPattern * 0.75 + shoreRipple * 0.35);
+        smoothstep(0.09, 0.020, vDepth) *
+        smoothstep(0.008, 0.024, vDepth) *
+        smoothstep(0.48, 0.82, foamPattern * 0.75 + shoreRipple * 0.35);
 
-      float totalFoam = clamp(max(rapidFoam, shoreFoam * 0.78), 0.0, 1.0);
+      float totalFoam = clamp(max(rapidFoam, shoreFoam * 0.76), 0.0, 1.0);
+
+      // Soft anti-aliased sun / moon Blinn-Phong specular highlight (damped in turbulent whitewater foam to stop sparkle strobing!)
+      vec3 H = normalize(L + V);
+      float NdotH = max(dot(N, H), 0.0);
+      float specBroad = pow(NdotH, 48.0) * 0.20;
+      float specSparkle = pow(NdotH, 160.0) * 0.92 * (1.0 - totalFoam * 0.72);
+      float specMask = smoothstep(0.018, 0.095, vDepth) * (1.0 - pollFactor * 0.45);
+      col += uSunColor * (specBroad + specSparkle) * specMask * mix(1.0, 0.45, uNight);
+
       vec3 foamTint = mix(cleanFoamColor, dirtyFoamColor, pollFactor) * mix(1.0, 0.32, uNight);
-      col = mix(col, foamTint, totalFoam * 0.85);
+      col = mix(col, foamTint, totalFoam * 0.84);
 
       float baseOpacity = mix(0.85, 0.94, deepMix);
-      float alpha = shoreAlpha * clamp(baseOpacity * 0.88 / 0.85 + totalFoam * 0.12 + specSparkle * 0.15, 0.0, 0.96);
+      float alpha = shoreAlpha * clamp(baseOpacity * 0.88 / 0.85 + totalFoam * 0.12 + specSparkle * 0.12, 0.0, 0.96);
       alpha = mix(shoreAlpha * 0.88, min(0.96, shoreAlpha * 0.95), clamp(deepMix * 0.65 + totalFoam + pollFactor * 0.4, 0.0, 1.0));
 
       gl_FragColor = vec4(col, alpha);
@@ -1120,8 +1121,8 @@ export function createPhysicalWaterMaterial(THREE) {
     depthWrite: false,
     side: THREE.FrontSide,
     polygonOffset: true,
-    polygonOffsetFactor: -1,
-    polygonOffsetUnits: -2
+    polygonOffsetFactor: -2,
+    polygonOffsetUnits: -4
   });
 }
 
@@ -1227,7 +1228,9 @@ export function buildSmoothWaterMesh(THREE, sim, waterPhysics, waterMat) {
       const dVal = Math.max(0, sVal - terrH);
 
       const wi = gz * WSTRIDE + gx;
-      subSurf[wi] = dVal > 0 ? sVal + 0.007 : Math.min(sVal, terrH - 0.012);
+      // Smooth continuous clearance over sloped canyon riverbeds (eliminates 0.000 step jumps & tailrace Z-fighting!)
+      const wetLift = dVal > 0 ? 0.016 * Math.min(1.0, dVal / 0.035) : 0;
+      subSurf[wi] = dVal > 0 ? sVal + wetLift : Math.min(sVal, terrH - 0.014);
       subDepth[wi] = dVal;
       subPoll[wi] = poll[i00] * w00 + poll[i10] * w10 + poll[i01] * w01 + poll[i11] * w11;
       subFoam[wi] = foam[i00] * w00 + foam[i10] * w10 + foam[i01] * w01 + foam[i11] * w11;
@@ -1272,18 +1275,15 @@ export function buildSmoothWaterMesh(THREE, sim, waterPhysics, waterMat) {
       const d01 = subDepth[q01];
       const d11 = subDepth[q11];
 
-      if (d00 <= 0.002 && d10 <= 0.002 && d01 <= 0.002 && d11 <= 0.002) continue;
+      if (d00 <= 0.007 && d10 <= 0.007 && d01 <= 0.007 && d11 <= 0.007) continue;
 
       const a = getVertIndex(q00);
       const b = getVertIndex(q10);
       const c = getVertIndex(q01);
       const d = getVertIndex(q11);
 
-      if (Math.abs(d00 - d11) <= Math.abs(d10 - d01)) {
-        triIndices.push(a, c, d, a, d, b);
-      } else {
-        triIndices.push(a, c, b, b, c, d);
-      }
+      // Fixed deterministic quad diagonal prevents 0.09s triangle-flip flickering on turbulent dam tailraces!
+      triIndices.push(a, c, d, a, d, b);
     }
   }
 

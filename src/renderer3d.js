@@ -176,7 +176,7 @@ export class CityRenderer3D {
     this.fog = new THREE.FogExp2(0x74b6f2, 0.0072);
     this.scene.fog = this.fog;
 
-    this.camera = new THREE.PerspectiveCamera(42, window.innerWidth / Math.max(1, window.innerHeight), 0.4, 260);
+    this.camera = new THREE.PerspectiveCamera(42, window.innerWidth / Math.max(1, window.innerHeight), 0.85, 240);
 
     this.hemiLight = new THREE.HemisphereLight(0xdff0ff, 0x546a4b, 0.88);
     this.scene.add(this.hemiLight);
@@ -191,8 +191,8 @@ export class CityRenderer3D {
     this.sunLight.shadow.camera.right = d;
     this.sunLight.shadow.camera.top = d;
     this.sunLight.shadow.camera.bottom = -d;
-    this.sunLight.shadow.bias = -0.0005;
-    this.sunLight.shadow.normalBias = 0.024;
+    this.sunLight.shadow.bias = -0.0007;
+    this.sunLight.shadow.normalBias = 0.032;
     this.scene.add(this.sunLight);
     this.scene.add(this.sunLight.target);
 
@@ -233,10 +233,11 @@ export class CityRenderer3D {
     this.skyDome = this.archLib.createSkyDome();
     this.scene.add(this.skyDome.mesh);
 
-    // X-ray occlusion fading
+    // X-ray occlusion fading (with spatial + temporal hysteresis & rebuild persistence to eliminate flicker!)
     this.xrayMode = 'auto';
     this.buildingEntries = [];
     this._ghostMatCache = new Map();
+    this._xrayStateByTile = new Map();
     this._xrayAccum = 99;
     this._tmpBox = new THREE.Box3();
     this._tmpMat4 = new THREE.Matrix4();
@@ -256,11 +257,17 @@ export class CityRenderer3D {
     // Image-based lighting so glass curtain walls & metal pick up sky reflections
     this._initEnvironmentLighting();
 
-    // Zero-Leak Reusable Object Pools (NEVER allocate materials/meshes inside render loop!)
+    // Zero-Leak Reusable Identity-Bound Object Pools (vehicles/ships/planes NEVER swap paint on despawn!)
     this.vehiclePool = [];
+    this._vehActiveMap = new Map();
+    this._vehSparePool = new Map();
     this.trainCarPool = [];
     this.airlinerPool = [];
+    this._planeActiveMap = new Map();
+    this._planeSparePool = new Map();
     this.shipPool = [];
+    this._shipActiveMap = new Map();
+    this._shipSparePool = new Map();
 
     this.smokePool = [];
     this.firePool = [];
@@ -315,6 +322,10 @@ export class CityRenderer3D {
       pipeOk: new THREE.MeshBasicMaterial({ color: 0x22d3ee }),
       pipeBroken: new THREE.MeshBasicMaterial({ color: 0xef4444 }),
       metroGlow: new THREE.MeshBasicMaterial({ color: 0xd946ef }),
+      tunnelGlow: new THREE.MeshBasicMaterial({ color: 0xf59e0b }),
+      tunnelPortalOk: new THREE.MeshBasicMaterial({ color: 0x22c55e }),
+      tunnelPortalWarn: new THREE.MeshBasicMaterial({ color: 0xf43f5e }),
+      surfaceRoadGhost: new THREE.MeshBasicMaterial({ color: 0x64748b, transparent: true, opacity: 0.40, depthWrite: false }),
       abandoned: new THREE.MeshStandardMaterial({ color: 0x828890, roughness: 0.90 }),
       roofGarden: new THREE.MeshStandardMaterial({ color: 0x3b8a47, roughness: 0.84 }),
       industrial: new THREE.MeshStandardMaterial({ color: 0xa8927d, roughness: 0.72, metalness: 0.25 }),
@@ -325,8 +336,10 @@ export class CityRenderer3D {
       meteorGlow: new THREE.MeshBasicMaterial({ color: 0xff7b1c }),
       previewMat: new THREE.MeshBasicMaterial({ color: 0x38d9ff, transparent: true, opacity: 0.62 }),
       servicePreviewMat: new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.46, depthWrite: false }),
-      pedBodyMat: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.72, metalness: 0.05 }),
-      pedHeadMat: new THREE.MeshStandardMaterial({ color: 0xf1c29b, roughness: 0.78 }),
+      pedBodyMat: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.70, metalness: 0.04 }),
+      pedHeadMat: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.74 }),
+      pedHairMat: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.86 }),
+      pedPantsMat: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.82 }),
       bulletBody: new THREE.MeshStandardMaterial({ color: 0xf8fafc, roughness: 0.20, metalness: 0.28 }),
       bulletStripe: new THREE.MeshStandardMaterial({ color: 0x1d6feb, roughness: 0.25, metalness: 0.4, emissive: 0x0b3b8c, emissiveIntensity: 0.32 }),
       garbageGreen: new THREE.MeshStandardMaterial({ color: 0x16a34a, roughness: 0.45 }),
@@ -386,10 +399,64 @@ export class CityRenderer3D {
       lampBulb: this._makeLampBulbGeo(),
       signalPole: this._makeSignalPoleGeo(),
       signalLens: new THREE.SphereGeometry(0.026, 6, 5),
-      pedBody: new THREE.CylinderGeometry(0.017, 0.020, 0.068, 6),
-      pedHead: new THREE.SphereGeometry(0.016, 6, 5)
+      pedTorso: this._makePedTorsoGeo(),
+      pedHead: this._makePedHeadGeo(),
+      pedHair: this._makePedHairGeo(),
+      pedLeg: this._makePedLegGeo(),
+      pedArm: this._makePedArmGeo()
     };
+    this.geos.pedBody = this.geos.pedTorso;
     this.geos.bulletCoach.rotateX(Math.PI * 0.5);
+  }
+
+  // Articulated Proportioned 3D Human Citizen Geometries (Torso+Jacket, Head+Neck, Hair Crown, Hip-Pivoted Legs+Shoes, Shoulder-Pivoted Arms)
+  _makePedTorsoGeo() {
+    const chest = new THREE.BoxGeometry(0.036, 0.032, 0.022);
+    chest.translate(0, 0.014, 0);
+    const waist = new THREE.BoxGeometry(0.030, 0.018, 0.020);
+    waist.translate(0, -0.009, 0);
+    const shoulders = new THREE.CylinderGeometry(0.011, 0.011, 0.038, 6);
+    shoulders.rotateZ(Math.PI * 0.5);
+    shoulders.translate(0, 0.027, 0);
+    return mergeGeometriesSimple([chest, waist, shoulders]);
+  }
+
+  _makePedHeadGeo() {
+    const neck = new THREE.CylinderGeometry(0.0055, 0.0068, 0.010, 6);
+    neck.translate(0, -0.012, 0);
+    const skull = new THREE.SphereGeometry(0.0145, 8, 6);
+    skull.scale(0.92, 1.05, 0.96);
+    skull.translate(0, 0.002, 0);
+    return mergeGeometriesSimple([neck, skull]);
+  }
+
+  _makePedHairGeo() {
+    const cap = new THREE.SphereGeometry(0.0156, 8, 6, 0, Math.PI * 2, 0, Math.PI * 0.58);
+    cap.scale(0.96, 1.04, 1.02);
+    cap.translate(0, 0.003, -0.0015);
+    const back = new THREE.BoxGeometry(0.024, 0.015, 0.010);
+    back.translate(0, -0.001, -0.0105);
+    return mergeGeometriesSimple([cap, back]);
+  }
+
+  _makePedLegGeo() {
+    // Pivoted at hip (y=0), extending downward to y=-0.044 with a subtle forward shoe
+    const thigh = new THREE.BoxGeometry(0.0125, 0.024, 0.0135);
+    thigh.translate(0, -0.012, 0);
+    const shin = new THREE.BoxGeometry(0.011, 0.020, 0.012);
+    shin.translate(0, -0.032, -0.0005);
+    const shoe = new THREE.BoxGeometry(0.012, 0.007, 0.018);
+    shoe.translate(0, -0.0415, 0.0035);
+    return mergeGeometriesSimple([thigh, shin, shoe]);
+  }
+
+  _makePedArmGeo() {
+    // Pivoted at shoulder (y=0), extending downward to y=-0.036
+    const upper = new THREE.BoxGeometry(0.0095, 0.022, 0.0105);
+    upper.translate(0, -0.011, 0);
+    const fore = new THREE.BoxGeometry(0.0085, 0.016, 0.0095);
+    fore.translate(0, -0.028, 0.0015);
+    return mergeGeometriesSimple([upper, fore]);
   }
 
   _makePineTrunkGeo() {
@@ -530,24 +597,46 @@ export class CityRenderer3D {
     this.servicePreviewInst.frustumCulled = false;
     this.uiOverlayGroup.add(this.servicePreviewInst);
 
-    // 2-Draw-Call Instanced Sidewalk Pedestrians (up to 240 citizens strolling sidewalks, ZERO per-frame allocs!)
+    // 7-Draw-Call Articulated 3D Sidewalk Citizens (Torso, Head, Hair, Left/Right Legs & Arms, <= 240 citizens, ZERO per-frame allocs!)
     this._pedCap = 240;
-    this.pedBodyInst = new THREE.InstancedMesh(this.geos.pedBody, this.mats.pedBodyMat, this._pedCap);
-    this.pedHeadInst = new THREE.InstancedMesh(this.geos.pedHead, this.mats.pedHeadMat, this._pedCap);
-    this.pedBodyInst.count = 0;
-    this.pedHeadInst.count = 0;
-    this.pedBodyInst.visible = false;
-    this.pedHeadInst.visible = false;
-    this.pedBodyInst.frustumCulled = false;
-    this.pedHeadInst.frustumCulled = false;
-    const pedOutfitPalette = [0x1d4ed8, 0xe11d48, 0x0f766e, 0xd97706, 0xf8fafc, 0x334155, 0x7c3aed, 0x0284c7];
-    const tmpC = new THREE.Color();
-    for (let i = 0; i < this._pedCap; i++) {
-      tmpC.setHex(pedOutfitPalette[i % pedOutfitPalette.length]);
-      this.pedBodyInst.setColorAt(i, tmpC);
-    }
-    if (this.pedBodyInst.instanceColor) this.pedBodyInst.instanceColor.needsUpdate = true;
-    this.vehicleGroup.add(this.pedBodyInst, this.pedHeadInst);
+    this._pedOutfitPalette = [
+      0x1d4ed8, 0xe11d48, 0x0f766e, 0xd97706, 0xf8fafc, 0x334155,
+      0x7c3aed, 0x0284c7, 0x15803d, 0xbe123c, 0x475569, 0xca8a04
+    ];
+    this._pedPantsPalette = [0x1e293b, 0x334155, 0x1d3557, 0x3f3f46, 0x57534e, 0x1f2937];
+    this._pedHairPalette = [0x1c1917, 0x292524, 0x451a03, 0x713f12, 0x6b7280];
+    this._pedSkinPalette = [0xf2c6a0, 0xe6b48a, 0xf7d7b8, 0xd69f74];
+
+    const makePedInst = (geo, mat, initHex) => {
+      const inst = new THREE.InstancedMesh(geo, mat, this._pedCap);
+      inst.count = 0;
+      inst.visible = false;
+      inst.frustumCulled = false;
+      inst.castShadow = false;
+      const c = new THREE.Color(initHex);
+      for (let i = 0; i < this._pedCap; i++) inst.setColorAt(i, c);
+      if (inst.instanceColor) inst.instanceColor.needsUpdate = true;
+      return inst;
+    };
+
+    this.pedTorsoInst = makePedInst(this.geos.pedTorso, this.mats.pedBodyMat, 0x1d4ed8);
+    this.pedBodyInst = this.pedTorsoInst; // backward-compatible alias
+    this.pedHeadInst = makePedInst(this.geos.pedHead, this.mats.pedHeadMat, 0xf2c6a0);
+    this.pedHairInst = makePedInst(this.geos.pedHair, this.mats.pedHairMat, 0x1c1917);
+    this.pedLeftLegInst = makePedInst(this.geos.pedLeg, this.mats.pedPantsMat, 0x1e293b);
+    this.pedRightLegInst = makePedInst(this.geos.pedLeg, this.mats.pedPantsMat, 0x1e293b);
+    this.pedLeftArmInst = makePedInst(this.geos.pedArm, this.mats.pedBodyMat, 0x1d4ed8);
+    this.pedRightArmInst = makePedInst(this.geos.pedArm, this.mats.pedBodyMat, 0x1d4ed8);
+    this._pedInstList = [
+      this.pedTorsoInst,
+      this.pedHeadInst,
+      this.pedHairInst,
+      this.pedLeftLegInst,
+      this.pedRightLegInst,
+      this.pedLeftArmInst,
+      this.pedRightArmInst
+    ];
+    this.vehicleGroup.add(...this._pedInstList);
   }
 
   _acquirePoolSprite(pool, index, { map, additive = false } = {}) {
@@ -706,6 +795,12 @@ export class CityRenderer3D {
   _clearVehiclePool() {
     for (const item of this.vehiclePool) this.vehicleGroup.remove(item.obj);
     this.vehiclePool.length = 0;
+    for (const entry of this._vehActiveMap.values()) this.vehicleGroup.remove(entry.obj);
+    this._vehActiveMap.clear();
+    for (const bucket of this._vehSparePool.values()) {
+      for (const obj of bucket) this.vehicleGroup.remove(obj);
+    }
+    this._vehSparePool.clear();
   }
 
   resize() {
@@ -885,6 +980,42 @@ export class CityRenderer3D {
             this._addBoxTo(this.infraGroup, wx, avgH + 0.22, wz, 0.30, 0.10, 0.30, this.mats.metroGlow, false);
             if (this.sim.getTile(x + 1, z)?.metro) this._addBoxTo(this.infraGroup, wx + 0.5, avgH + 0.22, wz, 0.78, 0.09, 0.22, this.mats.metroGlow, false);
             if (this.sim.getTile(x, z + 1)?.metro) this._addBoxTo(this.infraGroup, wx, avgH + 0.22, wz + 0.5, 0.22, 0.09, 0.78, this.mats.metroGlow, false);
+          }
+          // Translucent surface-road blueprint footprints so players clearly see where surface streets meet mountains
+          if (t.roadGround >= 1 && t.roadGround <= 3) {
+            this._addBoxTo(this.infraGroup, wx, avgH + 0.04, wz, 0.78, 0.03, 0.78, this.mats.surfaceRoadGhost, false);
+          }
+          // Glowing Amber-Gold 3D Mountain Road Tunnel Tubes + Green/Red Connection Portal Indicators!
+          if (t.roadGround === 4) {
+            const tunY = avgH + 0.30;
+            this._addBoxTo(this.infraGroup, wx, tunY, wz, 0.44, 0.16, 0.44, this.mats.tunnelGlow, false);
+            const dirs = [
+              { dx: 1, dz: 0, sx: 0.72, sz: 0.36, ox: 0.5, oz: 0, px: 0.46, pz: 0, psx: 0.10, psz: 0.56 },
+              { dx: -1, dz: 0, sx: 0, sz: 0, ox: 0, oz: 0, px: -0.46, pz: 0, psx: 0.10, psz: 0.56 },
+              { dx: 0, dz: 1, sx: 0.36, sz: 0.72, ox: 0, oz: 0.5, px: 0, pz: 0.46, psx: 0.56, psz: 0.10 },
+              { dx: 0, dz: -1, sx: 0, sz: 0, ox: 0, oz: 0, px: 0, pz: -0.46, psx: 0.56, psz: 0.10 }
+            ];
+            let tunLinks = 0;
+            let roadLinks = 0;
+            for (const dir of dirs) {
+              const nt = this.sim.getTile(x + dir.dx, z + dir.dz);
+              const nRoad = nt ? (nt.roadGround || 0) : 0;
+              if (nRoad === 4) {
+                tunLinks++;
+                if (dir.sx > 0) {
+                  const nAvgH = this.sim.getTileElev(x + dir.dx, z + dir.dz);
+                  this._addBoxTo(this.infraGroup, wx + dir.ox, (tunY + nAvgH + 0.30) * 0.5, wz + dir.oz, dir.sx, 0.14, dir.sz, this.mats.tunnelGlow, false);
+                }
+              } else if (nRoad >= 1 && nRoad <= 3) {
+                roadLinks++;
+                // Bright Emerald Portal Arch showing confirmed tunnel <-> surface road connection!
+                this._addBoxTo(this.infraGroup, wx + dir.px, tunY + 0.04, wz + dir.pz, dir.psx, 0.24, dir.psz, this.mats.tunnelPortalOk, false);
+              }
+            }
+            // Mark dead-end / unconnected tunnel terminus with Coral Red warning beacon so players know which end still needs digging out!
+            if (tunLinks + roadLinks <= 1 && roadLinks === 0) {
+              this._addBoxTo(this.infraGroup, wx, tunY + 0.15, wz, 0.34, 0.14, 0.34, this.mats.tunnelPortalWarn, false);
+            }
           }
         }
 
@@ -1175,9 +1306,10 @@ export class CityRenderer3D {
             this._addBoxTo(this.buildingGroup, wx, avgH + 0.06, wz, 0.80, 0.10, 0.80, fm, false);
           } else {
             const fH = Math.max(0.06, avgH - minH + 0.08);
-            this._addBoxTo(this.buildingGroup, wx, avgH - fH * 0.5 + 0.02, wz, 0.92, fH, 0.92, this.mats.concrete, true);
+            // Inset concrete foundation slightly below plot pad (avgH + 0.016 vs bGrp y0 = avgH + 0.020) so they NEVER Z-fight!
+            this._addBoxTo(this.buildingGroup, wx, avgH - fH * 0.5 + 0.016, wz, 0.88, fH, 0.88, this.mats.concrete, true);
             const rotRad = (t.building.rot || 0) * (Math.PI * 0.5);
-            const bGrp = this.archLib.buildBuilding(t.building, wx, wz, avgH + 0.02, rotRad, this.animHooks);
+            const bGrp = this.archLib.buildBuilding(t.building, wx, wz, avgH + 0.020, rotRad, this.animHooks);
             this.buildingGroup.add(bGrp);
             this._registerBuildingEntry(bGrp, x, z);
           }
@@ -1189,6 +1321,8 @@ export class CityRenderer3D {
 
     this.sim.buildingDirty = false;
     this.rebuildStats.building++;
+    // Force immediate same-frame X-ray refresh so building upgrades NEVER cause 1-5 frame solid-to-transparent flashes!
+    this._xrayAccum = 99;
   }
 
   // Backward-compatible full or granular static rebuild dispatcher
@@ -1272,7 +1406,13 @@ export class CityRenderer3D {
       box.set(new THREE.Vector3(wx - 0.5, 0, wz - 0.5), new THREE.Vector3(wx + 0.5, 2, wz + 0.5));
     }
     if (!isFinite(box.min.x) || !isFinite(box.max.y)) return;
-    this.buildingEntries.push({ grp, x, z, box, meshes, ghost: 0 });
+    const entry = { grp, x, z, key: idx(x, z), box, meshes, ghost: 0 };
+    this.buildingEntries.push(entry);
+    // Immediately restore prior X-ray ghost state across building rebuilds so buildings NEVER flash solid!
+    const prevState = this._xrayStateByTile.get(entry.key);
+    if (prevState && prevState.ghost > 0 && this.overlayMode !== 'underground') {
+      this._setEntryGhost(entry, prevState.ghost);
+    }
   }
 
   _getGhostMaterial(orig, level) {
@@ -1287,8 +1427,11 @@ export class CityRenderer3D {
         g.customProgramCacheKey = () => baseKeyFn() + '_ghost';
       }
       g.transparent = true;
-      g.opacity = level === 2 ? 0.16 : 0.30;
+      g.opacity = level === 2 ? 0.18 : 0.30;
       g.depthWrite = false;
+      g.polygonOffset = true;
+      g.polygonOffsetFactor = 1;
+      g.polygonOffsetUnits = 1;
       g.userData.ghostOf = orig;
       this._ghostMatCache.set(key, g);
     }
@@ -1331,7 +1474,7 @@ export class CityRenderer3D {
 
   _updateXrayFading(dt) {
     this._xrayAccum += dt;
-    if (this._xrayAccum < 0.08) return;
+    if (this._xrayAccum < 0.05) return;
     this._xrayAccum = 0;
 
     for (const g of this._ghostMatCache.values()) {
@@ -1352,24 +1495,48 @@ export class CityRenderer3D {
     const dx = tx - cam.x, dy = ty - cam.y, dz = tz - cam.z;
     const segLen = Math.hypot(dx, dy, dz) || 1;
     const stopT = Math.max(0, 1 - 0.55 / segLen);
+    // Only auto-fade sightline occluders when zoomed in (<= 26m) or inspecting a selected tile; wide aerial overviews stay crisp & solid!
+    const allowSightlineAuto = this.camDist <= 26.0 || focusTile !== null;
+    const now = this.clock || 0;
 
     for (const e of this.buildingEntries) {
       const isFocus = focusTile && e.x === focusTile.x && e.z === focusTile.z;
+      const state = this._xrayStateByTile.get(e.key) || { ghost: 0, holdUntil: 0 };
       let level = 0;
+
       if (mode === 'all') {
         level = isFocus ? 0 : 1;
+        state.holdUntil = 0;
       } else if (mode === 'auto' && !isFocus) {
         const containsTarget =
           tx >= e.box.min.x && tx <= e.box.max.x && tz >= e.box.min.z && tz <= e.box.max.z && ty <= e.box.max.y;
-        if (!containsTarget && this._segmentHitsBox(cam.x, cam.y, cam.z, dx * stopT, dy * stopT, dz * stopT, e.box, 0.18)) {
-          level = 2;
+        const cx = Math.max(e.box.min.x, Math.min(cam.x, e.box.max.x));
+        const cy = Math.max(e.box.min.y, Math.min(cam.y, e.box.max.y));
+        const cz = Math.max(e.box.min.z, Math.min(cam.z, e.box.max.z));
+        const camBoxDist = Math.hypot(cx - cam.x, cy - cam.y, cz - cam.z);
+
+        const wasGhost = state.ghost === 2 || e.ghost === 2;
+        if (wasGhost) {
+          // Wide exit hysteresis + 0.42s hold timer prevents rapid solid<->transparent strobing!
+          const stayLens = camBoxDist < 1.65;
+          const stayRay = allowSightlineAuto && !containsTarget &&
+            this._segmentHitsBox(cam.x, cam.y, cam.z, dx * stopT, dy * stopT, dz * stopT, e.box, 0.34);
+          if (stayLens || stayRay || now < state.holdUntil) {
+            level = 2;
+          }
         } else {
-          const cx = Math.max(e.box.min.x, Math.min(cam.x, e.box.max.x));
-          const cy = Math.max(e.box.min.y, Math.min(cam.y, e.box.max.y));
-          const cz = Math.max(e.box.min.z, Math.min(cam.z, e.box.max.z));
-          if (Math.hypot(cx - cam.x, cy - cam.y, cz - cam.z) < 1.1) level = 2;
+          const hitLens = camBoxDist < 1.05;
+          const hitRay = allowSightlineAuto && !containsTarget &&
+            this._segmentHitsBox(cam.x, cam.y, cam.z, dx * stopT, dy * stopT, dz * stopT, e.box, 0.08);
+          if (hitLens || hitRay) {
+            level = 2;
+            state.holdUntil = now + 0.42;
+          }
         }
       }
+
+      state.ghost = level;
+      this._xrayStateByTile.set(e.key, state);
       this._setEntryGhost(e, level);
     }
   }
@@ -1573,45 +1740,87 @@ export class CityRenderer3D {
     }
     if (!isUnder) this._syncTrafficSignals(dt);
 
-    // Road Vehicles (zero per-frame material leaks!)
-    const rawCars = isUnder ? [] : this.traffic.vehicles;
-    const activeCount = Math.min(rawCars.length, this._maxRenderedVehicles);
-    while (this.vehiclePool.length < activeCount) {
-      const idxV = this.vehiclePool.length;
-      const v = rawCars[idxV];
-      const obj = this._createVehicleObject(v.kind, idxV);
-      this.vehicleGroup.add(obj);
-      this.vehiclePool.push({ kind: v.kind, obj });
+    // Road Vehicles (identity-bound per-vehicle pooling -> ZERO color swaps on despawn & ZERO per-frame leaks!)
+    const allVehicles = this.traffic.vehicles || [];
+    const visibleVehicles = [];
+    for (let i = 0; i < allVehicles.length && visibleVehicles.length < this._maxRenderedVehicles; i++) {
+      const v = allVehicles[i];
+      if (isUnder ? v.inTunnel : !v.inTunnel) {
+        visibleVehicles.push(v);
+      }
+    }
+    const activeVehSet = new Set(visibleVehicles);
+
+    // Return despawned or hidden vehicles to their matching (kind:variantIdx) spare bucket
+    for (const [veh, entry] of this._vehActiveMap.entries()) {
+      if (!activeVehSet.has(veh)) {
+        entry.obj.visible = false;
+        let bucket = this._vehSparePool.get(entry.key);
+        if (!bucket) {
+          bucket = [];
+          this._vehSparePool.set(entry.key, bucket);
+        }
+        bucket.push(entry.obj);
+        this._vehActiveMap.delete(veh);
+      }
     }
 
-    for (let i = 0; i < this.vehiclePool.length; i++) {
-      const slot = this.vehiclePool[i];
-      if (i >= activeCount || rawCars[i].inTunnel) {
-        slot.obj.visible = false;
-        continue;
+    this.vehiclePool.length = 0;
+    for (let i = 0; i < visibleVehicles.length; i++) {
+      const v = visibleVehicles[i];
+      const varIdx = typeof v.variantIdx === 'number'
+        ? (v.variantIdx & 15)
+        : (typeof v.id === 'number' ? (v.id % 12) : 0);
+      const poolKey = `${v.kind}:${varIdx}`;
+      let entry = this._vehActiveMap.get(v);
+      if (entry && entry.key !== poolKey) {
+        entry.obj.visible = false;
+        let oldBucket = this._vehSparePool.get(entry.key);
+        if (!oldBucket) {
+          oldBucket = [];
+          this._vehSparePool.set(entry.key, oldBucket);
+        }
+        oldBucket.push(entry.obj);
+        this._vehActiveMap.delete(v);
+        entry = null;
       }
-      const v = rawCars[i];
-      if (slot.kind !== v.kind) {
-        this.vehicleGroup.remove(slot.obj);
-        slot.obj = this._createVehicleObject(v.kind, i);
-        slot.kind = v.kind;
-        this.vehicleGroup.add(slot.obj);
+      if (!entry) {
+        const bucket = this._vehSparePool.get(poolKey);
+        let obj = bucket && bucket.length > 0 ? bucket.pop() : null;
+        if (!obj) {
+          obj = this._createVehicleObject(v.kind, varIdx);
+          this.vehicleGroup.add(obj);
+        }
+        entry = { key: poolKey, kind: v.kind, variantIdx: varIdx, obj };
+        this._vehActiveMap.set(v, entry);
       }
-      slot.obj.visible = true;
-      const deckY = this._vehicleDeckHeight(v, v.wx, v.wz);
-      if (deckY !== null) {
-        const ahead = this._vehicleDeckHeight(v, v.wx + v.dirX * 0.12, v.wz + v.dirZ * 0.12);
-        const behind = this._vehicleDeckHeight(v, v.wx - v.dirX * 0.12, v.wz - v.dirZ * 0.12);
-        const deckPitch = (ahead !== null && behind !== null) ? Math.atan2(ahead - behind, 0.24) : (v.pitch || 0);
-        slot.obj.position.set(v.wx, deckY + 0.004, v.wz);
-        slot.obj.rotation.set(-deckPitch, Math.atan2(v.dirX, v.dirZ), 0);
+
+      const obj = entry.obj;
+      obj.visible = true;
+      this.vehiclePool.push({ kind: v.kind, obj, vehicle: v });
+
+      if (isUnder) {
+        const tx = Math.floor(v.wx + HALF_GRID);
+        const tz = Math.floor(v.wz + HALF_GRID);
+        const tunY = inBounds(tx, tz) ? (this.sim.getTileElev(tx, tz) + 0.38) : (v.wy + 0.35);
+        obj.position.set(v.wx, tunY, v.wz);
+        obj.rotation.set(0, Math.atan2(v.dirX, v.dirZ), 0);
       } else {
-        slot.obj.position.set(v.wx, v.wy, v.wz);
-        slot.obj.rotation.set(-(v.pitch || 0), Math.atan2(v.dirX, v.dirZ), 0);
+        const deckY = this._vehicleDeckHeight(v, v.wx, v.wz);
+        if (deckY !== null) {
+          const ahead = this._vehicleDeckHeight(v, v.wx + v.dirX * 0.12, v.wz + v.dirZ * 0.12);
+          const behind = this._vehicleDeckHeight(v, v.wx - v.dirX * 0.12, v.wz - v.dirZ * 0.12);
+          const deckPitch = (ahead !== null && behind !== null) ? Math.atan2(ahead - behind, 0.24) : (v.pitch || 0);
+          obj.position.set(v.wx, deckY + 0.004, v.wz);
+          obj.rotation.set(-deckPitch, Math.atan2(v.dirX, v.dirZ), 0);
+        } else {
+          obj.position.set(v.wx, v.wy, v.wz);
+          obj.rotation.set(-(v.pitch || 0), Math.atan2(v.dirX, v.dirZ), 0);
+        }
       }
 
       if (v.kind === 'firetruck') {
-        const st = slot.obj.getObjectByName('strobe');
+        const st = obj.getObjectByName('strobe');
         if (st) st.material = strobeRed ? this.mats.redCross : this.mats.cyanGlow;
       }
     }
@@ -1661,67 +1870,180 @@ export class CityRenderer3D {
     }
     for (let k = tCursor; k < this.trainCarPool.length; k++) this.trainCarPool[k].visible = false;
 
-    // Airliners
+    // Airliners (identity-bound pooling -> distinct liveries never swap on despawn!)
     const planes = isUnder ? [] : (this.traffic.aircraft || []);
-    while (this.airlinerPool.length < planes.length) {
-      const jet = this.archLib.createAirlinerObject();
-      this.vehicleGroup.add(jet);
-      this.airlinerPool.push(jet);
+    const activePlaneSet = new Set(planes);
+    for (const [pl, entry] of this._planeActiveMap.entries()) {
+      if (!activePlaneSet.has(pl)) {
+        entry.obj.visible = false;
+        let bucket = this._planeSparePool.get(entry.key);
+        if (!bucket) { bucket = []; this._planeSparePool.set(entry.key, bucket); }
+        bucket.push(entry.obj);
+        this._planeActiveMap.delete(pl);
+      }
     }
-    for (let i = 0; i < this.airlinerPool.length; i++) {
-      const jet = this.airlinerPool[i];
-      if (i >= planes.length) { jet.visible = false; continue; }
+    this.airlinerPool.length = 0;
+    for (let i = 0; i < planes.length; i++) {
       const p = planes[i];
+      const pVar = (p.variant || 0) & 3;
+      let entry = this._planeActiveMap.get(p);
+      if (!entry) {
+        const bucket = this._planeSparePool.get(pVar);
+        let jet = bucket && bucket.length > 0 ? bucket.pop() : null;
+        if (!jet) {
+          jet = this.archLib.createAirlinerObject(pVar);
+          this.vehicleGroup.add(jet);
+        }
+        entry = { key: pVar, obj: jet };
+        this._planeActiveMap.set(p, entry);
+      }
+      const jet = entry.obj;
+      const sc = Math.max(0.05, Math.min(1.0, p.scale !== undefined ? p.scale : 1.0));
       jet.visible = true;
       jet.position.set(p.wx, p.wy, p.wz);
       jet.rotation.set(-(p.pitch || 0), p.yaw || 0, p.roll || 0);
+      jet.scale.setScalar(sc);
+      this.airlinerPool.push(jet);
     }
 
-    // Cargo Ships
+    // Cargo Ships (identity-bound pooling -> container liveries never swap!)
     const ships = isUnder ? [] : (this.traffic.ships || []);
-    while (this.shipPool.length < ships.length) {
-      const sh = this.archLib.createCargoShipObject();
-      this.vehicleGroup.add(sh);
-      this.shipPool.push(sh);
+    const activeShipSet = new Set(ships);
+    for (const [shObj, entry] of this._shipActiveMap.entries()) {
+      if (!activeShipSet.has(shObj)) {
+        entry.obj.visible = false;
+        let bucket = this._shipSparePool.get(entry.key);
+        if (!bucket) { bucket = []; this._shipSparePool.set(entry.key, bucket); }
+        bucket.push(entry.obj);
+        this._shipActiveMap.delete(shObj);
+      }
     }
-    for (let i = 0; i < this.shipPool.length; i++) {
-      const sh = this.shipPool[i];
-      if (i >= ships.length) { sh.visible = false; continue; }
+    this.shipPool.length = 0;
+    for (let i = 0; i < ships.length; i++) {
       const s = ships[i];
+      const sVar = (s.variant || 0) & 3;
+      let entry = this._shipActiveMap.get(s);
+      if (!entry) {
+        const bucket = this._shipSparePool.get(sVar);
+        let sh = bucket && bucket.length > 0 ? bucket.pop() : null;
+        if (!sh) {
+          sh = this.archLib.createCargoShipObject(sVar);
+          this.vehicleGroup.add(sh);
+        }
+        entry = { key: sVar, obj: sh };
+        this._shipActiveMap.set(s, entry);
+      }
+      const sh = entry.obj;
       sh.visible = true;
       sh.position.set(s.wx, s.wy, s.wz);
       sh.rotation.set(-(s.pitch || 0), s.yaw || 0, s.roll || 0);
+      this.shipPool.push(sh);
     }
 
-    // Sidewalk Pedestrians (2 InstancedMeshes total, <= 240 citizens, ZERO per-frame allocations!)
+    // Articulated 3D Sidewalk Citizens (7 InstancedMeshes total, <= 240 citizens, per-citizen colors & animated stride -> ZERO flicker!)
     const peds = (!isUnder && this._maxPedestrians > 0 && Array.isArray(this.traffic.pedestrians))
       ? this.traffic.pedestrians
       : [];
     const pedCount = Math.min(peds.length, this._maxPedestrians, this._pedCap);
     if (pedCount > 0) {
-      this._tmpScale.set(1, 1, 1);
-      this._tmpQuat.identity();
+      const outfitPal = this._pedOutfitPalette;
+      const pantsPal = this._pedPantsPalette;
+      const hairPal = this._pedHairPalette;
+      const skinPal = this._pedSkinPalette;
+
       for (let i = 0; i < pedCount; i++) {
         const p = peds[i];
-        const bob = Math.abs(Math.sin(p.walkPhase || 0)) * 0.014;
-        const baseY = (p.wy || 0) + 0.036 + bob;
-        this._tmpPos.set(p.wx, baseY, p.wz);
-        this._tmpMat4.compose(this._tmpPos, this._tmpQuat, this._tmpScale);
-        this.pedBodyInst.setMatrixAt(i, this._tmpMat4);
+        const sc = p.heightScale || 1.0;
+        const phase = p.walkPhase || 0;
+        const swing = Math.sin(phase);
+        const legAng = swing * 0.44;
+        const armAng = -swing * 0.34;
+        const bob = Math.abs(swing) * 0.005 * sc;
+        const yaw = Math.atan2(p.dirX || 0, p.dirZ || 1);
+        const cosY = Math.cos(yaw);
+        const sinY = Math.sin(yaw);
+        const footY = (p.wy || 0) + 0.002 + bob;
 
-        this._tmpPos.set(p.wx, baseY + 0.048, p.wz);
+        const hipY = footY + 0.044 * sc;
+        const torsoY = footY + 0.062 * sc;
+        const shoulderY = footY + 0.085 * sc;
+        const headY = footY + 0.104 * sc;
+
+        this._tmpScale.set(sc, sc, sc);
+
+        // 1. Torso + Jacket
+        this._tmpEuler.set(0, yaw, 0, 'YXZ');
+        this._tmpQuat.setFromEuler(this._tmpEuler);
+        this._tmpPos.set(p.wx, torsoY, p.wz);
+        this._tmpMat4.compose(this._tmpPos, this._tmpQuat, this._tmpScale);
+        this.pedTorsoInst.setMatrixAt(i, this._tmpMat4);
+
+        // 2. Head & 3. Hair Crown
+        this._tmpPos.set(p.wx, headY, p.wz);
         this._tmpMat4.compose(this._tmpPos, this._tmpQuat, this._tmpScale);
         this.pedHeadInst.setMatrixAt(i, this._tmpMat4);
+        this.pedHairInst.setMatrixAt(i, this._tmpMat4);
+
+        // Local right vector in world XZ for Y-rotation `yaw`: (+cosY, -sinY)
+        const hipOff = 0.009 * sc;
+        const armOff = 0.023 * sc;
+
+        // 4. Left Leg (swings +legAng around local X)
+        this._tmpEuler.set(legAng, yaw, 0, 'YXZ');
+        this._tmpQuat.setFromEuler(this._tmpEuler);
+        this._tmpPos.set(p.wx + cosY * hipOff, hipY, p.wz - sinY * hipOff);
+        this._tmpMat4.compose(this._tmpPos, this._tmpQuat, this._tmpScale);
+        this.pedLeftLegInst.setMatrixAt(i, this._tmpMat4);
+
+        // 5. Right Leg (swings -legAng)
+        this._tmpEuler.set(-legAng, yaw, 0, 'YXZ');
+        this._tmpQuat.setFromEuler(this._tmpEuler);
+        this._tmpPos.set(p.wx - cosY * hipOff, hipY, p.wz + sinY * hipOff);
+        this._tmpMat4.compose(this._tmpPos, this._tmpQuat, this._tmpScale);
+        this.pedRightLegInst.setMatrixAt(i, this._tmpMat4);
+
+        // 6. Left Arm (counter-swings with right leg)
+        this._tmpEuler.set(armAng, yaw, 0, 'YXZ');
+        this._tmpQuat.setFromEuler(this._tmpEuler);
+        this._tmpPos.set(p.wx + cosY * armOff, shoulderY, p.wz - sinY * armOff);
+        this._tmpMat4.compose(this._tmpPos, this._tmpQuat, this._tmpScale);
+        this.pedLeftArmInst.setMatrixAt(i, this._tmpMat4);
+
+        // 7. Right Arm (counter-swings with left leg)
+        this._tmpEuler.set(-armAng, yaw, 0, 'YXZ');
+        this._tmpQuat.setFromEuler(this._tmpEuler);
+        this._tmpPos.set(p.wx - cosY * armOff, shoulderY, p.wz + sinY * armOff);
+        this._tmpMat4.compose(this._tmpPos, this._tmpQuat, this._tmpScale);
+        this.pedRightArmInst.setMatrixAt(i, this._tmpMat4);
+
+        // Write permanent per-citizen palette colors EVERY sync (eliminates 100% of splice-index outfit flickering!)
+        this._tmpColor.setHex(outfitPal[(p.colorIdx || 0) % outfitPal.length]);
+        this.pedTorsoInst.setColorAt(i, this._tmpColor);
+        this.pedLeftArmInst.setColorAt(i, this._tmpColor);
+        this.pedRightArmInst.setColorAt(i, this._tmpColor);
+
+        this._tmpColor.setHex(pantsPal[(p.pantsIdx || 0) % pantsPal.length]);
+        this.pedLeftLegInst.setColorAt(i, this._tmpColor);
+        this.pedRightLegInst.setColorAt(i, this._tmpColor);
+
+        this._tmpColor.setHex(skinPal[(p.skinIdx || 0) % skinPal.length]);
+        this.pedHeadInst.setColorAt(i, this._tmpColor);
+
+        this._tmpColor.setHex(hairPal[(p.hairIdx || 0) % hairPal.length]);
+        this.pedHairInst.setColorAt(i, this._tmpColor);
       }
-      this.pedBodyInst.count = pedCount;
-      this.pedHeadInst.count = pedCount;
-      this.pedBodyInst.instanceMatrix.needsUpdate = true;
-      this.pedHeadInst.instanceMatrix.needsUpdate = true;
-      this.pedBodyInst.visible = true;
-      this.pedHeadInst.visible = true;
+
+      for (const inst of this._pedInstList) {
+        inst.count = pedCount;
+        inst.instanceMatrix.needsUpdate = true;
+        if (inst.instanceColor) inst.instanceColor.needsUpdate = true;
+        inst.visible = true;
+      }
     } else {
-      this.pedBodyInst.visible = false;
-      this.pedHeadInst.visible = false;
+      for (const inst of this._pedInstList) {
+        inst.count = 0;
+        inst.visible = false;
+      }
     }
 
     // ==================== Zero-Leak Pooled VFX, Night Glow & Selection Overlays ====================
@@ -1863,17 +2185,25 @@ export class CityRenderer3D {
     }
     this._hidePoolFrom(this.meteorPool, meteorCount);
 
-    // Build / Drag Preview Tiles (single reusable previewMat mutated in place!)
+    // Build / Drag Preview Tiles (single reusable previewMat mutated in place; X-ray visible through mountains when underground!)
     let prevCount = 0;
     if (this.previewTiles.length > 0) {
       this.mats.previewMat.color.setRGB(this.previewColor[0], this.previewColor[1], this.previewColor[2]);
+      if (this.mats.previewMat.depthTest !== !isUnder) {
+        this.mats.previewMat.depthTest = !isUnder;
+        this.mats.previewMat.depthWrite = !isUnder;
+        this.mats.previewMat.needsUpdate = true;
+      }
       for (const pos of this.previewTiles) {
         if (!inBounds(pos.x, pos.z)) continue;
         const { wx, wz } = tileToWorld(pos.x, pos.z);
-        const py = Math.max(this.sim.getTileElev(pos.x, pos.z), this.sim.getTileElev(pos.x, pos.z) + this.sim.waterDepth[idx(pos.x, pos.z)]) + 0.06;
+        const py = isUnder
+          ? this.sim.getTileElev(pos.x, pos.z) + 0.34
+          : Math.max(this.sim.getTileElev(pos.x, pos.z), this.sim.getTileElev(pos.x, pos.z) + this.sim.waterDepth[idx(pos.x, pos.z)]) + 0.06;
         const hl = this._acquirePoolMesh(this.previewMeshPool, prevCount++, this.geos.unitBox, this.mats.previewMat);
-        hl.scale.set(0.92, 0.06, 0.92);
+        hl.scale.set(0.92, isUnder ? 0.14 : 0.06, 0.92);
         hl.position.set(wx, py, wz);
+        hl.renderOrder = isUnder ? 25 : 4;
         hl.visible = true;
       }
     }
@@ -1963,8 +2293,12 @@ export class CityRenderer3D {
     this.skyColor.copy(daySky).lerp(nightSky, night).lerp(sunsetSky, sunset * 0.65);
     this.fog.color.copy(this.skyColor);
 
-    this.sunLight.target.position.set(this.camTarget[0], this.camTarget[1], this.camTarget[2]);
-    this.sunLight.position.set(this.camTarget[0] + lx, this.camTarget[1] + ly, this.camTarget[2] + lz);
+    // Quantize shadow camera target to 0.5m world grid steps to stop directional shadow-texel swimming on building facades!
+    const snapX = Math.round(this.camTarget[0] * 2) * 0.5;
+    const snapY = Math.round(this.camTarget[1] * 2) * 0.5;
+    const snapZ = Math.round(this.camTarget[2] * 2) * 0.5;
+    this.sunLight.target.position.set(snapX, snapY, snapZ);
+    this.sunLight.position.set(snapX + lx, snapY + ly, snapZ + lz);
 
     const daySun = new THREE.Color(0xfff7e8);
     const sunsetSun = new THREE.Color(0xff8c4a);

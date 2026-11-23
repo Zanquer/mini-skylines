@@ -40,6 +40,9 @@ export class TrafficManager {
     this.shipTimer = 2.0;
     this.signalClock = 0;
     this.modalTimer = 0;
+    this._nextVehId = 1;
+    this._nextShipId = 1;
+    this._nextPedId = 1;
 
     const N = GRID_SIZE * GRID_SIZE;
     this.roadDegree = new Uint8Array(N);
@@ -1508,6 +1511,8 @@ export class TrafficManager {
     const v = {
       kind: 'firetruck',
       fireTargetIdx: idx(burningTile.x, burningTile.z),
+      id: this._nextVehId++,
+      variantIdx: 0,
       tripType: 'service',
       tripLabel: '🚒 消防紧急出警',
       fromName,
@@ -1573,6 +1578,8 @@ export class TrafficManager {
             const w0 = tileToWorld(busPath[0].x, busPath[0].z);
             const maxSpeed = 1.72;
             const bv = {
+              id: this._nextVehId++,
+              variantIdx: 0,
               kind: 'bus',
               tripType: 'transit',
               tripLabel: '🚌 城市新能源公交专线',
@@ -1797,6 +1804,8 @@ export class TrafficManager {
 
     const w0 = tileToWorld(path[0].x, path[0].z);
     const v = {
+      id: this._nextVehId++,
+      variantIdx: (Math.random() * 12) | 0,
       kind,
       tripType,
       tripLabel,
@@ -2408,6 +2417,7 @@ export class TrafficManager {
       if (!spot || !this._isPedRoadTile(spot.x, spot.z)) continue;
       const next = this._pickPedNextTile(spot.x, spot.z, -1, -1);
       const p = {
+        id: this._nextPedId++,
         tx: spot.x,
         tz: spot.z,
         nx: next.x,
@@ -2420,15 +2430,19 @@ export class TrafficManager {
         dirX: 1,
         dirZ: 0,
         walkPhase: Math.random() * Math.PI * 2,
-        colorIdx: (Math.random() * 8) | 0,
-        speed: 0.24 + Math.random() * 0.14,
-        ttl: 24 + Math.random() * 28
+        colorIdx: (Math.random() * 12) | 0,
+        pantsIdx: (Math.random() * 6) | 0,
+        hairIdx: (Math.random() * 5) | 0,
+        skinIdx: (Math.random() * 4) | 0,
+        heightScale: 0.90 + Math.random() * 0.20,
+        speed: 0.085 + Math.random() * 0.045,
+        ttl: 55 + Math.random() * 65
       };
       this._syncPedTransform(p);
       this.pedestrians.push(p);
     }
 
-    // Advance sidewalk walkers
+    // Advance sidewalk walkers at calm realistic strolling speed
     for (let i = this.pedestrians.length - 1; i >= 0; i--) {
       const p = this.pedestrians[i];
       if (!this._isPedRoadTile(p.tx, p.tz)) {
@@ -2438,7 +2452,7 @@ export class TrafficManager {
 
       p.ttl -= effDt;
       p.t += p.speed * effDt;
-      p.walkPhase = (p.walkPhase + p.speed * effDt * 18) % (Math.PI * 2);
+      p.walkPhase = (p.walkPhase + p.speed * effDt * 15) % (Math.PI * 2);
 
       if (p.t >= 1.0) {
         if (p.ttl <= 0 && this.pedestrians.length > Math.floor(targetPed * 0.85)) {
@@ -2466,11 +2480,29 @@ export class TrafficManager {
     }
   }
 
+  // Exact world-space runway centerline, direction & elevation matching _buildAirport() local (x ∈ [-1.9,+1.9], z = -0.82)
+  getAirportRunwayFrame(ap) {
+    const center = tileToWorld(ap.x, ap.z);
+    const rotRad = ((ap.building && ap.building.rot) || 0) * Math.PI * 0.5;
+    const c = Math.cos(rotRad);
+    const s = Math.sin(rotRad);
+    const rwLocalZ = -0.82;
+    return {
+      rCx: center.wx + rwLocalZ * s,
+      rCz: center.wz + rwLocalZ * c,
+      dirX: c,
+      dirZ: -s,
+      rightX: s,
+      rightZ: c,
+      deckY: this.sim.getTileElev(ap.x, ap.z) + 0.068
+    };
+  }
+
   updateAircraft(effDt) {
     // First despawn any ground rollout / short-final aircraft whose runway was bulldozed or flooded
     for (let i = this.aircraft.length - 1; i >= 0; i--) {
       const plane = this.aircraft[i];
-      if ((plane.phase === 'rollout' || (plane.progress >= 0.40 && plane.progress <= 0.60)) &&
+      if ((plane.phase === 'rollout' || (plane.progress >= 0.36 && plane.progress <= 0.64)) &&
           !this.isRunwayIntact(plane.ax, plane.az)) {
         this.aircraft.splice(i, 1);
       }
@@ -2497,22 +2529,20 @@ export class TrafficManager {
 
     if (this.aircraft.length === 0) {
       const ap = airports[0];
-      const c = tileToWorld(ap.x, ap.z);
-      const baseY = this.sim.getTileElev(ap.x, ap.z);
-      const dirLen = Math.hypot(16, 14) || 1;
-      const dx = 16 / dirLen, dz = 14 / dirLen;
+      const rw = this.getAirportRunwayFrame(ap);
+      const startAlong = -17.5;
       this.aircraft.push({
         ax: ap.x,
         az: ap.z,
         progress: 0.06,
         phase: 'approach',
-        wx: c.wx - 16,
-        wy: baseY + 8.5,
-        wz: c.wz - 14,
-        dirX: dx,
-        dirZ: dz,
-        yaw: Math.atan2(dx, dz),
-        pitch: -0.18,
+        wx: rw.rCx + rw.dirX * startAlong,
+        wy: rw.deckY + 7.6,
+        wz: rw.rCz + rw.dirZ * startAlong,
+        dirX: rw.dirX,
+        dirZ: rw.dirZ,
+        yaw: Math.atan2(rw.dirX, rw.dirZ),
+        pitch: -0.17,
         roll: 0,
         scale: 1,
         variant: 0
@@ -2520,24 +2550,22 @@ export class TrafficManager {
       this.aircraftTimer = 0;
     } else if (this.aircraft.length < maxPlanes && this.aircraftTimer >= 9.0) {
       const first = this.aircraft[0];
-      if (first.progress >= 0.44 && first.progress <= 0.62) {
+      if (first.progress >= 0.44 && first.progress <= 0.64) {
         const ap = airports[this.aircraft.length % airports.length];
-        const c = tileToWorld(ap.x, ap.z);
-        const baseY = this.sim.getTileElev(ap.x, ap.z);
-        const dirLen = Math.hypot(16, 14) || 1;
-        const dx = 16 / dirLen, dz = 14 / dirLen;
+        const rw = this.getAirportRunwayFrame(ap);
+        const startAlong = -17.5;
         this.aircraft.push({
           ax: ap.x,
           az: ap.z,
           progress: 0.0,
           phase: 'approach',
-          wx: c.wx - 16,
-          wy: baseY + 8.5,
-          wz: c.wz - 14,
-          dirX: dx,
-          dirZ: dz,
-          yaw: Math.atan2(dx, dz),
-          pitch: -0.19,
+          wx: rw.rCx + rw.dirX * startAlong,
+          wy: rw.deckY + 7.6,
+          wz: rw.rCz + rw.dirZ * startAlong,
+          dirX: rw.dirX,
+          dirZ: rw.dirZ,
+          yaw: Math.atan2(rw.dirX, rw.dirZ),
+          pitch: -0.18,
           roll: 0,
           scale: 1,
           variant: 1
@@ -2559,12 +2587,11 @@ export class TrafficManager {
           plane.ax = ap.x;
           plane.az = ap.z;
         } else {
-          // Runway is physically intact (e.g., temporary power outage while another airport is powered)
           ap = this.sim.getTile(plane.ax, plane.az);
         }
       }
 
-      plane.progress += effDt * 0.045;
+      plane.progress += effDt * 0.042;
       let wrapped = false;
       if (plane.progress >= 1.0) {
         plane.progress -= 1.0;
@@ -2576,57 +2603,60 @@ export class TrafficManager {
       }
 
       const p = plane.progress;
-      if (p > 0.42 && p < 0.58 && !this.isRunwayIntact(plane.ax, plane.az)) {
+      if (p > 0.38 && p < 0.62 && !this.isRunwayIntact(plane.ax, plane.az)) {
         this.aircraft.splice(i, 1);
         continue;
       }
 
-      const center = tileToWorld(ap.x, ap.z);
-      const cx = center.wx;
-      const cz = center.wz;
-      const baseY = this.sim.getTileElev(ap.x, ap.z);
+      const rw = this.getAirportRunwayFrame(ap);
+      let along = 0;
+      let lateral = 0;
+      let wy = rw.deckY;
+      let tx = rw.dirX;
+      let tz = rw.dirZ;
+      let targetPitch = 0;
+      let targetRoll = 0;
 
-      let wx, wy, wz, tx, tz, targetPitch, targetRoll;
-
-      if (p <= 0.42) {
-        // Descending approach: (wx - 16, baseY + 8.5, wz - 14) -> runway threshold
+      if (p <= 0.38) {
+        // Straight ILS glideslope final aligned dead-center with the illuminated runway threshold (-17.5 -> -1.68)
         plane.phase = 'approach';
-        const s = p / 0.42;
-        const hs = 1 - Math.pow(1 - s, 1.25);
-        wx = (cx - 16) + 15.48 * hs;
-        wz = (cz - 14) + 13.56 * hs;
-        wy = (baseY + 0.16) + 8.34 * Math.pow(1 - s, 1.55);
-        tx = 15.48;
-        tz = 13.56;
-        targetPitch = -0.23 * Math.pow(1 - s, 0.85) + 0.045;
-        targetRoll = Math.sin(s * Math.PI) * (1 - s) * 0.14;
-      } else if (p < 0.58) {
-        // Landing roll across airport (wx, baseY + 0.16, wz) -> takeoff roll
+        const s = p / 0.38;
+        const hs = 1 - Math.pow(1 - s, 1.22);
+        along = -17.5 + 15.82 * hs;
+        lateral = 0;
+        wy = rw.deckY + 7.6 * Math.pow(1 - s, 1.55);
+        targetPitch = -0.20 * Math.pow(1 - s, 0.85) + 0.045;
+        targetRoll = 0;
+      } else if (p < 0.62) {
+        // Touchdown rollout & full-length takeoff run right along runway centerline (-1.68 -> +1.55)
         plane.phase = 'rollout';
-        const s = (p - 0.42) / 0.16;
-        wx = (cx - 0.52) + 1.04 * s;
-        wz = (cz - 0.44) + 0.88 * s;
-        wy = baseY + 0.16;
-        tx = 1.04;
-        tz = 0.88;
-        if (s < 0.35) targetPitch = 0.045 * (1 - s / 0.35);
-        else if (s <= 0.70) targetPitch = 0;
-        else targetPitch = ((s - 0.70) / 0.30) * 0.22;
+        const s = (p - 0.38) / 0.24;
+        along = -1.68 + 3.23 * s;
+        lateral = 0;
+        wy = rw.deckY;
+        if (s < 0.24) targetPitch = 0.045 * (1 - s / 0.24);
+        else if (s <= 0.74) targetPitch = 0;
+        else targetPitch = ((s - 0.74) / 0.26) * 0.21;
         targetRoll = 0;
       } else {
-        // Takeoff climb: liftoff -> (wx + 18, baseY + 9.5, wz + 14)
+        // Positive-rate departure climb straight out off runway end, then gentle scenic turn above 6.5 units
         plane.phase = 'climb';
-        const s = (p - 0.58) / 0.42;
-        const hs = 0.28 * s + 0.72 * s * s;
-        wx = (cx + 0.52) + 17.48 * hs;
-        wz = (cz + 0.44) + 13.56 * hs;
-        wy = (baseY + 0.16) + 9.34 * Math.pow(s, 1.45);
-        tx = 17.48;
-        tz = 13.56;
-        targetPitch = 0.22 + 0.07 * Math.sin(s * Math.PI * 0.85);
-        targetRoll = s > 0.25 ? -Math.sin(((s - 0.25) / 0.75) * Math.PI) * 0.16 : 0;
+        const s = (p - 0.62) / 0.38;
+        const hs = 0.26 * s + 0.74 * s * s;
+        along = 1.55 + 17.5 * hs;
+        const turnS = Math.max(0, (s - 0.38) / 0.62);
+        lateral = -2.8 * turnS * turnS;
+        const dAlong = 17.5 * (0.26 + 1.48 * s);
+        const dLat = turnS > 0 ? (-5.6 * turnS / 0.62) : 0;
+        tx = rw.dirX * dAlong + rw.rightX * dLat;
+        tz = rw.dirZ * dAlong + rw.rightZ * dLat;
+        wy = rw.deckY + 8.6 * Math.pow(s, 1.45);
+        targetPitch = 0.21 + 0.05 * Math.sin(s * Math.PI * 0.85);
+        targetRoll = turnS > 0 ? Math.sin(turnS * Math.PI) * 0.18 : 0;
       }
 
+      const wx = rw.rCx + rw.dirX * along + rw.rightX * lateral;
+      const wz = rw.rCz + rw.dirZ * along + rw.rightZ * lateral;
       const tLen = Math.hypot(tx, tz) || 1;
       const ndx = tx / tLen;
       const ndz = tz / tLen;
@@ -2636,12 +2666,13 @@ export class TrafficManager {
       plane.wy = wy;
       plane.wz = wz;
 
-      if (wrapped) {
+      if (wrapped || plane.phase === 'rollout') {
         plane.dirX = ndx;
         plane.dirZ = ndz;
         plane.yaw = targetYaw;
-        plane.pitch = targetPitch;
-        plane.roll = targetRoll;
+        plane.pitch += (targetPitch - plane.pitch) * Math.min(1, effDt * 10.0);
+        plane.roll = 0;
+        if (wrapped) plane.pitch = targetPitch;
       } else {
         const rate = Math.min(1, effDt * 8.0);
         plane.yaw = lerpAngle(plane.yaw, targetYaw, rate);
@@ -2811,16 +2842,18 @@ export class TrafficManager {
 
       const p0 = path[0];
       const p1 = path[1];
-      // Ensure we don't spawn directly on top of another ship at sea edge
-      const blocked = this.ships.some((s) => Math.hypot(s.wx - p0.wx, s.wz - p0.wz) < 1.8);
+      // Ensure wide safe sea-entry clearance from any existing ship (prevents spawn overlaps!)
+      const blocked = this.ships.some((s) => Math.hypot(s.wx - p0.wx, s.wz - p0.wz) < 3.0);
       if (blocked) return;
 
       const dx = p1.wx - p0.wx;
       const dz = p1.wz - p0.wz;
       const yaw = Math.atan2(dx, dz);
       const surfY = this.sim.getTileElev(p0.x, p0.z) + wd[idx(p0.x, p0.z)];
+      const shipId = this._nextShipId++;
 
       this.ships.push({
+        id: shipId,
         portX: port.x,
         portZ: port.z,
         waypoints: path,
@@ -2839,7 +2872,7 @@ export class TrafficManager {
         roll: 0,
         pitch: 0,
         bobPhase: Math.random() * Math.PI * 2,
-        variant: (port.x + port.z + this.ships.length) % 4
+        variant: (port.x + port.z + shipId) % 4
       });
       return;
     }
@@ -2871,6 +2904,35 @@ export class TrafficManager {
       if ((this.ships.length === 0 && this.shipTimer >= 2.0) || (this.ships.length < maxShips && this.shipTimer >= 8.5)) {
         this.shipTimer = 0;
         this.trySpawnShip(seaports);
+      }
+    }
+
+    // Helper: distance along route from seaport berth
+    const shipDistFromBerth = (sh) => {
+      if (!sh || !sh.waypoints) return 99;
+      if (sh.leg === 'berth' || sh.dwell > 0) return 0;
+      return sh.leg === 'inbound'
+        ? Math.max(0, sh.waypoints.length - 1 - (sh.seg + sh.t))
+        : (sh.seg + sh.t);
+    };
+
+    // Pass 0: Strict Single-Vessel Harbor Berth & Inner-Channel Reservation Map!
+    // Outbound/berthed ships always hold inner harbor priority (< 5.0 tiles); closest inbound holds next.
+    const portOwner = new Map();
+    for (let i = 0; i < this.ships.length; i++) {
+      const sh = this.ships[i];
+      const key = `${sh.portX},${sh.portZ}`;
+      const dBerth = shipDistFromBerth(sh);
+      const isBerthOrOut = sh.leg === 'berth' || sh.dwell > 0 || (sh.leg === 'outbound' && dBerth < 5.2);
+      const cur = portOwner.get(key);
+      if (isBerthOrOut) {
+        if (!cur || !cur.priority || dBerth < cur.dBerth) {
+          portOwner.set(key, { ship: sh, priority: true, dBerth });
+        }
+      } else if (sh.leg === 'inbound' && dBerth < 5.2) {
+        if (!cur || (!cur.priority && dBerth < cur.dBerth)) {
+          portOwner.set(key, { ship: sh, priority: false, dBerth });
+        }
       }
     }
 
@@ -2910,30 +2972,58 @@ export class TrafficManager {
       const segDx = p1.wx - p0.wx;
       const segDz = p1.wz - p0.wz;
       const segLen = Math.hypot(segDx, segDz) || 1;
+      const distFromBerth = shipDistFromBerth(ship);
 
       const nearBerth =
         (ship.leg === 'inbound' && ship.seg >= wps.length - 2) ||
         (ship.leg === 'outbound' && ship.seg === 0);
       let targetSpeed = nearBerth ? ship.maxSpeed * 0.55 : ship.maxSpeed;
 
-      // Ship-to-ship safe spacing on same leg or near berth
+      // 1. Harbor Anchorage Hold: if another vessel owns this seaport's inner channel, hold politely offshore (>= 4.6 tiles out)!
+      const pKey = `${ship.portX},${ship.portZ}`;
+      const owner = portOwner.get(pKey);
+      if (ship.leg === 'inbound' && owner && owner.ship !== ship && distFromBerth <= 5.4) {
+        targetSpeed = 0;
+      }
+
+      // 2. Full 360° Maritime Anti-Collision (following, crossing, AND head-on opposing vessels!)
+      let extraStarboardAvoid = 0;
       for (let j = 0; j < this.ships.length; j++) {
         if (i === j) continue;
         const o = this.ships[j];
         const rx = o.wx - ship.wx;
         const rz = o.wz - ship.wz;
         const d = Math.hypot(rx, rz);
-        if (d < 1.25) {
+        if (d < 2.65) {
           const fwd = rx * ship.dirX + rz * ship.dirZ;
-          if (fwd > 0 && (o.dwell > 0 || ship.dirX * o.dirX + ship.dirZ * o.dirZ > 0.3)) {
-            targetSpeed = 0;
-            break;
+          const lat = Math.abs(-rx * ship.dirZ + rz * ship.dirX);
+          const headingDot = ship.dirX * o.dirX + ship.dirZ * o.dirZ;
+
+          // Steer wider to starboard whenever passing an opposing ship in open channel
+          if (headingDot < -0.25 && d < 2.65) {
+            extraStarboardAvoid = Math.max(extraStarboardAvoid, 0.24);
+          }
+
+          // Yield rule: outbound always has right-of-way over inbound; otherwise trailing or higher-id vessel yields!
+          const mustYield =
+            (ship.leg === 'inbound' && o.leg !== 'inbound') ||
+            (o.dwell > 0 || o.leg === 'berth') ||
+            (fwd > 0.15 && headingDot > 0.25) ||
+            (ship.leg === o.leg && (ship.id || i) > (o.id || j));
+
+          if (d < 1.55) {
+            if (mustYield || fwd > -0.25) {
+              targetSpeed = 0;
+              break;
+            }
+          } else if (fwd > -0.20 && lat < 1.05 && mustYield) {
+            targetSpeed = d < 2.0 ? 0 : Math.min(targetSpeed, ship.maxSpeed * 0.28);
           }
         }
       }
 
-      ship.speed += (targetSpeed - ship.speed) * Math.min(1, effDt * 2.2);
-      if (ship.speed < 0.01 && targetSpeed === 0) ship.speed = 0;
+      ship.speed += (targetSpeed - ship.speed) * Math.min(1, effDt * 3.2);
+      if (ship.speed < 0.015 && targetSpeed === 0) ship.speed = 0;
       ship.t += (ship.speed / segLen) * effDt;
 
       while (ship.t >= 1.0) {
@@ -2967,32 +3057,53 @@ export class TrafficManager {
       const vLen = Math.hypot(vx, vz) || 1;
       const targetYaw = Math.atan2(vx / vLen, vz / vLen);
 
-      ship.yaw = lerpAngle(ship.yaw, targetYaw, Math.min(1, effDt * 3.2));
+      ship.yaw = lerpAngle(ship.yaw, targetYaw, Math.min(1, effDt * 3.4));
       ship.dirX = Math.sin(ship.yaw);
       ship.dirZ = Math.cos(ship.yaw);
 
-      // Subtle starboard channel separation so inbound & outbound ships pass port-to-port cleanly
-      const distFromBerth = ship.leg === 'inbound'
-        ? (wps.length - 1 - (ship.seg + ship.t))
-        : (ship.seg + ship.t);
-      const laneTaper = Math.min(1, Math.max(0, (distFromBerth - 0.6) / 1.5));
+      // Wide Starboard Channel Separation (0.42m base + 0.24m passing margin) so inbound & outbound hulls pass cleanly port-to-port!
+      const updatedDistFromBerth = shipDistFromBerth(ship);
+      const laneTaper = Math.min(1, Math.max(0, (updatedDistFromBerth - 0.5) / 1.4));
       const rightX = -ship.dirZ;
       const rightZ = ship.dirX;
-      const laneOff = 0.15 * laneTaper;
+      const desiredOff = (0.42 + extraStarboardAvoid) * laneTaper;
 
       const baseWx = c0.wx + vx * ship.t;
       const baseWz = c0.wz + vz * ship.t;
-      let nextWx = baseWx + rightX * laneOff;
-      let nextWz = baseWz + rightZ * laneOff;
-      const offTile = worldToTile(nextWx, nextWz);
-      if (!inBounds(offTile.x, offTile.z) ||
-          !(this.sim.waterDepth[idx(offTile.x, offTile.z)] > 0.08) ||
-          this.sim.grid[idx(offTile.x, offTile.z)].dam) {
-        nextWx = baseWx;
-        nextWz = baseWz;
+      let nextWx = baseWx;
+      let nextWz = baseWz;
+      // Progressive safe-water fallback (full starboard -> 65% -> 35% -> center) so ships never snap all the way into opposing hull!
+      for (const frac of [1.0, 0.68, 0.38]) {
+        const candX = baseWx + rightX * (desiredOff * frac);
+        const candZ = baseWz + rightZ * (desiredOff * frac);
+        const offTile = worldToTile(candX, candZ);
+        if (inBounds(offTile.x, offTile.z) &&
+            this.sim.waterDepth[idx(offTile.x, offTile.z)] > 0.12 &&
+            !this.sim.grid[idx(offTile.x, offTile.z)].dam) {
+          nextWx = candX;
+          nextWz = candZ;
+          break;
+        }
       }
-      ship.wx = nextWx;
-      ship.wz = nextWz;
+
+      // Final hard physical hull-clearance guard: refuse any step that brings two hulls closer than 1.05m!
+      let wouldClip = false;
+      for (let j = 0; j < this.ships.length; j++) {
+        if (i === j) continue;
+        const o = this.ships[j];
+        const curD = Math.hypot(o.wx - ship.wx, o.wz - ship.wz);
+        const nextD = Math.hypot(o.wx - nextWx, o.wz - nextWz);
+        if (nextD < 1.08 && nextD < curD + 0.02) {
+          wouldClip = true;
+          break;
+        }
+      }
+      if (!wouldClip) {
+        ship.wx = nextWx;
+        ship.wz = nextWz;
+      } else {
+        ship.speed = 0;
+      }
 
       if (!this.isValidShipState(ship)) {
         this.ships.splice(i, 1);

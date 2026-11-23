@@ -26,12 +26,16 @@ export class WaterPhysics {
     this._cornerSurfTmp = new Float32Array(CN);
     this._cornerWetMask = new Uint8Array(CN);
     this._cornerWetCount = new Uint8Array(CN);
+    this._smoothCornerSurf = new Float32Array(CN);
+    this._smoothCornerFoam = new Float32Array(CN);
+    this._smoothCornerInit = false;
 
     this.refreshCellElevations();
     this._seedInitialFlowVectors();
   }
 
   refreshCellElevations() {
+    this._smoothCornerInit = false;
     const c = this.sim.corners;
     for (let z = 0; z < GRID_SIZE; z++) {
       for (let x = 0; x < GRID_SIZE; x++) {
@@ -526,21 +530,50 @@ export class WaterPhysics {
           const discharge = Math.min(this.nextWater[upIdx] * 0.10, 0.015 * fillRatio);
           if (discharge > 0.0006) {
             this.nextWater[upIdx] -= discharge;
-            const dOld = Math.max(0, this.nextWater[downIdx]);
-            this.nextWater[downIdx] = dOld + discharge;
-            this.nextPoll[downIdx] =
-              (this.nextPoll[downIdx] * dOld + this.nextPoll[upIdx] * discharge) /
-              Math.max(0.001, this.nextWater[downIdx]);
-            this.flowMag[downIdx] = Math.min(1, this.flowMag[downIdx] + 0.88);
-
-            // Tailrace flow impulse directed away from upstream reservoir toward tailrace
             const upX = upIdx % GRID_SIZE;
             const upZ = (upIdx / GRID_SIZE) | 0;
             const dnX = downIdx % GRID_SIZE;
             const dnZ = (downIdx / GRID_SIZE) | 0;
             const tLen = Math.max(1, Math.hypot(dnX - upX, dnZ - upZ));
-            this._instFlowX[downIdx] += ((dnX - upX) / tLen) * 0.92;
-            this._instFlowZ[downIdx] += ((dnZ - upZ) / tLen) * 0.92;
+            const dirDx = (dnX - upX) / tLen;
+            const dirDz = (dnZ - upZ) / tLen;
+
+            // Distribute tailrace discharge gently across downIdx (70%) + lower non-dam neighbors (30%) to prevent single-cell height strobing!
+            const tailTargets = [];
+            const dnSurf = elev[downIdx] + Math.max(0, this.nextWater[downIdx]);
+            for (let k = 0; k < 4; k++) {
+              const nx = dnX + dirs4[k][0];
+              const nz = dnZ + dirs4[k][1];
+              if (nx < 0 || nx >= GRID_SIZE || nz < 0 || nz >= GRID_SIZE) continue;
+              const ni = idx(nx, nz);
+              if (ni === upIdx || grid[ni].dam) continue;
+              if (elev[ni] <= elev[downIdx] + 0.14 || (elev[ni] + Math.max(0, this.nextWater[ni])) <= dnSurf + 0.08) {
+                tailTargets.push(ni);
+              }
+            }
+            const mainShare = tailTargets.length > 0 ? discharge * 0.70 : discharge;
+            const sideShare = tailTargets.length > 0 ? (discharge * 0.30) / tailTargets.length : 0;
+
+            const dOld = Math.max(0, this.nextWater[downIdx]);
+            this.nextWater[downIdx] = dOld + mainShare;
+            this.nextPoll[downIdx] =
+              (this.nextPoll[downIdx] * dOld + this.nextPoll[upIdx] * mainShare) /
+              Math.max(0.001, this.nextWater[downIdx]);
+            this.flowMag[downIdx] = Math.min(1, this.flowMag[downIdx] + 0.78);
+            this._instFlowX[downIdx] += dirDx * 0.85;
+            this._instFlowZ[downIdx] += dirDz * 0.85;
+
+            for (let k = 0; k < tailTargets.length; k++) {
+              const ti = tailTargets[k];
+              const tOld = Math.max(0, this.nextWater[ti]);
+              this.nextWater[ti] = tOld + sideShare;
+              this.nextPoll[ti] =
+                (this.nextPoll[ti] * tOld + this.nextPoll[upIdx] * sideShare) /
+                Math.max(0.001, this.nextWater[ti]);
+              this.flowMag[ti] = Math.min(1, this.flowMag[ti] + 0.42);
+              this._instFlowX[ti] += dirDx * 0.50;
+              this._instFlowZ[ti] += dirDz * 0.50;
+            }
 
             // Mass-conserving P = eta * Q * dH: ~900-1550 MW across NW canyon dam, 0 MW on flat plains!
             const budgetEff = 0.55 + Math.min(1.25, pwrBudget / 100) * 0.45;
@@ -829,6 +862,30 @@ export class WaterPhysics {
           surfY[ci] = terrainH - 0.05;
           depth[ci] = 0;
         }
+      }
+    }
+
+    // Pass 4: Temporal exponential smoothing on surfY & foam so turbulent dam tailrace water never strobes between 0.09s mesh rebuilds!
+    const CN = CORNER_STRIDE * CORNER_STRIDE;
+    const prevSurf = this._smoothCornerSurf;
+    const prevFoam = this._smoothCornerFoam;
+    if (!this._smoothCornerInit) {
+      prevSurf.set(surfY);
+      prevFoam.set(foam);
+      this._smoothCornerInit = true;
+    } else {
+      for (let ci = 0; ci < CN; ci++) {
+        const targetS = surfY[ci];
+        const diffS = targetS - prevSurf[ci];
+        // Snap immediately on major sudden events (dam breach/tsunami/terrain edit), otherwise blend smoothly
+        const nextS = Math.abs(diffS) > 0.45 ? targetS : (prevSurf[ci] + diffS * 0.36);
+        prevSurf[ci] = nextS;
+        surfY[ci] = nextS;
+        depth[ci] = Math.max(0, nextS - corners[ci]);
+
+        const nextF = prevFoam[ci] + (foam[ci] - prevFoam[ci]) * 0.32;
+        prevFoam[ci] = nextF;
+        foam[ci] = nextF;
       }
     }
 

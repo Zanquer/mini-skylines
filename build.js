@@ -78,7 +78,17 @@ function compileAppBundle({ externalAssets = true } = {}) {
       return '';
     });
 
-    appJS += `// ====== MODULE: ${file} ======\n(function () {\n${code.trim()}\n`;
+    // Safe lightweight compaction for slim PWA bundle: drop standalone // comment lines & collapse leading indentation
+    const compactCode = externalAssets
+      ? code
+          .split('\n')
+          .filter((line) => !/^\s*\/\//.test(line))
+          .map((line) => line.replace(/^[ \t]+/, '').replace(/[ \t]+$/, ''))
+          .filter((line) => line.length > 0)
+          .join('\n')
+      : code.trim();
+
+    appJS += `// ====== MODULE: ${file} ======\n(function () {\n${compactCode}\n`;
     if (exportedNames.length > 0) {
       appJS += `\nObject.assign(__M, { ${exportedNames.join(', ')} });\n`;
     }

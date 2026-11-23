@@ -616,32 +616,69 @@ function createContainerRibsTexture(THREE) {
 
 function createRunwayTexture(THREE) {
   const c = document.createElement('canvas');
-  c.width = 128;
-  c.height = 512;
+  c.width = 256;
+  c.height = 1024;
   const g = c.getContext('2d');
 
-  g.fillStyle = '#252930';
-  g.fillRect(0, 0, 128, 512);
+  // Rich weathered airport asphalt base
+  g.fillStyle = '#242932';
+  g.fillRect(0, 0, 256, 1024);
 
-  g.fillStyle = '#1d2026';
-  g.fillRect(30, 50, 68, 412);
+  // Subtle darker rubber-textured runway center crown & touchdown skid marks
+  g.fillStyle = '#1b1f27';
+  g.fillRect(44, 72, 168, 880);
+  const skidGradTop = g.createLinearGradient(0, 145, 0, 320);
+  skidGradTop.addColorStop(0, 'rgba(10,12,16,0.0)');
+  skidGradTop.addColorStop(0.35, 'rgba(10,12,16,0.52)');
+  skidGradTop.addColorStop(1, 'rgba(10,12,16,0.0)');
+  g.fillStyle = skidGradTop;
+  g.fillRect(72, 145, 112, 175);
+  const skidGradBot = g.createLinearGradient(0, 704, 0, 879);
+  skidGradBot.addColorStop(0, 'rgba(10,12,16,0.0)');
+  skidGradBot.addColorStop(0.65, 'rgba(10,12,16,0.52)');
+  skidGradBot.addColorStop(1, 'rgba(10,12,16,0.0)');
+  g.fillStyle = skidGradBot;
+  g.fillRect(72, 704, 112, 175);
 
+  // Crisp white runway edge lines
   g.fillStyle = '#f1f5f9';
-  g.fillRect(8, 0, 4, 512);
-  g.fillRect(116, 0, 4, 512);
+  g.fillRect(14, 0, 8, 1024);
+  g.fillRect(234, 0, 8, 1024);
 
-  for (let x = 18; x <= 102; x += 14) {
-    g.fillRect(x, 14, 8, 42);
-    g.fillRect(x, 456, 8, 42);
+  // Threshold piano-key bars at both ends
+  for (let x = 32; x <= 212; x += 22) {
+    if (Math.abs(x - 122) < 16) continue;
+    g.fillRect(x, 22, 12, 72);
+    g.fillRect(x, 930, 12, 72);
   }
 
-  g.fillRect(24, 96, 16, 44);
-  g.fillRect(88, 96, 16, 44);
-  g.fillRect(24, 372, 16, 44);
-  g.fillRect(88, 372, 16, 44);
+  // Runway designation numbers ("09" / "27")
+  g.save();
+  g.fillStyle = '#f8fafc';
+  g.font = 'bold 42px sans-serif';
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  g.fillText('09', 128, 134);
+  g.translate(128, 890);
+  g.rotate(Math.PI);
+  g.fillText('27', 0, 0);
+  g.restore();
 
-  for (let y = 80; y < 430; y += 44) {
-    g.fillRect(61, y, 6, 24);
+  // Fixed-distance aiming point blocks + touchdown zone bars
+  g.fillStyle = '#f1f5f9';
+  g.fillRect(46, 188, 28, 84);
+  g.fillRect(182, 188, 28, 84);
+  g.fillRect(46, 752, 28, 84);
+  g.fillRect(182, 752, 28, 84);
+
+  g.fillRect(62, 304, 16, 46);
+  g.fillRect(178, 304, 16, 46);
+  g.fillRect(62, 674, 16, 46);
+  g.fillRect(178, 674, 16, 46);
+
+  // High-visibility centerline dashes
+  for (let y = 176; y < 840; y += 64) {
+    g.fillRect(122, y, 12, 36);
   }
 
   const tex = new THREE.CanvasTexture(c);
@@ -2077,8 +2114,8 @@ export class ArchitectureLibrary {
     return m;
   }
 
-  // Grounded soft Contact AO shadow skirt under buildings (marked skipGhost = true)
-  _addContactAO(grp, sx = 1.04, sz = 1.04, py = 0.008) {
+  // Grounded soft Contact AO shadow skirt under buildings (marked skipGhost = true; seated cleanly below pad to avoid Z-fighting!)
+  _addContactAO(grp, sx = 1.06, sz = 1.06, py = 0.002) {
     const ao = new this.THREE.Mesh(this.geos.aoQuad, this.m.contactAO);
     ao.position.set(0, py, 0);
     ao.scale.set(sx, 1, sz);
@@ -2090,7 +2127,7 @@ export class ArchitectureLibrary {
   }
 
   _addZonedPlotPad(grp, ab = false, fourCorners = true) {
-    this._addMesh(grp, this.geos.box, ab ? this.m.pavingPlazaDusty : this.m.pavingPlaza, 0, 0.012, 0, 0.92, 0.024, 0.92, false);
+    this._addMesh(grp, this.geos.box, ab ? this.m.pavingPlazaDusty : this.m.pavingPlaza, 0, 0.014, 0, 0.92, 0.020, 0.92, false);
     const pSet = fourCorners ? this.geos.planters4 : this.geos.planters2;
     this._addMesh(grp, pSet.curbs, ab ? this.m.abandoned : this.m.parapetStone, 0, 0, 0, 1, 1, 1, false);
     this._addMesh(grp, pSet.trunks, this.m.teakDeck, 0, 0, 0, 1, 1, 1, false);
@@ -2277,15 +2314,15 @@ export class ArchitectureLibrary {
 
     // Grounded Contact AO Shadow Skirt under every building
     if (type === 'stadium') {
-      this._addContactAO(grp, 1.34, 1.14, 0.008);
+      this._addContactAO(grp, 1.34, 1.14, 0.002);
     } else if (type === 'landmark' || type === 'amusement_park' || type === 'nuclear_plant' || type === 'solar_plant' || type === 'seaport') {
-      this._addContactAO(grp, 1.16, 1.16, 0.008);
+      this._addContactAO(grp, 1.16, 1.16, 0.002);
     } else if (type === 'airport') {
-      this._addContactAO(grp, 1.16, 1.44, 0.008);
+      this._addContactAO(grp, 1.72, 1.12, 0.002);
     } else if (type === 'power_wind') {
-      this._addContactAO(grp, 0.48, 0.48, 0.008);
+      this._addContactAO(grp, 0.48, 0.48, 0.002);
     } else {
-      this._addContactAO(grp, 1.04, 1.04, 0.008);
+      this._addContactAO(grp, 1.06, 1.06, 0.002);
     }
 
     switch (type) {
@@ -2986,42 +3023,106 @@ export class ArchitectureLibrary {
   _buildAirport(grp, ab, x, y0, z, rotRad, hooks) {
     const THREE = this.THREE;
     const silver = ab ? this.m.abandoned : this.m.brushedSilver;
+    const white = ab ? this.m.abandoned : this.m.whiteComposite;
+    const conc = ab ? this.m.abandoned : this.m.roofConcrete;
     const glass = ab ? this.m.dustyCBD : this.m.cbdIceBlue;
+    const dark = ab ? this.m.abandonedRust : this.m.asphalt;
 
-    this._addMesh(grp, this.geos.box, ab ? this.m.pavingPlazaDusty : this.m.pavingPlaza, -0.18, 0.015, 0, 0.86, 0.03, 1.18, false);
-    this._addMesh(grp, this.geos.box, glass, -0.22, 0.19, 0, 0.44, 0.34, 0.82, true);
-    const roof = this._addMesh(grp, this.geos.gullWingRoof, silver, -0.22, 0.35, 0, 0.96, 1.0, 1.68, true);
-    roof.rotation.y = Math.PI * 0.5;
+    // 1. Concrete Terminal Apron & Grounded Embankment Plinth (front +Z faces access street cleanly!)
+    this._addMesh(grp, this.geos.box, ab ? this.m.pavingPlazaDusty : this.m.pavingPlaza, 0, 0.015, 0.02, 1.72, 0.030, 0.88, false);
+    this._addMesh(grp, this.geos.box, conc, 0, -0.095, -0.02, 1.78, 0.21, 0.96, false);
 
-    this._addMesh(grp, this.geos.box, this.m.whiteComposite, 0.05, 0.14, -0.20, 0.18, 0.045, 0.045, true);
-    this._addMesh(grp, this.geos.box, this.m.whiteComposite, 0.05, 0.14, 0.22, 0.18, 0.045, 0.045, true);
+    // 2. Sculpted International Terminal Concourse (z = +0.16, wide sweeping gull-wing roof + panoramic curtain wall)
+    this._addMesh(grp, this.geos.box, glass, 0, 0.175, 0.18, 0.98, 0.30, 0.40, true);
+    this._addMesh(grp, this.geos.box, white, 0, 0.045, 0.18, 1.02, 0.04, 0.43, false);
+    this._addMesh(grp, this.geos.gullWingRoof, silver, 0, 0.33, 0.18, 1.18, 1.0, 1.38, true);
+    // Street-facing (+Z) departures curbside canopy & illuminated signage band
+    this._addShopfrontCanopy(grp, 0, 0.028, 0.38, 1.42, ab, true);
+    if (!ab) {
+      this._addMesh(grp, this.geos.box, this.m.ledLinearCyan, 0, 0.315, 0.39, 0.86, 0.016, 0.014, false);
+    }
 
-    const tx = -0.40, tz = -0.44;
-    this._addMesh(grp, this.geos.taperOct, ab ? this.m.abandoned : this.m.whiteComposite, tx, 0.58, tz, 0.24, 1.14, 0.24, true);
-    const atcCab = this._addMesh(grp, this.geos.taperOct, glass, tx, 1.22, tz, 0.38, 0.18, 0.38, true);
+    // 3. Three Glass Passenger Boarding Jetbridges + Concrete Piers + Yellow Apron Stand Lead-in Lines
+    for (const jx of [-0.32, 0.0, 0.32]) {
+      this._addMesh(grp, this.geos.box, glass, jx, 0.135, -0.10, 0.055, 0.056, 0.24, true);
+      this._addMesh(grp, this.geos.box, white, jx, 0.166, -0.10, 0.062, 0.010, 0.25, false);
+      this._addMesh(grp, this.geos.cyl16, silver, jx, 0.068, -0.20, 0.024, 0.12, 0.024, false);
+      if (!ab) {
+        this._addMesh(grp, this.geos.box, this.m.craneYellow, jx, 0.032, -0.28, 0.016, 0.004, 0.16, false);
+      }
+    }
+
+    // 4. Sculpted ATC Control Tower (west flank of concourse) with Flared Cab & Rotating Radar
+    const tx = -0.68, tz = 0.20;
+    this._addMesh(grp, this.geos.box, conc, tx, 0.12, tz, 0.26, 0.22, 0.26, true);
+    this._addMesh(grp, this.geos.taperOct, white, tx, 0.62, tz, 0.22, 1.12, 0.22, true);
+    const atcCab = this._addMesh(grp, this.geos.taperOct, glass, tx, 1.24, tz, 0.39, 0.19, 0.39, true);
     atcCab.rotation.z = Math.PI;
-    this._addMesh(grp, this.geos.cyl24, silver, tx, 1.33, tz, 0.22, 0.04, 0.22, true);
+    this._addMesh(grp, this.geos.cyl24, silver, tx, 1.355, tz, 0.25, 0.042, 0.25, true);
 
     const radar = new THREE.Group();
-    radar.position.set(tx, 1.40, tz);
-    this._addMesh(radar, this.geos.cyl16, silver, 0, -0.02, 0, 0.025, 0.06, 0.025, false);
-    this._addMesh(radar, this.geos.box, ab ? this.m.abandonedRust : this.m.craneRed, 0, 0.02, 0, 0.24, 0.032, 0.028, true);
-    this._addMesh(radar, this.geos.box, this.m.whiteComposite, 0, 0.02, 0, 0.14, 0.036, 0.032, false);
+    radar.position.set(tx, 1.425, tz);
+    this._addMesh(radar, this.geos.cyl16, silver, 0, -0.02, 0, 0.024, 0.06, 0.024, false);
+    this._addMesh(radar, this.geos.box, ab ? this.m.abandonedRust : this.m.craneRed, 0, 0.02, 0, 0.26, 0.032, 0.028, true);
+    this._addMesh(radar, this.geos.box, white, 0, 0.02, 0, 0.15, 0.036, 0.032, false);
     grp.add(radar);
 
     if (!ab && hooks && hooks.radarDishes) hooks.radarDishes.push(radar);
-    this._addBeacon(grp, hooks, tx, 1.48, tz, x, y0, z, rotRad, ab);
+    this._addBeacon(grp, hooks, tx, 1.50, tz, x, y0, z, rotRad, ab);
 
-    const rx = 0.36;
-    this._addMesh(grp, this.geos.box, this.m.runway, rx, 0.022, 0, 0.34, 0.018, 1.38, false);
+    // 5. Maintenance Hangar + Aviation Fuel Storage Farm (east flank)
+    this._addMesh(grp, this.geos.box, ab ? this.m.dustyInd : this.m.indPanelSilver, 0.68, 0.15, 0.14, 0.36, 0.26, 0.32, true);
+    const hangarArch = this._addMesh(grp, this.geos.cyl16, silver, 0.68, 0.27, 0.14, 0.36, 0.32, 0.14, true);
+    hangarArch.rotation.x = Math.PI * 0.5;
+    this._addMesh(grp, this.geos.box, dark, 0.68, 0.12, -0.024, 0.26, 0.19, 0.012, false);
+    for (const fx of [0.98, 1.14]) {
+      this._addMesh(grp, this.geos.cyl16, white, fx, 0.085, 0.10, 0.11, 0.14, 0.11, true);
+      if (!ab) this._addMesh(grp, this.geos.cyl16, this.m.craneYellow, fx, 0.135, 0.10, 0.115, 0.018, 0.115, false);
+    }
+
+    // 6. Parallel Taxiway + 3 Connecting Turnoffs Joining Apron to Runway
+    const taxiZ = -0.45;
+    this._addMesh(grp, this.geos.box, dark, 0, 0.026, taxiZ, 3.20, 0.020, 0.16, false);
+    this._addMesh(grp, this.geos.box, conc, 0, -0.095, taxiZ, 3.28, 0.22, 0.22, false);
     if (!ab) {
-      for (const rz of [-0.66, 0.66]) {
-        this._addMesh(grp, this.geos.sphere16, this.m.strobeGreen, rx - 0.12, 0.038, rz, 0.028, 0.028, 0.028, false);
-        this._addMesh(grp, this.geos.sphere16, this.m.strobeGreen, rx + 0.12, 0.038, rz, 0.028, 0.028, 0.028, false);
+      this._addMesh(grp, this.geos.box, this.m.craneYellow, 0, 0.038, taxiZ, 3.10, 0.004, 0.016, false);
+    }
+    for (const cx of [-1.42, 0.0, 1.42]) {
+      this._addMesh(grp, this.geos.box, dark, cx, 0.026, -0.63, 0.18, 0.020, 0.26, false);
+      if (!ab) {
+        this._addMesh(grp, this.geos.box, this.m.craneYellow, cx, 0.038, -0.63, 0.016, 0.004, 0.24, false);
       }
-      for (const rz of [-0.42, -0.14, 0.14, 0.42]) {
-        this._addMesh(grp, this.geos.sphere16, this.m.neonGold, rx - 0.15, 0.036, rz, 0.024, 0.024, 0.024, false);
-        this._addMesh(grp, this.geos.sphere16, this.m.neonGold, rx + 0.15, 0.036, rz, 0.024, 0.024, 0.024, false);
+    }
+
+    // 7. Full-Length Illuminated International Runway along local X-axis (length = 3.80, width = 0.50 at z = -0.82!)
+    const rwZ = -0.82;
+    const rwLen = 3.80;
+    const rwW = 0.50;
+    // Engineered concrete embankment plinth extending down to y = -0.21 so runway never floats on gently sloped terrain!
+    this._addMesh(grp, this.geos.box, conc, 0, -0.092, rwZ, rwLen + 0.18, 0.24, rwW + 0.14, false);
+    // Textured runway deck rotated 90° around Y so piano-keys & centerline run squarely along local X!
+    const rwMesh = this._addMesh(grp, this.geos.box, this.m.runway, 0, 0.036, rwZ, rwW, 0.020, rwLen, false, Math.PI * 0.5);
+    rwMesh.name = 'airport_runway';
+
+    // 8. Complete Aviation Lighting: Green Threshold Bars, White/Gold Edge Lights, PAPI Glide-Slope & Approach Strobes!
+    if (!ab) {
+      for (const endX of [-1.86, 1.86]) {
+        for (const lz of [-0.98, -0.88, -0.76, -0.66]) {
+          this._addMesh(grp, this.geos.sphere16, this.m.strobeGreen, endX, 0.056, lz, 0.026, 0.026, 0.026, false);
+        }
+      }
+      for (let lx = -1.62; lx <= 1.63; lx += 0.46) {
+        this._addMesh(grp, this.geos.sphere16, this.m.neonGold, lx, 0.054, rwZ - rwW * 0.5 - 0.02, 0.022, 0.022, 0.022, false);
+        this._addMesh(grp, this.geos.sphere16, this.m.neonGold, lx, 0.054, rwZ + rwW * 0.5 + 0.02, 0.022, 0.022, 0.022, false);
+      }
+      // 4-lamp PAPI Precision Approach Path Indicator beside touchdown zone (2 white + 2 red)
+      for (let pi = 0; pi < 4; pi++) {
+        const pMat = pi < 2 ? this.m.ledLinearWhite : this.m.beaconRed;
+        this._addMesh(grp, this.geos.box, pMat, -1.28, 0.056, rwZ - 0.34 - pi * 0.045, 0.032, 0.024, 0.028, false);
+      }
+      // Approach strobe guide bars extending off the -X threshold
+      for (const ax of [-2.10, -2.30]) {
+        this._addMesh(grp, this.geos.box, this.m.ledLinearCyan, ax, 0.046, rwZ, 0.024, 0.016, 0.22, false);
       }
     }
   }
@@ -3421,19 +3522,22 @@ export class ArchitectureLibrary {
     return grp;
   }
 
-  createAirlinerObject() {
+  createAirlinerObject(variant = 0) {
     const THREE = this.THREE;
     const grp = new THREE.Group();
     grp.rotation.order = 'YXZ';
+    const livery = (variant & 1) === 0 ? this.m.airlineBlue : this.m.craneRed;
 
     this._addMesh(grp, this.geos.fuselage, this.m.whiteComposite, 0, 0.14, -0.02, 1.0, 1.0, 1.0, true);
-    this._addMesh(grp, this.geos.fuselage, this.m.airlineBlue, 0, 0.115, -0.02, 0.96, 0.68, 0.97, false);
+    this._addMesh(grp, this.geos.fuselage, livery, 0, 0.115, -0.02, 0.96, 0.68, 0.97, false);
     this._addMesh(grp, this.geos.sphere16, this.m.cockpitGlass, 0, 0.175, 0.52, 0.135, 0.075, 0.16, false);
+    // Landing nose headlight glow
+    this._addMesh(grp, this.geos.sphere16, this.m.vehHeadlight, 0, 0.095, 0.62, 0.032, 0.024, 0.024, false);
 
     this._addMesh(grp, this.geos.airlinerWing, this.m.whiteComposite, 0, 0.12, 0.08, 1.0, 1.0, 1.0, true);
-    const wlL = this._addMesh(grp, this.geos.box, this.m.airlineBlue, 0.68, 0.165, -0.12, 0.015, 0.09, 0.08, true);
+    const wlL = this._addMesh(grp, this.geos.box, livery, 0.68, 0.165, -0.12, 0.015, 0.09, 0.08, true);
     wlL.rotation.z = -0.22;
-    const wlR = this._addMesh(grp, this.geos.box, this.m.airlineBlue, -0.68, 0.165, -0.12, 0.015, 0.09, 0.08, true);
+    const wlR = this._addMesh(grp, this.geos.box, livery, -0.68, 0.165, -0.12, 0.015, 0.09, 0.08, true);
     wlR.rotation.z = 0.22;
 
     for (const sx of [-0.28, 0.28]) {
@@ -3445,7 +3549,7 @@ export class ArchitectureLibrary {
       fan.rotation.x = Math.PI * 0.5;
     }
 
-    this._addMesh(grp, this.geos.airlinerVTail, this.m.airlineBlue, 0, 0.19, -0.48, 1.0, 1.0, 1.0, true);
+    this._addMesh(grp, this.geos.airlinerVTail, livery, 0, 0.19, -0.48, 1.0, 1.0, 1.0, true);
     this._addMesh(grp, this.geos.airlinerHTail, this.m.whiteComposite, 0, 0.15, -0.52, 1.0, 1.0, 1.0, true);
 
     this._addMesh(grp, this.geos.sphere16, this.m.beaconRed, 0.69, 0.21, -0.14, 0.038, 0.038, 0.038, false);
@@ -3456,10 +3560,11 @@ export class ArchitectureLibrary {
     return grp;
   }
 
-  createCargoShipObject() {
+  createCargoShipObject(variant = 0) {
     const THREE = this.THREE;
     const grp = new THREE.Group();
     grp.rotation.order = 'YXZ';
+    const seed = Math.abs(variant | 0);
 
     this._addMesh(grp, this.geos.shipHullBoot, this.m.hullCrimson, 0, 0.0, 0, 1.0, 1.0, 1.0, true);
     this._addMesh(grp, this.geos.shipHullMain, this.m.hullNavy, 0, 0.075, 0, 1.0, 1.0, 1.0, true);
@@ -3470,7 +3575,12 @@ export class ArchitectureLibrary {
     this._addMesh(grp, this.geos.box, this.m.whiteComposite, 0, 0.30, -0.62, 0.38, 0.22, 0.22, true);
     this._addMesh(grp, this.geos.box, this.m.whiteComposite, 0, 0.44, -0.60, 0.48, 0.07, 0.14, true);
     this._addMesh(grp, this.geos.box, this.m.cockpitGlass, 0, 0.45, -0.528, 0.44, 0.035, 0.015, false);
-    this._addMesh(grp, this.geos.box, this.m.craneRed, 0, 0.47, -0.70, 0.10, 0.16, 0.11, true);
+    // Port (Red) & Starboard (Green) Marine Navigation Bridge Wing Lights + Radar Mast
+    this._addMesh(grp, this.geos.sphere16, this.m.beaconRed, 0.24, 0.48, -0.58, 0.024, 0.024, 0.024, false);
+    this._addMesh(grp, this.geos.sphere16, this.m.strobeGreen, -0.24, 0.48, -0.58, 0.024, 0.024, 0.024, false);
+    this._addMesh(grp, this.geos.cyl16, this.m.brushedSilver, 0, 0.56, -0.60, 0.016, 0.18, 0.016, false);
+    this._addMesh(grp, this.geos.box, this.m.whiteComposite, 0, 0.62, -0.60, 0.12, 0.014, 0.018, false);
+    this._addMesh(grp, this.geos.box, (seed & 1) ? this.m.airlineBlue : this.m.craneRed, 0, 0.47, -0.70, 0.10, 0.16, 0.11, true);
     this._addMesh(grp, this.geos.box, this.m.asphalt, 0, 0.56, -0.70, 0.102, 0.035, 0.112, false);
 
     const baysZ = [0.50, 0.18, -0.14, -0.86];
@@ -3480,7 +3590,7 @@ export class ArchitectureLibrary {
       const tiers = bIdx === 3 ? 2 : (bIdx === 0 ? 2 : 3);
       for (let cIdx = 0; cIdx < cols.length; cIdx++) {
         for (let t = 0; t < tiers; t++) {
-          const mat = this.containerMats[(bIdx * 3 + cIdx + t * 2) % this.containerMats.length];
+          const mat = this.containerMats[(bIdx * 3 + cIdx + t * 2 + seed) % this.containerMats.length];
           this._addMesh(grp, this.geos.box, mat, cols[cIdx], 0.25 + t * 0.082, bz, 0.118, 0.08, 0.27, true);
         }
       }

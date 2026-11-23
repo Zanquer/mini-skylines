@@ -499,8 +499,8 @@ export class GameUI {
     this.renderer.servicePreviewTiles = [];
     this.dragBuildStart = null;
 
-    // Auto X-Ray view for Underground Pipes / Metro, and Power Grid view for Power/Dam tools!
-    if (toolId === 'water_pipe' || toolId === 'metro_line' || toolId === 'bulldoze_under') {
+    // Auto X-Ray view for Underground Pipes / Metro / Mountain Road Tunnels, and Power Grid view for Power/Dam tools!
+    if (toolId === 'water_pipe' || toolId === 'metro_line' || toolId === 'road_tunnel' || toolId === 'bulldoze_under') {
       this.renderer.overlayMode = 'underground';
       this.autoOverlayActive = true;
       this.updateOverlayLegend();
@@ -581,7 +581,7 @@ export class GameUI {
     } else {
       el.classList.add('visible');
       const legends = {
-        underground: `<strong>🔵 地下透视蓝图视图</strong><br>青蓝管线 = 地下输水管（覆盖两侧4格）| 红管 = 地震破裂需抢修<br>亮紫隧道 = 地下地铁线路与运行中的地铁列车`,
+        underground: `<strong>🔵 地下透视蓝图视图</strong><br>青蓝管线 = 地下输水管（覆盖两侧4格）| 红管 = 地震破裂需抢修<br>亮紫隧道 = 地下地铁线路与地铁列车 | <strong>橙金隧道 = 穿山公路隧道（绿口已通地面路 · 红标为未打通盲端）</strong>`,
         power: `<strong>⚡ 高压电网覆盖视图</strong><br>蓝色地块 = 已通电区域 | 远距离电厂/大坝请架设【高压输电铁塔】接力`,
         landValue: `<strong>💎 地价热力视图</strong><br>翠绿 = 高地价核心区（可长出 48~64 层摩天大楼）`,
         traffic: `<strong>🚦 交通拥堵热力视图</strong><br>红橙色道路 = 严重堵车（会导致商店缺货！建议架二层高架、设单行道或修公交/地铁）`,
@@ -760,6 +760,35 @@ export class GameUI {
       const overRoad = est.validTiles.some((p) => (this.sim.getTile(p.x, p.z)?.roadGround || 0) >= 1);
       const modeTxt = overRoad ? '桥下不断流·两侧辅道 + 中央上下匝道' : '平顺缓坡立体匝道';
       this.updateToolHint(`↗️ 规划 ${est.validTiles.length} 格【${modeTxt}】· 造价 ¥${est.cost.toLocaleString()}（松手确认）`);
+    } else if (this.activeTool === 'road_tunnel') {
+      // Inspect both ends of the dragged tunnel to guide players cleanly onto connecting surface roads!
+      const vTiles = est.validTiles;
+      const inPlan = new Set(vTiles.map((p) => `${p.x},${p.z}`));
+      const checkEndConnected = (pt) => {
+        for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const nx = pt.x + dx, nz = pt.z + dz;
+          if (inPlan.has(`${nx},${nz}`)) continue;
+          const nt = this.sim.getTile(nx, nz);
+          if (nt && (nt.roadGround || 0) >= 1) return true;
+        }
+        return false;
+      };
+      const firstEnd = vTiles[0];
+      const lastEnd = vTiles[vTiles.length - 1];
+      const cA = firstEnd ? checkEndConnected(firstEnd) : false;
+      const cB = (lastEnd && lastEnd !== firstEnd) ? checkEndConnected(lastEnd) : false;
+      const connCount = (cA ? 1 : 0) + (cB ? 1 : 0);
+
+      if (connCount >= 2) {
+        this.renderer.previewColor = [0.22, 0.92, 0.62];
+        this.updateToolHint(`🏔️ 穿山隧道 ${vTiles.length} 格 · ✅ 两端已接通地面道路！造价 ¥${est.cost.toLocaleString()}（松手确认）`);
+      } else if (connCount === 1) {
+        this.renderer.previewColor = [0.98, 0.78, 0.22];
+        this.updateToolHint(`🏔️ 穿山隧道 ${vTiles.length} 格 · ⚠️ 仅一端接通道路（拖出另一侧山脚连接地面路）· 造价 ¥${est.cost.toLocaleString()}`);
+      } else {
+        this.renderer.previewColor = [0.98, 0.56, 0.18];
+        this.updateToolHint(`🏔️ 穿山隧道 ${vTiles.length} 格 · 💡 提示：将隧道两端延伸至灰色地面道路处即可连通 · 造价 ¥${est.cost.toLocaleString()}`);
+      }
     } else {
       this.renderer.previewColor = this.activeTool.startsWith('bulldoze') ? [0.98, 0.30, 0.30] : [0.25, 0.88, 1.0];
       const item = CATALOG[this.activeTool];

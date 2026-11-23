@@ -2206,7 +2206,7 @@ export class CitySimulation {
           validTiles.push(pos);
         }
       } else if (toolId === 'bulldoze_under') {
-        if (t.pipe || t.metro) {
+        if (t.pipe || t.metro || t.roadGround === 4) {
           cost += CATALOG.bulldoze_under.cost;
           validTiles.push(pos);
         }
@@ -2545,6 +2545,7 @@ export class CitySimulation {
         t.pipe = false;
         t.pipeBroken = false;
         t.metro = false;
+        if (t.roadGround === 4) t.roadGround = 0;
       } else if (CATALOG[toolId]) {
         gradeFlat(pos.x, pos.z, 0.85);
         const acc = this.findRoadAccess(pos.x, pos.z);
@@ -2557,11 +2558,26 @@ export class CitySimulation {
         }
         if (toolId === 'metro_station') t.metro = true;
         if (toolId === 'hsr_station') t.rail = 1;
+        const manualRot = (opts && typeof opts.rot === 'number') ? opts.rot : 0;
+        const bRot = ((acc ? acc.rot : 0) + manualRot) & 3;
+        if (toolId === 'airport') {
+          // Clear trees across the rotated 3.8-unit runway & taxiway corridor so foliage never clips the tarmac!
+          const rc = Math.round(Math.cos(bRot * Math.PI * 0.5));
+          const rs = Math.round(Math.sin(bRot * Math.PI * 0.5));
+          for (let lx = -2; lx <= 2; lx++) {
+            for (const lz of [-1, 0]) {
+              const rx = pos.x + lx * rc + lz * rs;
+              const rz = pos.z - lx * rs + lz * rc;
+              const rt = this.getTile(rx, rz);
+              if (rt) rt.trees = 0;
+            }
+          }
+        }
         t.building = {
           type: toolId,
           level: 1,
           variant: Math.floor(hash2D(pos.x, pos.z, this.seed + 99) * 8),
-          rot: acc ? acc.rot : 0,
+          rot: bRot,
           underConstruction: false,
           buildProgress: 1,
           upgradeProgress: 0,
@@ -2624,7 +2640,7 @@ export class CitySimulation {
     }
 
     if (
-      (toolId.startsWith('road_') || toolId === 'bus_stop' || toolId === 'bulldoze' || toolId === 'hydro_dam' || toolId === 'rail_track' || toolId === 'metro_line') &&
+      (toolId.startsWith('road_') || toolId === 'bus_stop' || toolId.startsWith('bulldoze') || toolId === 'hydro_dam' || toolId === 'rail_track' || toolId === 'metro_line') &&
       this.traffic && typeof this.traffic.refreshRoadGraph === 'function'
     ) {
       this.traffic.refreshRoadGraph();
@@ -5293,22 +5309,36 @@ export class CitySimulation {
       }
     }
 
-    // International Civil Airport in open flat area connected by road
+    // International Civil Airport in open flat area with unobstructed 3.8-unit E-W runway corridor (z-1, x-2..x+2)
     let airportPos = null;
-    let bestSlope = 99;
+    let bestScore = 999;
     for (let z = 27; z <= 30; z++) {
       for (let x = 15; x <= 20; x++) {
         const t = this.getTile(x, z);
         if (!t || this.isWaterTile(x, z) || this.hasNearbyWater(x, z, 1).found) continue;
         if (t.building || t.roadGround > 0 || t.roadElevated > 0 || t.rail > 0 || t.pylon) continue;
+        let corridorClear = true;
+        for (let rx = x - 2; rx <= x + 2; rx++) {
+          const rt = this.getTile(rx, z - 1);
+          if (!rt || this.isWaterTile(rx, z - 1) || rt.building || rt.roadGround > 0 || rt.roadElevated > 0 || rt.rail > 0 || rt.pylon) {
+            corridorClear = false;
+            break;
+          }
+        }
         const { slope } = this.getTileMinMaxElev(x, z);
-        if (slope < bestSlope) {
-          bestSlope = slope;
+        const score = slope + (corridorClear ? 0 : 2.0);
+        if (score < bestScore) {
+          bestScore = score;
           airportPos = { x, z };
         }
       }
     }
     if (!airportPos) airportPos = { x: 17, z: 28 };
+    // Clear any stray trees along the runway safety strip north of the terminal (z-1, x-2..x+2)
+    for (let rx = airportPos.x - 2; rx <= airportPos.x + 2; rx++) {
+      const rt = this.getTile(rx, airportPos.z - 1);
+      if (rt) rt.trees = 0;
+    }
     const apRoadZ = Math.min(31, airportPos.z + 1);
     this.applyTool('road_2', this.computeLineOrLPath(airportPos.x, apRoadZ, 22, apRoadZ), true);
     this.applyTool('water_pipe', this.computeLineOrLPath(18, 28, airportPos.x, airportPos.z, false), true);

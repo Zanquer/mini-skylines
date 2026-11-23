@@ -9446,12 +9446,16 @@ class WaterPhysics {
     this._cornerSurfTmp = new Float32Array(CN);
     this._cornerWetMask = new Uint8Array(CN);
     this._cornerWetCount = new Uint8Array(CN);
+    this._smoothCornerSurf = new Float32Array(CN);
+    this._smoothCornerFoam = new Float32Array(CN);
+    this._smoothCornerInit = false;
 
     this.refreshCellElevations();
     this._seedInitialFlowVectors();
   }
 
   refreshCellElevations() {
+    this._smoothCornerInit = false;
     const c = this.sim.corners;
     for (let z = 0; z < GRID_SIZE; z++) {
       for (let x = 0; x < GRID_SIZE; x++) {
@@ -9946,21 +9950,50 @@ class WaterPhysics {
           const discharge = Math.min(this.nextWater[upIdx] * 0.10, 0.015 * fillRatio);
           if (discharge > 0.0006) {
             this.nextWater[upIdx] -= discharge;
-            const dOld = Math.max(0, this.nextWater[downIdx]);
-            this.nextWater[downIdx] = dOld + discharge;
-            this.nextPoll[downIdx] =
-              (this.nextPoll[downIdx] * dOld + this.nextPoll[upIdx] * discharge) /
-              Math.max(0.001, this.nextWater[downIdx]);
-            this.flowMag[downIdx] = Math.min(1, this.flowMag[downIdx] + 0.88);
-
-            // Tailrace flow impulse directed away from upstream reservoir toward tailrace
             const upX = upIdx % GRID_SIZE;
             const upZ = (upIdx / GRID_SIZE) | 0;
             const dnX = downIdx % GRID_SIZE;
             const dnZ = (downIdx / GRID_SIZE) | 0;
             const tLen = Math.max(1, Math.hypot(dnX - upX, dnZ - upZ));
-            this._instFlowX[downIdx] += ((dnX - upX) / tLen) * 0.92;
-            this._instFlowZ[downIdx] += ((dnZ - upZ) / tLen) * 0.92;
+            const dirDx = (dnX - upX) / tLen;
+            const dirDz = (dnZ - upZ) / tLen;
+
+            // Distribute tailrace discharge gently across downIdx (70%) + lower non-dam neighbors (30%) to prevent single-cell height strobing!
+            const tailTargets = [];
+            const dnSurf = elev[downIdx] + Math.max(0, this.nextWater[downIdx]);
+            for (let k = 0; k < 4; k++) {
+              const nx = dnX + dirs4[k][0];
+              const nz = dnZ + dirs4[k][1];
+              if (nx < 0 || nx >= GRID_SIZE || nz < 0 || nz >= GRID_SIZE) continue;
+              const ni = idx(nx, nz);
+              if (ni === upIdx || grid[ni].dam) continue;
+              if (elev[ni] <= elev[downIdx] + 0.14 || (elev[ni] + Math.max(0, this.nextWater[ni])) <= dnSurf + 0.08) {
+                tailTargets.push(ni);
+              }
+            }
+            const mainShare = tailTargets.length > 0 ? discharge * 0.70 : discharge;
+            const sideShare = tailTargets.length > 0 ? (discharge * 0.30) / tailTargets.length : 0;
+
+            const dOld = Math.max(0, this.nextWater[downIdx]);
+            this.nextWater[downIdx] = dOld + mainShare;
+            this.nextPoll[downIdx] =
+              (this.nextPoll[downIdx] * dOld + this.nextPoll[upIdx] * mainShare) /
+              Math.max(0.001, this.nextWater[downIdx]);
+            this.flowMag[downIdx] = Math.min(1, this.flowMag[downIdx] + 0.78);
+            this._instFlowX[downIdx] += dirDx * 0.85;
+            this._instFlowZ[downIdx] += dirDz * 0.85;
+
+            for (let k = 0; k < tailTargets.length; k++) {
+              const ti = tailTargets[k];
+              const tOld = Math.max(0, this.nextWater[ti]);
+              this.nextWater[ti] = tOld + sideShare;
+              this.nextPoll[ti] =
+                (this.nextPoll[ti] * tOld + this.nextPoll[upIdx] * sideShare) /
+                Math.max(0.001, this.nextWater[ti]);
+              this.flowMag[ti] = Math.min(1, this.flowMag[ti] + 0.42);
+              this._instFlowX[ti] += dirDx * 0.50;
+              this._instFlowZ[ti] += dirDz * 0.50;
+            }
 
             // Mass-conserving P = eta * Q * dH: ~900-1550 MW across NW canyon dam, 0 MW on flat plains!
             const budgetEff = 0.55 + Math.min(1.25, pwrBudget / 100) * 0.45;
@@ -10249,6 +10282,30 @@ class WaterPhysics {
           surfY[ci] = terrainH - 0.05;
           depth[ci] = 0;
         }
+      }
+    }
+
+    // Pass 4: Temporal exponential smoothing on surfY & foam so turbulent dam tailrace water never strobes between 0.09s mesh rebuilds!
+    const CN = CORNER_STRIDE * CORNER_STRIDE;
+    const prevSurf = this._smoothCornerSurf;
+    const prevFoam = this._smoothCornerFoam;
+    if (!this._smoothCornerInit) {
+      prevSurf.set(surfY);
+      prevFoam.set(foam);
+      this._smoothCornerInit = true;
+    } else {
+      for (let ci = 0; ci < CN; ci++) {
+        const targetS = surfY[ci];
+        const diffS = targetS - prevSurf[ci];
+        // Snap immediately on major sudden events (dam breach/tsunami/terrain edit), otherwise blend smoothly
+        const nextS = Math.abs(diffS) > 0.45 ? targetS : (prevSurf[ci] + diffS * 0.36);
+        prevSurf[ci] = nextS;
+        surfY[ci] = nextS;
+        depth[ci] = Math.max(0, nextS - corners[ci]);
+
+        const nextF = prevFoam[ci] + (foam[ci] - prevFoam[ci]) * 0.32;
+        prevFoam[ci] = nextF;
+        foam[ci] = nextF;
       }
     }
 
@@ -11268,8 +11325,8 @@ function createPhysicalWaterMaterial(THREE) {
 
     void main() {
       // Smooth shoreline alpha feathering right into sloped riverbanks & beaches
-      float shoreAlpha = smoothstep(0.004, 0.11, vDepth);
-      if (shoreAlpha <= 0.001) discard;
+      float shoreAlpha = smoothstep(0.010, 0.115, vDepth);
+      if (shoreAlpha <= 0.002) discard;
 
       vec2 xz = vWorldPos.xz;
       float flowSpeed = clamp(length(vFlow), 0.0, 1.2);
@@ -11323,33 +11380,34 @@ function createPhysicalWaterMaterial(THREE) {
       vec3 reflColor = uSkyColor * mix(0.95, 0.55, pollFactor * 0.5);
       vec3 col = mix(litBody, reflColor, fresnel);
 
-      // Crisp sun / moon Blinn-Phong specular sparkle
-      vec3 H = normalize(L + V);
-      float NdotH = max(dot(N, H), 0.0);
-      float specBroad = pow(NdotH, 52.0) * 0.20;
-      float specSparkle = pow(NdotH, 280.0) * 1.55;
-      float specMask = smoothstep(0.015, 0.09, vDepth) * (1.0 - pollFactor * 0.45);
-      col += uSunColor * (specBroad + specSparkle) * specMask * mix(1.0, 0.45, uNight);
-
       // Animated whitewater rapids/tailrace foam (vFoam > 0.35) & shoreline lap foam (vDepth < 0.09)
       vec2 foamUV = xz * 4.6 - vFlow * uTime * 1.45;
       float fNoise1 = valueNoise(foamUV + vec2(uTime * 0.35, -uTime * 0.25));
       float fNoise2 = valueNoise(foamUV * 2.3 - vec2(uTime * 0.55, uTime * 0.42));
       float foamPattern = fNoise1 * 0.62 + fNoise2 * 0.38;
 
-      float rapidFoam = smoothstep(0.35, 0.78, vFoam + (foamPattern - 0.48) * 0.36) * smoothstep(0.012, 0.06, vDepth);
-      float shoreRipple = 0.5 + 0.5 * sin(vDepth * 62.0 - uTime * 2.8 + foamPattern * 4.0);
+      float rapidFoam = smoothstep(0.36, 0.80, vFoam + (foamPattern - 0.48) * 0.32) * smoothstep(0.016, 0.068, vDepth);
+      float shoreRipple = 0.5 + 0.5 * sin(vDepth * 58.0 - uTime * 2.6 + foamPattern * 4.0);
       float shoreFoam =
-        smoothstep(0.09, 0.018, vDepth) *
-        smoothstep(0.005, 0.020, vDepth) *
-        smoothstep(0.46, 0.80, foamPattern * 0.75 + shoreRipple * 0.35);
+        smoothstep(0.09, 0.020, vDepth) *
+        smoothstep(0.008, 0.024, vDepth) *
+        smoothstep(0.48, 0.82, foamPattern * 0.75 + shoreRipple * 0.35);
 
-      float totalFoam = clamp(max(rapidFoam, shoreFoam * 0.78), 0.0, 1.0);
+      float totalFoam = clamp(max(rapidFoam, shoreFoam * 0.76), 0.0, 1.0);
+
+      // Soft anti-aliased sun / moon Blinn-Phong specular highlight (damped in turbulent whitewater foam to stop sparkle strobing!)
+      vec3 H = normalize(L + V);
+      float NdotH = max(dot(N, H), 0.0);
+      float specBroad = pow(NdotH, 48.0) * 0.20;
+      float specSparkle = pow(NdotH, 160.0) * 0.92 * (1.0 - totalFoam * 0.72);
+      float specMask = smoothstep(0.018, 0.095, vDepth) * (1.0 - pollFactor * 0.45);
+      col += uSunColor * (specBroad + specSparkle) * specMask * mix(1.0, 0.45, uNight);
+
       vec3 foamTint = mix(cleanFoamColor, dirtyFoamColor, pollFactor) * mix(1.0, 0.32, uNight);
-      col = mix(col, foamTint, totalFoam * 0.85);
+      col = mix(col, foamTint, totalFoam * 0.84);
 
       float baseOpacity = mix(0.85, 0.94, deepMix);
-      float alpha = shoreAlpha * clamp(baseOpacity * 0.88 / 0.85 + totalFoam * 0.12 + specSparkle * 0.15, 0.0, 0.96);
+      float alpha = shoreAlpha * clamp(baseOpacity * 0.88 / 0.85 + totalFoam * 0.12 + specSparkle * 0.12, 0.0, 0.96);
       alpha = mix(shoreAlpha * 0.88, min(0.96, shoreAlpha * 0.95), clamp(deepMix * 0.65 + totalFoam + pollFactor * 0.4, 0.0, 1.0));
 
       gl_FragColor = vec4(col, alpha);
@@ -11373,8 +11431,8 @@ function createPhysicalWaterMaterial(THREE) {
     depthWrite: false,
     side: THREE.FrontSide,
     polygonOffset: true,
-    polygonOffsetFactor: -1,
-    polygonOffsetUnits: -2
+    polygonOffsetFactor: -2,
+    polygonOffsetUnits: -4
   });
 }
 
@@ -11480,7 +11538,9 @@ function buildSmoothWaterMesh(THREE, sim, waterPhysics, waterMat) {
       const dVal = Math.max(0, sVal - terrH);
 
       const wi = gz * WSTRIDE + gx;
-      subSurf[wi] = dVal > 0 ? sVal + 0.007 : Math.min(sVal, terrH - 0.012);
+      // Smooth continuous clearance over sloped canyon riverbeds (eliminates 0.000 step jumps & tailrace Z-fighting!)
+      const wetLift = dVal > 0 ? 0.016 * Math.min(1.0, dVal / 0.035) : 0;
+      subSurf[wi] = dVal > 0 ? sVal + wetLift : Math.min(sVal, terrH - 0.014);
       subDepth[wi] = dVal;
       subPoll[wi] = poll[i00] * w00 + poll[i10] * w10 + poll[i01] * w01 + poll[i11] * w11;
       subFoam[wi] = foam[i00] * w00 + foam[i10] * w10 + foam[i01] * w01 + foam[i11] * w11;
@@ -11525,18 +11585,15 @@ function buildSmoothWaterMesh(THREE, sim, waterPhysics, waterMat) {
       const d01 = subDepth[q01];
       const d11 = subDepth[q11];
 
-      if (d00 <= 0.002 && d10 <= 0.002 && d01 <= 0.002 && d11 <= 0.002) continue;
+      if (d00 <= 0.007 && d10 <= 0.007 && d01 <= 0.007 && d11 <= 0.007) continue;
 
       const a = getVertIndex(q00);
       const b = getVertIndex(q10);
       const c = getVertIndex(q01);
       const d = getVertIndex(q11);
 
-      if (Math.abs(d00 - d11) <= Math.abs(d10 - d01)) {
-        triIndices.push(a, c, d, a, d, b);
-      } else {
-        triIndices.push(a, c, b, b, c, d);
-      }
+      // Fixed deterministic quad diagonal prevents 0.09s triangle-flip flickering on turbulent dam tailraces!
+      triIndices.push(a, c, d, a, d, b);
     }
   }
 
@@ -14798,32 +14855,69 @@ function createContainerRibsTexture(THREE) {
 
 function createRunwayTexture(THREE) {
   const c = document.createElement('canvas');
-  c.width = 128;
-  c.height = 512;
+  c.width = 256;
+  c.height = 1024;
   const g = c.getContext('2d');
 
-  g.fillStyle = '#252930';
-  g.fillRect(0, 0, 128, 512);
+  // Rich weathered airport asphalt base
+  g.fillStyle = '#242932';
+  g.fillRect(0, 0, 256, 1024);
 
-  g.fillStyle = '#1d2026';
-  g.fillRect(30, 50, 68, 412);
+  // Subtle darker rubber-textured runway center crown & touchdown skid marks
+  g.fillStyle = '#1b1f27';
+  g.fillRect(44, 72, 168, 880);
+  const skidGradTop = g.createLinearGradient(0, 145, 0, 320);
+  skidGradTop.addColorStop(0, 'rgba(10,12,16,0.0)');
+  skidGradTop.addColorStop(0.35, 'rgba(10,12,16,0.52)');
+  skidGradTop.addColorStop(1, 'rgba(10,12,16,0.0)');
+  g.fillStyle = skidGradTop;
+  g.fillRect(72, 145, 112, 175);
+  const skidGradBot = g.createLinearGradient(0, 704, 0, 879);
+  skidGradBot.addColorStop(0, 'rgba(10,12,16,0.0)');
+  skidGradBot.addColorStop(0.65, 'rgba(10,12,16,0.52)');
+  skidGradBot.addColorStop(1, 'rgba(10,12,16,0.0)');
+  g.fillStyle = skidGradBot;
+  g.fillRect(72, 704, 112, 175);
 
+  // Crisp white runway edge lines
   g.fillStyle = '#f1f5f9';
-  g.fillRect(8, 0, 4, 512);
-  g.fillRect(116, 0, 4, 512);
+  g.fillRect(14, 0, 8, 1024);
+  g.fillRect(234, 0, 8, 1024);
 
-  for (let x = 18; x <= 102; x += 14) {
-    g.fillRect(x, 14, 8, 42);
-    g.fillRect(x, 456, 8, 42);
+  // Threshold piano-key bars at both ends
+  for (let x = 32; x <= 212; x += 22) {
+    if (Math.abs(x - 122) < 16) continue;
+    g.fillRect(x, 22, 12, 72);
+    g.fillRect(x, 930, 12, 72);
   }
 
-  g.fillRect(24, 96, 16, 44);
-  g.fillRect(88, 96, 16, 44);
-  g.fillRect(24, 372, 16, 44);
-  g.fillRect(88, 372, 16, 44);
+  // Runway designation numbers ("09" / "27")
+  g.save();
+  g.fillStyle = '#f8fafc';
+  g.font = 'bold 42px sans-serif';
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  g.fillText('09', 128, 134);
+  g.translate(128, 890);
+  g.rotate(Math.PI);
+  g.fillText('27', 0, 0);
+  g.restore();
 
-  for (let y = 80; y < 430; y += 44) {
-    g.fillRect(61, y, 6, 24);
+  // Fixed-distance aiming point blocks + touchdown zone bars
+  g.fillStyle = '#f1f5f9';
+  g.fillRect(46, 188, 28, 84);
+  g.fillRect(182, 188, 28, 84);
+  g.fillRect(46, 752, 28, 84);
+  g.fillRect(182, 752, 28, 84);
+
+  g.fillRect(62, 304, 16, 46);
+  g.fillRect(178, 304, 16, 46);
+  g.fillRect(62, 674, 16, 46);
+  g.fillRect(178, 674, 16, 46);
+
+  // High-visibility centerline dashes
+  for (let y = 176; y < 840; y += 64) {
+    g.fillRect(122, y, 12, 36);
   }
 
   const tex = new THREE.CanvasTexture(c);
@@ -16258,8 +16352,8 @@ class ArchitectureLibrary {
     return m;
   }
 
-  // Grounded soft Contact AO shadow skirt under buildings (marked skipGhost = true)
-  _addContactAO(grp, sx = 1.04, sz = 1.04, py = 0.008) {
+  // Grounded soft Contact AO shadow skirt under buildings (marked skipGhost = true; seated cleanly below pad to avoid Z-fighting!)
+  _addContactAO(grp, sx = 1.06, sz = 1.06, py = 0.002) {
     const ao = new this.THREE.Mesh(this.geos.aoQuad, this.m.contactAO);
     ao.position.set(0, py, 0);
     ao.scale.set(sx, 1, sz);
@@ -16271,7 +16365,7 @@ class ArchitectureLibrary {
   }
 
   _addZonedPlotPad(grp, ab = false, fourCorners = true) {
-    this._addMesh(grp, this.geos.box, ab ? this.m.pavingPlazaDusty : this.m.pavingPlaza, 0, 0.012, 0, 0.92, 0.024, 0.92, false);
+    this._addMesh(grp, this.geos.box, ab ? this.m.pavingPlazaDusty : this.m.pavingPlaza, 0, 0.014, 0, 0.92, 0.020, 0.92, false);
     const pSet = fourCorners ? this.geos.planters4 : this.geos.planters2;
     this._addMesh(grp, pSet.curbs, ab ? this.m.abandoned : this.m.parapetStone, 0, 0, 0, 1, 1, 1, false);
     this._addMesh(grp, pSet.trunks, this.m.teakDeck, 0, 0, 0, 1, 1, 1, false);
@@ -16458,15 +16552,15 @@ class ArchitectureLibrary {
 
     // Grounded Contact AO Shadow Skirt under every building
     if (type === 'stadium') {
-      this._addContactAO(grp, 1.34, 1.14, 0.008);
+      this._addContactAO(grp, 1.34, 1.14, 0.002);
     } else if (type === 'landmark' || type === 'amusement_park' || type === 'nuclear_plant' || type === 'solar_plant' || type === 'seaport') {
-      this._addContactAO(grp, 1.16, 1.16, 0.008);
+      this._addContactAO(grp, 1.16, 1.16, 0.002);
     } else if (type === 'airport') {
-      this._addContactAO(grp, 1.16, 1.44, 0.008);
+      this._addContactAO(grp, 1.72, 1.12, 0.002);
     } else if (type === 'power_wind') {
-      this._addContactAO(grp, 0.48, 0.48, 0.008);
+      this._addContactAO(grp, 0.48, 0.48, 0.002);
     } else {
-      this._addContactAO(grp, 1.04, 1.04, 0.008);
+      this._addContactAO(grp, 1.06, 1.06, 0.002);
     }
 
     switch (type) {
@@ -17167,42 +17261,106 @@ class ArchitectureLibrary {
   _buildAirport(grp, ab, x, y0, z, rotRad, hooks) {
     const THREE = this.THREE;
     const silver = ab ? this.m.abandoned : this.m.brushedSilver;
+    const white = ab ? this.m.abandoned : this.m.whiteComposite;
+    const conc = ab ? this.m.abandoned : this.m.roofConcrete;
     const glass = ab ? this.m.dustyCBD : this.m.cbdIceBlue;
+    const dark = ab ? this.m.abandonedRust : this.m.asphalt;
 
-    this._addMesh(grp, this.geos.box, ab ? this.m.pavingPlazaDusty : this.m.pavingPlaza, -0.18, 0.015, 0, 0.86, 0.03, 1.18, false);
-    this._addMesh(grp, this.geos.box, glass, -0.22, 0.19, 0, 0.44, 0.34, 0.82, true);
-    const roof = this._addMesh(grp, this.geos.gullWingRoof, silver, -0.22, 0.35, 0, 0.96, 1.0, 1.68, true);
-    roof.rotation.y = Math.PI * 0.5;
+    // 1. Concrete Terminal Apron & Grounded Embankment Plinth (front +Z faces access street cleanly!)
+    this._addMesh(grp, this.geos.box, ab ? this.m.pavingPlazaDusty : this.m.pavingPlaza, 0, 0.015, 0.02, 1.72, 0.030, 0.88, false);
+    this._addMesh(grp, this.geos.box, conc, 0, -0.095, -0.02, 1.78, 0.21, 0.96, false);
 
-    this._addMesh(grp, this.geos.box, this.m.whiteComposite, 0.05, 0.14, -0.20, 0.18, 0.045, 0.045, true);
-    this._addMesh(grp, this.geos.box, this.m.whiteComposite, 0.05, 0.14, 0.22, 0.18, 0.045, 0.045, true);
+    // 2. Sculpted International Terminal Concourse (z = +0.16, wide sweeping gull-wing roof + panoramic curtain wall)
+    this._addMesh(grp, this.geos.box, glass, 0, 0.175, 0.18, 0.98, 0.30, 0.40, true);
+    this._addMesh(grp, this.geos.box, white, 0, 0.045, 0.18, 1.02, 0.04, 0.43, false);
+    this._addMesh(grp, this.geos.gullWingRoof, silver, 0, 0.33, 0.18, 1.18, 1.0, 1.38, true);
+    // Street-facing (+Z) departures curbside canopy & illuminated signage band
+    this._addShopfrontCanopy(grp, 0, 0.028, 0.38, 1.42, ab, true);
+    if (!ab) {
+      this._addMesh(grp, this.geos.box, this.m.ledLinearCyan, 0, 0.315, 0.39, 0.86, 0.016, 0.014, false);
+    }
 
-    const tx = -0.40, tz = -0.44;
-    this._addMesh(grp, this.geos.taperOct, ab ? this.m.abandoned : this.m.whiteComposite, tx, 0.58, tz, 0.24, 1.14, 0.24, true);
-    const atcCab = this._addMesh(grp, this.geos.taperOct, glass, tx, 1.22, tz, 0.38, 0.18, 0.38, true);
+    // 3. Three Glass Passenger Boarding Jetbridges + Concrete Piers + Yellow Apron Stand Lead-in Lines
+    for (const jx of [-0.32, 0.0, 0.32]) {
+      this._addMesh(grp, this.geos.box, glass, jx, 0.135, -0.10, 0.055, 0.056, 0.24, true);
+      this._addMesh(grp, this.geos.box, white, jx, 0.166, -0.10, 0.062, 0.010, 0.25, false);
+      this._addMesh(grp, this.geos.cyl16, silver, jx, 0.068, -0.20, 0.024, 0.12, 0.024, false);
+      if (!ab) {
+        this._addMesh(grp, this.geos.box, this.m.craneYellow, jx, 0.032, -0.28, 0.016, 0.004, 0.16, false);
+      }
+    }
+
+    // 4. Sculpted ATC Control Tower (west flank of concourse) with Flared Cab & Rotating Radar
+    const tx = -0.68, tz = 0.20;
+    this._addMesh(grp, this.geos.box, conc, tx, 0.12, tz, 0.26, 0.22, 0.26, true);
+    this._addMesh(grp, this.geos.taperOct, white, tx, 0.62, tz, 0.22, 1.12, 0.22, true);
+    const atcCab = this._addMesh(grp, this.geos.taperOct, glass, tx, 1.24, tz, 0.39, 0.19, 0.39, true);
     atcCab.rotation.z = Math.PI;
-    this._addMesh(grp, this.geos.cyl24, silver, tx, 1.33, tz, 0.22, 0.04, 0.22, true);
+    this._addMesh(grp, this.geos.cyl24, silver, tx, 1.355, tz, 0.25, 0.042, 0.25, true);
 
     const radar = new THREE.Group();
-    radar.position.set(tx, 1.40, tz);
-    this._addMesh(radar, this.geos.cyl16, silver, 0, -0.02, 0, 0.025, 0.06, 0.025, false);
-    this._addMesh(radar, this.geos.box, ab ? this.m.abandonedRust : this.m.craneRed, 0, 0.02, 0, 0.24, 0.032, 0.028, true);
-    this._addMesh(radar, this.geos.box, this.m.whiteComposite, 0, 0.02, 0, 0.14, 0.036, 0.032, false);
+    radar.position.set(tx, 1.425, tz);
+    this._addMesh(radar, this.geos.cyl16, silver, 0, -0.02, 0, 0.024, 0.06, 0.024, false);
+    this._addMesh(radar, this.geos.box, ab ? this.m.abandonedRust : this.m.craneRed, 0, 0.02, 0, 0.26, 0.032, 0.028, true);
+    this._addMesh(radar, this.geos.box, white, 0, 0.02, 0, 0.15, 0.036, 0.032, false);
     grp.add(radar);
 
     if (!ab && hooks && hooks.radarDishes) hooks.radarDishes.push(radar);
-    this._addBeacon(grp, hooks, tx, 1.48, tz, x, y0, z, rotRad, ab);
+    this._addBeacon(grp, hooks, tx, 1.50, tz, x, y0, z, rotRad, ab);
 
-    const rx = 0.36;
-    this._addMesh(grp, this.geos.box, this.m.runway, rx, 0.022, 0, 0.34, 0.018, 1.38, false);
+    // 5. Maintenance Hangar + Aviation Fuel Storage Farm (east flank)
+    this._addMesh(grp, this.geos.box, ab ? this.m.dustyInd : this.m.indPanelSilver, 0.68, 0.15, 0.14, 0.36, 0.26, 0.32, true);
+    const hangarArch = this._addMesh(grp, this.geos.cyl16, silver, 0.68, 0.27, 0.14, 0.36, 0.32, 0.14, true);
+    hangarArch.rotation.x = Math.PI * 0.5;
+    this._addMesh(grp, this.geos.box, dark, 0.68, 0.12, -0.024, 0.26, 0.19, 0.012, false);
+    for (const fx of [0.98, 1.14]) {
+      this._addMesh(grp, this.geos.cyl16, white, fx, 0.085, 0.10, 0.11, 0.14, 0.11, true);
+      if (!ab) this._addMesh(grp, this.geos.cyl16, this.m.craneYellow, fx, 0.135, 0.10, 0.115, 0.018, 0.115, false);
+    }
+
+    // 6. Parallel Taxiway + 3 Connecting Turnoffs Joining Apron to Runway
+    const taxiZ = -0.45;
+    this._addMesh(grp, this.geos.box, dark, 0, 0.026, taxiZ, 3.20, 0.020, 0.16, false);
+    this._addMesh(grp, this.geos.box, conc, 0, -0.095, taxiZ, 3.28, 0.22, 0.22, false);
     if (!ab) {
-      for (const rz of [-0.66, 0.66]) {
-        this._addMesh(grp, this.geos.sphere16, this.m.strobeGreen, rx - 0.12, 0.038, rz, 0.028, 0.028, 0.028, false);
-        this._addMesh(grp, this.geos.sphere16, this.m.strobeGreen, rx + 0.12, 0.038, rz, 0.028, 0.028, 0.028, false);
+      this._addMesh(grp, this.geos.box, this.m.craneYellow, 0, 0.038, taxiZ, 3.10, 0.004, 0.016, false);
+    }
+    for (const cx of [-1.42, 0.0, 1.42]) {
+      this._addMesh(grp, this.geos.box, dark, cx, 0.026, -0.63, 0.18, 0.020, 0.26, false);
+      if (!ab) {
+        this._addMesh(grp, this.geos.box, this.m.craneYellow, cx, 0.038, -0.63, 0.016, 0.004, 0.24, false);
       }
-      for (const rz of [-0.42, -0.14, 0.14, 0.42]) {
-        this._addMesh(grp, this.geos.sphere16, this.m.neonGold, rx - 0.15, 0.036, rz, 0.024, 0.024, 0.024, false);
-        this._addMesh(grp, this.geos.sphere16, this.m.neonGold, rx + 0.15, 0.036, rz, 0.024, 0.024, 0.024, false);
+    }
+
+    // 7. Full-Length Illuminated International Runway along local X-axis (length = 3.80, width = 0.50 at z = -0.82!)
+    const rwZ = -0.82;
+    const rwLen = 3.80;
+    const rwW = 0.50;
+    // Engineered concrete embankment plinth extending down to y = -0.21 so runway never floats on gently sloped terrain!
+    this._addMesh(grp, this.geos.box, conc, 0, -0.092, rwZ, rwLen + 0.18, 0.24, rwW + 0.14, false);
+    // Textured runway deck rotated 90° around Y so piano-keys & centerline run squarely along local X!
+    const rwMesh = this._addMesh(grp, this.geos.box, this.m.runway, 0, 0.036, rwZ, rwW, 0.020, rwLen, false, Math.PI * 0.5);
+    rwMesh.name = 'airport_runway';
+
+    // 8. Complete Aviation Lighting: Green Threshold Bars, White/Gold Edge Lights, PAPI Glide-Slope & Approach Strobes!
+    if (!ab) {
+      for (const endX of [-1.86, 1.86]) {
+        for (const lz of [-0.98, -0.88, -0.76, -0.66]) {
+          this._addMesh(grp, this.geos.sphere16, this.m.strobeGreen, endX, 0.056, lz, 0.026, 0.026, 0.026, false);
+        }
+      }
+      for (let lx = -1.62; lx <= 1.63; lx += 0.46) {
+        this._addMesh(grp, this.geos.sphere16, this.m.neonGold, lx, 0.054, rwZ - rwW * 0.5 - 0.02, 0.022, 0.022, 0.022, false);
+        this._addMesh(grp, this.geos.sphere16, this.m.neonGold, lx, 0.054, rwZ + rwW * 0.5 + 0.02, 0.022, 0.022, 0.022, false);
+      }
+      // 4-lamp PAPI Precision Approach Path Indicator beside touchdown zone (2 white + 2 red)
+      for (let pi = 0; pi < 4; pi++) {
+        const pMat = pi < 2 ? this.m.ledLinearWhite : this.m.beaconRed;
+        this._addMesh(grp, this.geos.box, pMat, -1.28, 0.056, rwZ - 0.34 - pi * 0.045, 0.032, 0.024, 0.028, false);
+      }
+      // Approach strobe guide bars extending off the -X threshold
+      for (const ax of [-2.10, -2.30]) {
+        this._addMesh(grp, this.geos.box, this.m.ledLinearCyan, ax, 0.046, rwZ, 0.024, 0.016, 0.22, false);
       }
     }
   }
@@ -17602,19 +17760,22 @@ class ArchitectureLibrary {
     return grp;
   }
 
-  createAirlinerObject() {
+  createAirlinerObject(variant = 0) {
     const THREE = this.THREE;
     const grp = new THREE.Group();
     grp.rotation.order = 'YXZ';
+    const livery = (variant & 1) === 0 ? this.m.airlineBlue : this.m.craneRed;
 
     this._addMesh(grp, this.geos.fuselage, this.m.whiteComposite, 0, 0.14, -0.02, 1.0, 1.0, 1.0, true);
-    this._addMesh(grp, this.geos.fuselage, this.m.airlineBlue, 0, 0.115, -0.02, 0.96, 0.68, 0.97, false);
+    this._addMesh(grp, this.geos.fuselage, livery, 0, 0.115, -0.02, 0.96, 0.68, 0.97, false);
     this._addMesh(grp, this.geos.sphere16, this.m.cockpitGlass, 0, 0.175, 0.52, 0.135, 0.075, 0.16, false);
+    // Landing nose headlight glow
+    this._addMesh(grp, this.geos.sphere16, this.m.vehHeadlight, 0, 0.095, 0.62, 0.032, 0.024, 0.024, false);
 
     this._addMesh(grp, this.geos.airlinerWing, this.m.whiteComposite, 0, 0.12, 0.08, 1.0, 1.0, 1.0, true);
-    const wlL = this._addMesh(grp, this.geos.box, this.m.airlineBlue, 0.68, 0.165, -0.12, 0.015, 0.09, 0.08, true);
+    const wlL = this._addMesh(grp, this.geos.box, livery, 0.68, 0.165, -0.12, 0.015, 0.09, 0.08, true);
     wlL.rotation.z = -0.22;
-    const wlR = this._addMesh(grp, this.geos.box, this.m.airlineBlue, -0.68, 0.165, -0.12, 0.015, 0.09, 0.08, true);
+    const wlR = this._addMesh(grp, this.geos.box, livery, -0.68, 0.165, -0.12, 0.015, 0.09, 0.08, true);
     wlR.rotation.z = 0.22;
 
     for (const sx of [-0.28, 0.28]) {
@@ -17626,7 +17787,7 @@ class ArchitectureLibrary {
       fan.rotation.x = Math.PI * 0.5;
     }
 
-    this._addMesh(grp, this.geos.airlinerVTail, this.m.airlineBlue, 0, 0.19, -0.48, 1.0, 1.0, 1.0, true);
+    this._addMesh(grp, this.geos.airlinerVTail, livery, 0, 0.19, -0.48, 1.0, 1.0, 1.0, true);
     this._addMesh(grp, this.geos.airlinerHTail, this.m.whiteComposite, 0, 0.15, -0.52, 1.0, 1.0, 1.0, true);
 
     this._addMesh(grp, this.geos.sphere16, this.m.beaconRed, 0.69, 0.21, -0.14, 0.038, 0.038, 0.038, false);
@@ -17637,10 +17798,11 @@ class ArchitectureLibrary {
     return grp;
   }
 
-  createCargoShipObject() {
+  createCargoShipObject(variant = 0) {
     const THREE = this.THREE;
     const grp = new THREE.Group();
     grp.rotation.order = 'YXZ';
+    const seed = Math.abs(variant | 0);
 
     this._addMesh(grp, this.geos.shipHullBoot, this.m.hullCrimson, 0, 0.0, 0, 1.0, 1.0, 1.0, true);
     this._addMesh(grp, this.geos.shipHullMain, this.m.hullNavy, 0, 0.075, 0, 1.0, 1.0, 1.0, true);
@@ -17651,7 +17813,12 @@ class ArchitectureLibrary {
     this._addMesh(grp, this.geos.box, this.m.whiteComposite, 0, 0.30, -0.62, 0.38, 0.22, 0.22, true);
     this._addMesh(grp, this.geos.box, this.m.whiteComposite, 0, 0.44, -0.60, 0.48, 0.07, 0.14, true);
     this._addMesh(grp, this.geos.box, this.m.cockpitGlass, 0, 0.45, -0.528, 0.44, 0.035, 0.015, false);
-    this._addMesh(grp, this.geos.box, this.m.craneRed, 0, 0.47, -0.70, 0.10, 0.16, 0.11, true);
+    // Port (Red) & Starboard (Green) Marine Navigation Bridge Wing Lights + Radar Mast
+    this._addMesh(grp, this.geos.sphere16, this.m.beaconRed, 0.24, 0.48, -0.58, 0.024, 0.024, 0.024, false);
+    this._addMesh(grp, this.geos.sphere16, this.m.strobeGreen, -0.24, 0.48, -0.58, 0.024, 0.024, 0.024, false);
+    this._addMesh(grp, this.geos.cyl16, this.m.brushedSilver, 0, 0.56, -0.60, 0.016, 0.18, 0.016, false);
+    this._addMesh(grp, this.geos.box, this.m.whiteComposite, 0, 0.62, -0.60, 0.12, 0.014, 0.018, false);
+    this._addMesh(grp, this.geos.box, (seed & 1) ? this.m.airlineBlue : this.m.craneRed, 0, 0.47, -0.70, 0.10, 0.16, 0.11, true);
     this._addMesh(grp, this.geos.box, this.m.asphalt, 0, 0.56, -0.70, 0.102, 0.035, 0.112, false);
 
     const baysZ = [0.50, 0.18, -0.14, -0.86];
@@ -17661,7 +17828,7 @@ class ArchitectureLibrary {
       const tiers = bIdx === 3 ? 2 : (bIdx === 0 ? 2 : 3);
       for (let cIdx = 0; cIdx < cols.length; cIdx++) {
         for (let t = 0; t < tiers; t++) {
-          const mat = this.containerMats[(bIdx * 3 + cIdx + t * 2) % this.containerMats.length];
+          const mat = this.containerMats[(bIdx * 3 + cIdx + t * 2 + seed) % this.containerMats.length];
           this._addMesh(grp, this.geos.box, mat, cols[cIdx], 0.25 + t * 0.082, bz, 0.118, 0.08, 0.27, true);
         }
       }
@@ -20406,7 +20573,7 @@ class CitySimulation {
           validTiles.push(pos);
         }
       } else if (toolId === 'bulldoze_under') {
-        if (t.pipe || t.metro) {
+        if (t.pipe || t.metro || t.roadGround === 4) {
           cost += CATALOG.bulldoze_under.cost;
           validTiles.push(pos);
         }
@@ -20745,6 +20912,7 @@ class CitySimulation {
         t.pipe = false;
         t.pipeBroken = false;
         t.metro = false;
+        if (t.roadGround === 4) t.roadGround = 0;
       } else if (CATALOG[toolId]) {
         gradeFlat(pos.x, pos.z, 0.85);
         const acc = this.findRoadAccess(pos.x, pos.z);
@@ -20757,11 +20925,26 @@ class CitySimulation {
         }
         if (toolId === 'metro_station') t.metro = true;
         if (toolId === 'hsr_station') t.rail = 1;
+        const manualRot = (opts && typeof opts.rot === 'number') ? opts.rot : 0;
+        const bRot = ((acc ? acc.rot : 0) + manualRot) & 3;
+        if (toolId === 'airport') {
+          // Clear trees across the rotated 3.8-unit runway & taxiway corridor so foliage never clips the tarmac!
+          const rc = Math.round(Math.cos(bRot * Math.PI * 0.5));
+          const rs = Math.round(Math.sin(bRot * Math.PI * 0.5));
+          for (let lx = -2; lx <= 2; lx++) {
+            for (const lz of [-1, 0]) {
+              const rx = pos.x + lx * rc + lz * rs;
+              const rz = pos.z - lx * rs + lz * rc;
+              const rt = this.getTile(rx, rz);
+              if (rt) rt.trees = 0;
+            }
+          }
+        }
         t.building = {
           type: toolId,
           level: 1,
           variant: Math.floor(hash2D(pos.x, pos.z, this.seed + 99) * 8),
-          rot: acc ? acc.rot : 0,
+          rot: bRot,
           underConstruction: false,
           buildProgress: 1,
           upgradeProgress: 0,
@@ -20824,7 +21007,7 @@ class CitySimulation {
     }
 
     if (
-      (toolId.startsWith('road_') || toolId === 'bus_stop' || toolId === 'bulldoze' || toolId === 'hydro_dam' || toolId === 'rail_track' || toolId === 'metro_line') &&
+      (toolId.startsWith('road_') || toolId === 'bus_stop' || toolId.startsWith('bulldoze') || toolId === 'hydro_dam' || toolId === 'rail_track' || toolId === 'metro_line') &&
       this.traffic && typeof this.traffic.refreshRoadGraph === 'function'
     ) {
       this.traffic.refreshRoadGraph();
@@ -23493,22 +23676,36 @@ class CitySimulation {
       }
     }
 
-    // International Civil Airport in open flat area connected by road
+    // International Civil Airport in open flat area with unobstructed 3.8-unit E-W runway corridor (z-1, x-2..x+2)
     let airportPos = null;
-    let bestSlope = 99;
+    let bestScore = 999;
     for (let z = 27; z <= 30; z++) {
       for (let x = 15; x <= 20; x++) {
         const t = this.getTile(x, z);
         if (!t || this.isWaterTile(x, z) || this.hasNearbyWater(x, z, 1).found) continue;
         if (t.building || t.roadGround > 0 || t.roadElevated > 0 || t.rail > 0 || t.pylon) continue;
+        let corridorClear = true;
+        for (let rx = x - 2; rx <= x + 2; rx++) {
+          const rt = this.getTile(rx, z - 1);
+          if (!rt || this.isWaterTile(rx, z - 1) || rt.building || rt.roadGround > 0 || rt.roadElevated > 0 || rt.rail > 0 || rt.pylon) {
+            corridorClear = false;
+            break;
+          }
+        }
         const { slope } = this.getTileMinMaxElev(x, z);
-        if (slope < bestSlope) {
-          bestSlope = slope;
+        const score = slope + (corridorClear ? 0 : 2.0);
+        if (score < bestScore) {
+          bestScore = score;
           airportPos = { x, z };
         }
       }
     }
     if (!airportPos) airportPos = { x: 17, z: 28 };
+    // Clear any stray trees along the runway safety strip north of the terminal (z-1, x-2..x+2)
+    for (let rx = airportPos.x - 2; rx <= airportPos.x + 2; rx++) {
+      const rt = this.getTile(rx, airportPos.z - 1);
+      if (rt) rt.trees = 0;
+    }
     const apRoadZ = Math.min(31, airportPos.z + 1);
     this.applyTool('road_2', this.computeLineOrLPath(airportPos.x, apRoadZ, 22, apRoadZ), true);
     this.applyTool('water_pipe', this.computeLineOrLPath(18, 28, airportPos.x, airportPos.z, false), true);
@@ -23901,6 +24098,9 @@ class TrafficManager {
     this.shipTimer = 2.0;
     this.signalClock = 0;
     this.modalTimer = 0;
+    this._nextVehId = 1;
+    this._nextShipId = 1;
+    this._nextPedId = 1;
 
     const N = GRID_SIZE * GRID_SIZE;
     this.roadDegree = new Uint8Array(N);
@@ -25369,6 +25569,8 @@ class TrafficManager {
     const v = {
       kind: 'firetruck',
       fireTargetIdx: idx(burningTile.x, burningTile.z),
+      id: this._nextVehId++,
+      variantIdx: 0,
       tripType: 'service',
       tripLabel: '🚒 消防紧急出警',
       fromName,
@@ -25434,6 +25636,8 @@ class TrafficManager {
             const w0 = tileToWorld(busPath[0].x, busPath[0].z);
             const maxSpeed = 1.72;
             const bv = {
+              id: this._nextVehId++,
+              variantIdx: 0,
               kind: 'bus',
               tripType: 'transit',
               tripLabel: '🚌 城市新能源公交专线',
@@ -25658,6 +25862,8 @@ class TrafficManager {
 
     const w0 = tileToWorld(path[0].x, path[0].z);
     const v = {
+      id: this._nextVehId++,
+      variantIdx: (Math.random() * 12) | 0,
       kind,
       tripType,
       tripLabel,
@@ -26269,6 +26475,7 @@ class TrafficManager {
       if (!spot || !this._isPedRoadTile(spot.x, spot.z)) continue;
       const next = this._pickPedNextTile(spot.x, spot.z, -1, -1);
       const p = {
+        id: this._nextPedId++,
         tx: spot.x,
         tz: spot.z,
         nx: next.x,
@@ -26281,15 +26488,19 @@ class TrafficManager {
         dirX: 1,
         dirZ: 0,
         walkPhase: Math.random() * Math.PI * 2,
-        colorIdx: (Math.random() * 8) | 0,
-        speed: 0.24 + Math.random() * 0.14,
-        ttl: 24 + Math.random() * 28
+        colorIdx: (Math.random() * 12) | 0,
+        pantsIdx: (Math.random() * 6) | 0,
+        hairIdx: (Math.random() * 5) | 0,
+        skinIdx: (Math.random() * 4) | 0,
+        heightScale: 0.90 + Math.random() * 0.20,
+        speed: 0.085 + Math.random() * 0.045,
+        ttl: 55 + Math.random() * 65
       };
       this._syncPedTransform(p);
       this.pedestrians.push(p);
     }
 
-    // Advance sidewalk walkers
+    // Advance sidewalk walkers at calm realistic strolling speed
     for (let i = this.pedestrians.length - 1; i >= 0; i--) {
       const p = this.pedestrians[i];
       if (!this._isPedRoadTile(p.tx, p.tz)) {
@@ -26299,7 +26510,7 @@ class TrafficManager {
 
       p.ttl -= effDt;
       p.t += p.speed * effDt;
-      p.walkPhase = (p.walkPhase + p.speed * effDt * 18) % (Math.PI * 2);
+      p.walkPhase = (p.walkPhase + p.speed * effDt * 15) % (Math.PI * 2);
 
       if (p.t >= 1.0) {
         if (p.ttl <= 0 && this.pedestrians.length > Math.floor(targetPed * 0.85)) {
@@ -26327,11 +26538,29 @@ class TrafficManager {
     }
   }
 
+  // Exact world-space runway centerline, direction & elevation matching _buildAirport() local (x ∈ [-1.9,+1.9], z = -0.82)
+  getAirportRunwayFrame(ap) {
+    const center = tileToWorld(ap.x, ap.z);
+    const rotRad = ((ap.building && ap.building.rot) || 0) * Math.PI * 0.5;
+    const c = Math.cos(rotRad);
+    const s = Math.sin(rotRad);
+    const rwLocalZ = -0.82;
+    return {
+      rCx: center.wx + rwLocalZ * s,
+      rCz: center.wz + rwLocalZ * c,
+      dirX: c,
+      dirZ: -s,
+      rightX: s,
+      rightZ: c,
+      deckY: this.sim.getTileElev(ap.x, ap.z) + 0.068
+    };
+  }
+
   updateAircraft(effDt) {
     // First despawn any ground rollout / short-final aircraft whose runway was bulldozed or flooded
     for (let i = this.aircraft.length - 1; i >= 0; i--) {
       const plane = this.aircraft[i];
-      if ((plane.phase === 'rollout' || (plane.progress >= 0.40 && plane.progress <= 0.60)) &&
+      if ((plane.phase === 'rollout' || (plane.progress >= 0.36 && plane.progress <= 0.64)) &&
           !this.isRunwayIntact(plane.ax, plane.az)) {
         this.aircraft.splice(i, 1);
       }
@@ -26358,22 +26587,20 @@ class TrafficManager {
 
     if (this.aircraft.length === 0) {
       const ap = airports[0];
-      const c = tileToWorld(ap.x, ap.z);
-      const baseY = this.sim.getTileElev(ap.x, ap.z);
-      const dirLen = Math.hypot(16, 14) || 1;
-      const dx = 16 / dirLen, dz = 14 / dirLen;
+      const rw = this.getAirportRunwayFrame(ap);
+      const startAlong = -17.5;
       this.aircraft.push({
         ax: ap.x,
         az: ap.z,
         progress: 0.06,
         phase: 'approach',
-        wx: c.wx - 16,
-        wy: baseY + 8.5,
-        wz: c.wz - 14,
-        dirX: dx,
-        dirZ: dz,
-        yaw: Math.atan2(dx, dz),
-        pitch: -0.18,
+        wx: rw.rCx + rw.dirX * startAlong,
+        wy: rw.deckY + 7.6,
+        wz: rw.rCz + rw.dirZ * startAlong,
+        dirX: rw.dirX,
+        dirZ: rw.dirZ,
+        yaw: Math.atan2(rw.dirX, rw.dirZ),
+        pitch: -0.17,
         roll: 0,
         scale: 1,
         variant: 0
@@ -26381,24 +26608,22 @@ class TrafficManager {
       this.aircraftTimer = 0;
     } else if (this.aircraft.length < maxPlanes && this.aircraftTimer >= 9.0) {
       const first = this.aircraft[0];
-      if (first.progress >= 0.44 && first.progress <= 0.62) {
+      if (first.progress >= 0.44 && first.progress <= 0.64) {
         const ap = airports[this.aircraft.length % airports.length];
-        const c = tileToWorld(ap.x, ap.z);
-        const baseY = this.sim.getTileElev(ap.x, ap.z);
-        const dirLen = Math.hypot(16, 14) || 1;
-        const dx = 16 / dirLen, dz = 14 / dirLen;
+        const rw = this.getAirportRunwayFrame(ap);
+        const startAlong = -17.5;
         this.aircraft.push({
           ax: ap.x,
           az: ap.z,
           progress: 0.0,
           phase: 'approach',
-          wx: c.wx - 16,
-          wy: baseY + 8.5,
-          wz: c.wz - 14,
-          dirX: dx,
-          dirZ: dz,
-          yaw: Math.atan2(dx, dz),
-          pitch: -0.19,
+          wx: rw.rCx + rw.dirX * startAlong,
+          wy: rw.deckY + 7.6,
+          wz: rw.rCz + rw.dirZ * startAlong,
+          dirX: rw.dirX,
+          dirZ: rw.dirZ,
+          yaw: Math.atan2(rw.dirX, rw.dirZ),
+          pitch: -0.18,
           roll: 0,
           scale: 1,
           variant: 1
@@ -26420,12 +26645,11 @@ class TrafficManager {
           plane.ax = ap.x;
           plane.az = ap.z;
         } else {
-          // Runway is physically intact (e.g., temporary power outage while another airport is powered)
           ap = this.sim.getTile(plane.ax, plane.az);
         }
       }
 
-      plane.progress += effDt * 0.045;
+      plane.progress += effDt * 0.042;
       let wrapped = false;
       if (plane.progress >= 1.0) {
         plane.progress -= 1.0;
@@ -26437,57 +26661,60 @@ class TrafficManager {
       }
 
       const p = plane.progress;
-      if (p > 0.42 && p < 0.58 && !this.isRunwayIntact(plane.ax, plane.az)) {
+      if (p > 0.38 && p < 0.62 && !this.isRunwayIntact(plane.ax, plane.az)) {
         this.aircraft.splice(i, 1);
         continue;
       }
 
-      const center = tileToWorld(ap.x, ap.z);
-      const cx = center.wx;
-      const cz = center.wz;
-      const baseY = this.sim.getTileElev(ap.x, ap.z);
+      const rw = this.getAirportRunwayFrame(ap);
+      let along = 0;
+      let lateral = 0;
+      let wy = rw.deckY;
+      let tx = rw.dirX;
+      let tz = rw.dirZ;
+      let targetPitch = 0;
+      let targetRoll = 0;
 
-      let wx, wy, wz, tx, tz, targetPitch, targetRoll;
-
-      if (p <= 0.42) {
-        // Descending approach: (wx - 16, baseY + 8.5, wz - 14) -> runway threshold
+      if (p <= 0.38) {
+        // Straight ILS glideslope final aligned dead-center with the illuminated runway threshold (-17.5 -> -1.68)
         plane.phase = 'approach';
-        const s = p / 0.42;
-        const hs = 1 - Math.pow(1 - s, 1.25);
-        wx = (cx - 16) + 15.48 * hs;
-        wz = (cz - 14) + 13.56 * hs;
-        wy = (baseY + 0.16) + 8.34 * Math.pow(1 - s, 1.55);
-        tx = 15.48;
-        tz = 13.56;
-        targetPitch = -0.23 * Math.pow(1 - s, 0.85) + 0.045;
-        targetRoll = Math.sin(s * Math.PI) * (1 - s) * 0.14;
-      } else if (p < 0.58) {
-        // Landing roll across airport (wx, baseY + 0.16, wz) -> takeoff roll
+        const s = p / 0.38;
+        const hs = 1 - Math.pow(1 - s, 1.22);
+        along = -17.5 + 15.82 * hs;
+        lateral = 0;
+        wy = rw.deckY + 7.6 * Math.pow(1 - s, 1.55);
+        targetPitch = -0.20 * Math.pow(1 - s, 0.85) + 0.045;
+        targetRoll = 0;
+      } else if (p < 0.62) {
+        // Touchdown rollout & full-length takeoff run right along runway centerline (-1.68 -> +1.55)
         plane.phase = 'rollout';
-        const s = (p - 0.42) / 0.16;
-        wx = (cx - 0.52) + 1.04 * s;
-        wz = (cz - 0.44) + 0.88 * s;
-        wy = baseY + 0.16;
-        tx = 1.04;
-        tz = 0.88;
-        if (s < 0.35) targetPitch = 0.045 * (1 - s / 0.35);
-        else if (s <= 0.70) targetPitch = 0;
-        else targetPitch = ((s - 0.70) / 0.30) * 0.22;
+        const s = (p - 0.38) / 0.24;
+        along = -1.68 + 3.23 * s;
+        lateral = 0;
+        wy = rw.deckY;
+        if (s < 0.24) targetPitch = 0.045 * (1 - s / 0.24);
+        else if (s <= 0.74) targetPitch = 0;
+        else targetPitch = ((s - 0.74) / 0.26) * 0.21;
         targetRoll = 0;
       } else {
-        // Takeoff climb: liftoff -> (wx + 18, baseY + 9.5, wz + 14)
+        // Positive-rate departure climb straight out off runway end, then gentle scenic turn above 6.5 units
         plane.phase = 'climb';
-        const s = (p - 0.58) / 0.42;
-        const hs = 0.28 * s + 0.72 * s * s;
-        wx = (cx + 0.52) + 17.48 * hs;
-        wz = (cz + 0.44) + 13.56 * hs;
-        wy = (baseY + 0.16) + 9.34 * Math.pow(s, 1.45);
-        tx = 17.48;
-        tz = 13.56;
-        targetPitch = 0.22 + 0.07 * Math.sin(s * Math.PI * 0.85);
-        targetRoll = s > 0.25 ? -Math.sin(((s - 0.25) / 0.75) * Math.PI) * 0.16 : 0;
+        const s = (p - 0.62) / 0.38;
+        const hs = 0.26 * s + 0.74 * s * s;
+        along = 1.55 + 17.5 * hs;
+        const turnS = Math.max(0, (s - 0.38) / 0.62);
+        lateral = -2.8 * turnS * turnS;
+        const dAlong = 17.5 * (0.26 + 1.48 * s);
+        const dLat = turnS > 0 ? (-5.6 * turnS / 0.62) : 0;
+        tx = rw.dirX * dAlong + rw.rightX * dLat;
+        tz = rw.dirZ * dAlong + rw.rightZ * dLat;
+        wy = rw.deckY + 8.6 * Math.pow(s, 1.45);
+        targetPitch = 0.21 + 0.05 * Math.sin(s * Math.PI * 0.85);
+        targetRoll = turnS > 0 ? Math.sin(turnS * Math.PI) * 0.18 : 0;
       }
 
+      const wx = rw.rCx + rw.dirX * along + rw.rightX * lateral;
+      const wz = rw.rCz + rw.dirZ * along + rw.rightZ * lateral;
       const tLen = Math.hypot(tx, tz) || 1;
       const ndx = tx / tLen;
       const ndz = tz / tLen;
@@ -26497,12 +26724,13 @@ class TrafficManager {
       plane.wy = wy;
       plane.wz = wz;
 
-      if (wrapped) {
+      if (wrapped || plane.phase === 'rollout') {
         plane.dirX = ndx;
         plane.dirZ = ndz;
         plane.yaw = targetYaw;
-        plane.pitch = targetPitch;
-        plane.roll = targetRoll;
+        plane.pitch += (targetPitch - plane.pitch) * Math.min(1, effDt * 10.0);
+        plane.roll = 0;
+        if (wrapped) plane.pitch = targetPitch;
       } else {
         const rate = Math.min(1, effDt * 8.0);
         plane.yaw = lerpAngle(plane.yaw, targetYaw, rate);
@@ -26672,16 +26900,18 @@ class TrafficManager {
 
       const p0 = path[0];
       const p1 = path[1];
-      // Ensure we don't spawn directly on top of another ship at sea edge
-      const blocked = this.ships.some((s) => Math.hypot(s.wx - p0.wx, s.wz - p0.wz) < 1.8);
+      // Ensure wide safe sea-entry clearance from any existing ship (prevents spawn overlaps!)
+      const blocked = this.ships.some((s) => Math.hypot(s.wx - p0.wx, s.wz - p0.wz) < 3.0);
       if (blocked) return;
 
       const dx = p1.wx - p0.wx;
       const dz = p1.wz - p0.wz;
       const yaw = Math.atan2(dx, dz);
       const surfY = this.sim.getTileElev(p0.x, p0.z) + wd[idx(p0.x, p0.z)];
+      const shipId = this._nextShipId++;
 
       this.ships.push({
+        id: shipId,
         portX: port.x,
         portZ: port.z,
         waypoints: path,
@@ -26700,7 +26930,7 @@ class TrafficManager {
         roll: 0,
         pitch: 0,
         bobPhase: Math.random() * Math.PI * 2,
-        variant: (port.x + port.z + this.ships.length) % 4
+        variant: (port.x + port.z + shipId) % 4
       });
       return;
     }
@@ -26732,6 +26962,35 @@ class TrafficManager {
       if ((this.ships.length === 0 && this.shipTimer >= 2.0) || (this.ships.length < maxShips && this.shipTimer >= 8.5)) {
         this.shipTimer = 0;
         this.trySpawnShip(seaports);
+      }
+    }
+
+    // Helper: distance along route from seaport berth
+    const shipDistFromBerth = (sh) => {
+      if (!sh || !sh.waypoints) return 99;
+      if (sh.leg === 'berth' || sh.dwell > 0) return 0;
+      return sh.leg === 'inbound'
+        ? Math.max(0, sh.waypoints.length - 1 - (sh.seg + sh.t))
+        : (sh.seg + sh.t);
+    };
+
+    // Pass 0: Strict Single-Vessel Harbor Berth & Inner-Channel Reservation Map!
+    // Outbound/berthed ships always hold inner harbor priority (< 5.0 tiles); closest inbound holds next.
+    const portOwner = new Map();
+    for (let i = 0; i < this.ships.length; i++) {
+      const sh = this.ships[i];
+      const key = `${sh.portX},${sh.portZ}`;
+      const dBerth = shipDistFromBerth(sh);
+      const isBerthOrOut = sh.leg === 'berth' || sh.dwell > 0 || (sh.leg === 'outbound' && dBerth < 5.2);
+      const cur = portOwner.get(key);
+      if (isBerthOrOut) {
+        if (!cur || !cur.priority || dBerth < cur.dBerth) {
+          portOwner.set(key, { ship: sh, priority: true, dBerth });
+        }
+      } else if (sh.leg === 'inbound' && dBerth < 5.2) {
+        if (!cur || (!cur.priority && dBerth < cur.dBerth)) {
+          portOwner.set(key, { ship: sh, priority: false, dBerth });
+        }
       }
     }
 
@@ -26771,30 +27030,58 @@ class TrafficManager {
       const segDx = p1.wx - p0.wx;
       const segDz = p1.wz - p0.wz;
       const segLen = Math.hypot(segDx, segDz) || 1;
+      const distFromBerth = shipDistFromBerth(ship);
 
       const nearBerth =
         (ship.leg === 'inbound' && ship.seg >= wps.length - 2) ||
         (ship.leg === 'outbound' && ship.seg === 0);
       let targetSpeed = nearBerth ? ship.maxSpeed * 0.55 : ship.maxSpeed;
 
-      // Ship-to-ship safe spacing on same leg or near berth
+      // 1. Harbor Anchorage Hold: if another vessel owns this seaport's inner channel, hold politely offshore (>= 4.6 tiles out)!
+      const pKey = `${ship.portX},${ship.portZ}`;
+      const owner = portOwner.get(pKey);
+      if (ship.leg === 'inbound' && owner && owner.ship !== ship && distFromBerth <= 5.4) {
+        targetSpeed = 0;
+      }
+
+      // 2. Full 360° Maritime Anti-Collision (following, crossing, AND head-on opposing vessels!)
+      let extraStarboardAvoid = 0;
       for (let j = 0; j < this.ships.length; j++) {
         if (i === j) continue;
         const o = this.ships[j];
         const rx = o.wx - ship.wx;
         const rz = o.wz - ship.wz;
         const d = Math.hypot(rx, rz);
-        if (d < 1.25) {
+        if (d < 2.65) {
           const fwd = rx * ship.dirX + rz * ship.dirZ;
-          if (fwd > 0 && (o.dwell > 0 || ship.dirX * o.dirX + ship.dirZ * o.dirZ > 0.3)) {
-            targetSpeed = 0;
-            break;
+          const lat = Math.abs(-rx * ship.dirZ + rz * ship.dirX);
+          const headingDot = ship.dirX * o.dirX + ship.dirZ * o.dirZ;
+
+          // Steer wider to starboard whenever passing an opposing ship in open channel
+          if (headingDot < -0.25 && d < 2.65) {
+            extraStarboardAvoid = Math.max(extraStarboardAvoid, 0.24);
+          }
+
+          // Yield rule: outbound always has right-of-way over inbound; otherwise trailing or higher-id vessel yields!
+          const mustYield =
+            (ship.leg === 'inbound' && o.leg !== 'inbound') ||
+            (o.dwell > 0 || o.leg === 'berth') ||
+            (fwd > 0.15 && headingDot > 0.25) ||
+            (ship.leg === o.leg && (ship.id || i) > (o.id || j));
+
+          if (d < 1.55) {
+            if (mustYield || fwd > -0.25) {
+              targetSpeed = 0;
+              break;
+            }
+          } else if (fwd > -0.20 && lat < 1.05 && mustYield) {
+            targetSpeed = d < 2.0 ? 0 : Math.min(targetSpeed, ship.maxSpeed * 0.28);
           }
         }
       }
 
-      ship.speed += (targetSpeed - ship.speed) * Math.min(1, effDt * 2.2);
-      if (ship.speed < 0.01 && targetSpeed === 0) ship.speed = 0;
+      ship.speed += (targetSpeed - ship.speed) * Math.min(1, effDt * 3.2);
+      if (ship.speed < 0.015 && targetSpeed === 0) ship.speed = 0;
       ship.t += (ship.speed / segLen) * effDt;
 
       while (ship.t >= 1.0) {
@@ -26828,32 +27115,53 @@ class TrafficManager {
       const vLen = Math.hypot(vx, vz) || 1;
       const targetYaw = Math.atan2(vx / vLen, vz / vLen);
 
-      ship.yaw = lerpAngle(ship.yaw, targetYaw, Math.min(1, effDt * 3.2));
+      ship.yaw = lerpAngle(ship.yaw, targetYaw, Math.min(1, effDt * 3.4));
       ship.dirX = Math.sin(ship.yaw);
       ship.dirZ = Math.cos(ship.yaw);
 
-      // Subtle starboard channel separation so inbound & outbound ships pass port-to-port cleanly
-      const distFromBerth = ship.leg === 'inbound'
-        ? (wps.length - 1 - (ship.seg + ship.t))
-        : (ship.seg + ship.t);
-      const laneTaper = Math.min(1, Math.max(0, (distFromBerth - 0.6) / 1.5));
+      // Wide Starboard Channel Separation (0.42m base + 0.24m passing margin) so inbound & outbound hulls pass cleanly port-to-port!
+      const updatedDistFromBerth = shipDistFromBerth(ship);
+      const laneTaper = Math.min(1, Math.max(0, (updatedDistFromBerth - 0.5) / 1.4));
       const rightX = -ship.dirZ;
       const rightZ = ship.dirX;
-      const laneOff = 0.15 * laneTaper;
+      const desiredOff = (0.42 + extraStarboardAvoid) * laneTaper;
 
       const baseWx = c0.wx + vx * ship.t;
       const baseWz = c0.wz + vz * ship.t;
-      let nextWx = baseWx + rightX * laneOff;
-      let nextWz = baseWz + rightZ * laneOff;
-      const offTile = worldToTile(nextWx, nextWz);
-      if (!inBounds(offTile.x, offTile.z) ||
-          !(this.sim.waterDepth[idx(offTile.x, offTile.z)] > 0.08) ||
-          this.sim.grid[idx(offTile.x, offTile.z)].dam) {
-        nextWx = baseWx;
-        nextWz = baseWz;
+      let nextWx = baseWx;
+      let nextWz = baseWz;
+      // Progressive safe-water fallback (full starboard -> 65% -> 35% -> center) so ships never snap all the way into opposing hull!
+      for (const frac of [1.0, 0.68, 0.38]) {
+        const candX = baseWx + rightX * (desiredOff * frac);
+        const candZ = baseWz + rightZ * (desiredOff * frac);
+        const offTile = worldToTile(candX, candZ);
+        if (inBounds(offTile.x, offTile.z) &&
+            this.sim.waterDepth[idx(offTile.x, offTile.z)] > 0.12 &&
+            !this.sim.grid[idx(offTile.x, offTile.z)].dam) {
+          nextWx = candX;
+          nextWz = candZ;
+          break;
+        }
       }
-      ship.wx = nextWx;
-      ship.wz = nextWz;
+
+      // Final hard physical hull-clearance guard: refuse any step that brings two hulls closer than 1.05m!
+      let wouldClip = false;
+      for (let j = 0; j < this.ships.length; j++) {
+        if (i === j) continue;
+        const o = this.ships[j];
+        const curD = Math.hypot(o.wx - ship.wx, o.wz - ship.wz);
+        const nextD = Math.hypot(o.wx - nextWx, o.wz - nextWz);
+        if (nextD < 1.08 && nextD < curD + 0.02) {
+          wouldClip = true;
+          break;
+        }
+      }
+      if (!wouldClip) {
+        ship.wx = nextWx;
+        ship.wz = nextWz;
+      } else {
+        ship.speed = 0;
+      }
 
       if (!this.isValidShipState(ship)) {
         this.ships.splice(i, 1);
@@ -27043,7 +27351,7 @@ class CityRenderer3D {
     this.fog = new THREE.FogExp2(0x74b6f2, 0.0072);
     this.scene.fog = this.fog;
 
-    this.camera = new THREE.PerspectiveCamera(42, window.innerWidth / Math.max(1, window.innerHeight), 0.4, 260);
+    this.camera = new THREE.PerspectiveCamera(42, window.innerWidth / Math.max(1, window.innerHeight), 0.85, 240);
 
     this.hemiLight = new THREE.HemisphereLight(0xdff0ff, 0x546a4b, 0.88);
     this.scene.add(this.hemiLight);
@@ -27058,8 +27366,8 @@ class CityRenderer3D {
     this.sunLight.shadow.camera.right = d;
     this.sunLight.shadow.camera.top = d;
     this.sunLight.shadow.camera.bottom = -d;
-    this.sunLight.shadow.bias = -0.0005;
-    this.sunLight.shadow.normalBias = 0.024;
+    this.sunLight.shadow.bias = -0.0007;
+    this.sunLight.shadow.normalBias = 0.032;
     this.scene.add(this.sunLight);
     this.scene.add(this.sunLight.target);
 
@@ -27100,10 +27408,11 @@ class CityRenderer3D {
     this.skyDome = this.archLib.createSkyDome();
     this.scene.add(this.skyDome.mesh);
 
-    // X-ray occlusion fading
+    // X-ray occlusion fading (with spatial + temporal hysteresis & rebuild persistence to eliminate flicker!)
     this.xrayMode = 'auto';
     this.buildingEntries = [];
     this._ghostMatCache = new Map();
+    this._xrayStateByTile = new Map();
     this._xrayAccum = 99;
     this._tmpBox = new THREE.Box3();
     this._tmpMat4 = new THREE.Matrix4();
@@ -27123,11 +27432,17 @@ class CityRenderer3D {
     // Image-based lighting so glass curtain walls & metal pick up sky reflections
     this._initEnvironmentLighting();
 
-    // Zero-Leak Reusable Object Pools (NEVER allocate materials/meshes inside render loop!)
+    // Zero-Leak Reusable Identity-Bound Object Pools (vehicles/ships/planes NEVER swap paint on despawn!)
     this.vehiclePool = [];
+    this._vehActiveMap = new Map();
+    this._vehSparePool = new Map();
     this.trainCarPool = [];
     this.airlinerPool = [];
+    this._planeActiveMap = new Map();
+    this._planeSparePool = new Map();
     this.shipPool = [];
+    this._shipActiveMap = new Map();
+    this._shipSparePool = new Map();
 
     this.smokePool = [];
     this.firePool = [];
@@ -27182,6 +27497,10 @@ class CityRenderer3D {
       pipeOk: new THREE.MeshBasicMaterial({ color: 0x22d3ee }),
       pipeBroken: new THREE.MeshBasicMaterial({ color: 0xef4444 }),
       metroGlow: new THREE.MeshBasicMaterial({ color: 0xd946ef }),
+      tunnelGlow: new THREE.MeshBasicMaterial({ color: 0xf59e0b }),
+      tunnelPortalOk: new THREE.MeshBasicMaterial({ color: 0x22c55e }),
+      tunnelPortalWarn: new THREE.MeshBasicMaterial({ color: 0xf43f5e }),
+      surfaceRoadGhost: new THREE.MeshBasicMaterial({ color: 0x64748b, transparent: true, opacity: 0.40, depthWrite: false }),
       abandoned: new THREE.MeshStandardMaterial({ color: 0x828890, roughness: 0.90 }),
       roofGarden: new THREE.MeshStandardMaterial({ color: 0x3b8a47, roughness: 0.84 }),
       industrial: new THREE.MeshStandardMaterial({ color: 0xa8927d, roughness: 0.72, metalness: 0.25 }),
@@ -27192,8 +27511,10 @@ class CityRenderer3D {
       meteorGlow: new THREE.MeshBasicMaterial({ color: 0xff7b1c }),
       previewMat: new THREE.MeshBasicMaterial({ color: 0x38d9ff, transparent: true, opacity: 0.62 }),
       servicePreviewMat: new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.46, depthWrite: false }),
-      pedBodyMat: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.72, metalness: 0.05 }),
-      pedHeadMat: new THREE.MeshStandardMaterial({ color: 0xf1c29b, roughness: 0.78 }),
+      pedBodyMat: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.70, metalness: 0.04 }),
+      pedHeadMat: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.74 }),
+      pedHairMat: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.86 }),
+      pedPantsMat: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.82 }),
       bulletBody: new THREE.MeshStandardMaterial({ color: 0xf8fafc, roughness: 0.20, metalness: 0.28 }),
       bulletStripe: new THREE.MeshStandardMaterial({ color: 0x1d6feb, roughness: 0.25, metalness: 0.4, emissive: 0x0b3b8c, emissiveIntensity: 0.32 }),
       garbageGreen: new THREE.MeshStandardMaterial({ color: 0x16a34a, roughness: 0.45 }),
@@ -27253,10 +27574,64 @@ class CityRenderer3D {
       lampBulb: this._makeLampBulbGeo(),
       signalPole: this._makeSignalPoleGeo(),
       signalLens: new THREE.SphereGeometry(0.026, 6, 5),
-      pedBody: new THREE.CylinderGeometry(0.017, 0.020, 0.068, 6),
-      pedHead: new THREE.SphereGeometry(0.016, 6, 5)
+      pedTorso: this._makePedTorsoGeo(),
+      pedHead: this._makePedHeadGeo(),
+      pedHair: this._makePedHairGeo(),
+      pedLeg: this._makePedLegGeo(),
+      pedArm: this._makePedArmGeo()
     };
+    this.geos.pedBody = this.geos.pedTorso;
     this.geos.bulletCoach.rotateX(Math.PI * 0.5);
+  }
+
+  // Articulated Proportioned 3D Human Citizen Geometries (Torso+Jacket, Head+Neck, Hair Crown, Hip-Pivoted Legs+Shoes, Shoulder-Pivoted Arms)
+  _makePedTorsoGeo() {
+    const chest = new THREE.BoxGeometry(0.036, 0.032, 0.022);
+    chest.translate(0, 0.014, 0);
+    const waist = new THREE.BoxGeometry(0.030, 0.018, 0.020);
+    waist.translate(0, -0.009, 0);
+    const shoulders = new THREE.CylinderGeometry(0.011, 0.011, 0.038, 6);
+    shoulders.rotateZ(Math.PI * 0.5);
+    shoulders.translate(0, 0.027, 0);
+    return mergeGeometriesSimple([chest, waist, shoulders]);
+  }
+
+  _makePedHeadGeo() {
+    const neck = new THREE.CylinderGeometry(0.0055, 0.0068, 0.010, 6);
+    neck.translate(0, -0.012, 0);
+    const skull = new THREE.SphereGeometry(0.0145, 8, 6);
+    skull.scale(0.92, 1.05, 0.96);
+    skull.translate(0, 0.002, 0);
+    return mergeGeometriesSimple([neck, skull]);
+  }
+
+  _makePedHairGeo() {
+    const cap = new THREE.SphereGeometry(0.0156, 8, 6, 0, Math.PI * 2, 0, Math.PI * 0.58);
+    cap.scale(0.96, 1.04, 1.02);
+    cap.translate(0, 0.003, -0.0015);
+    const back = new THREE.BoxGeometry(0.024, 0.015, 0.010);
+    back.translate(0, -0.001, -0.0105);
+    return mergeGeometriesSimple([cap, back]);
+  }
+
+  _makePedLegGeo() {
+    // Pivoted at hip (y=0), extending downward to y=-0.044 with a subtle forward shoe
+    const thigh = new THREE.BoxGeometry(0.0125, 0.024, 0.0135);
+    thigh.translate(0, -0.012, 0);
+    const shin = new THREE.BoxGeometry(0.011, 0.020, 0.012);
+    shin.translate(0, -0.032, -0.0005);
+    const shoe = new THREE.BoxGeometry(0.012, 0.007, 0.018);
+    shoe.translate(0, -0.0415, 0.0035);
+    return mergeGeometriesSimple([thigh, shin, shoe]);
+  }
+
+  _makePedArmGeo() {
+    // Pivoted at shoulder (y=0), extending downward to y=-0.036
+    const upper = new THREE.BoxGeometry(0.0095, 0.022, 0.0105);
+    upper.translate(0, -0.011, 0);
+    const fore = new THREE.BoxGeometry(0.0085, 0.016, 0.0095);
+    fore.translate(0, -0.028, 0.0015);
+    return mergeGeometriesSimple([upper, fore]);
   }
 
   _makePineTrunkGeo() {
@@ -27397,24 +27772,46 @@ class CityRenderer3D {
     this.servicePreviewInst.frustumCulled = false;
     this.uiOverlayGroup.add(this.servicePreviewInst);
 
-    // 2-Draw-Call Instanced Sidewalk Pedestrians (up to 240 citizens strolling sidewalks, ZERO per-frame allocs!)
+    // 7-Draw-Call Articulated 3D Sidewalk Citizens (Torso, Head, Hair, Left/Right Legs & Arms, <= 240 citizens, ZERO per-frame allocs!)
     this._pedCap = 240;
-    this.pedBodyInst = new THREE.InstancedMesh(this.geos.pedBody, this.mats.pedBodyMat, this._pedCap);
-    this.pedHeadInst = new THREE.InstancedMesh(this.geos.pedHead, this.mats.pedHeadMat, this._pedCap);
-    this.pedBodyInst.count = 0;
-    this.pedHeadInst.count = 0;
-    this.pedBodyInst.visible = false;
-    this.pedHeadInst.visible = false;
-    this.pedBodyInst.frustumCulled = false;
-    this.pedHeadInst.frustumCulled = false;
-    const pedOutfitPalette = [0x1d4ed8, 0xe11d48, 0x0f766e, 0xd97706, 0xf8fafc, 0x334155, 0x7c3aed, 0x0284c7];
-    const tmpC = new THREE.Color();
-    for (let i = 0; i < this._pedCap; i++) {
-      tmpC.setHex(pedOutfitPalette[i % pedOutfitPalette.length]);
-      this.pedBodyInst.setColorAt(i, tmpC);
-    }
-    if (this.pedBodyInst.instanceColor) this.pedBodyInst.instanceColor.needsUpdate = true;
-    this.vehicleGroup.add(this.pedBodyInst, this.pedHeadInst);
+    this._pedOutfitPalette = [
+      0x1d4ed8, 0xe11d48, 0x0f766e, 0xd97706, 0xf8fafc, 0x334155,
+      0x7c3aed, 0x0284c7, 0x15803d, 0xbe123c, 0x475569, 0xca8a04
+    ];
+    this._pedPantsPalette = [0x1e293b, 0x334155, 0x1d3557, 0x3f3f46, 0x57534e, 0x1f2937];
+    this._pedHairPalette = [0x1c1917, 0x292524, 0x451a03, 0x713f12, 0x6b7280];
+    this._pedSkinPalette = [0xf2c6a0, 0xe6b48a, 0xf7d7b8, 0xd69f74];
+
+    const makePedInst = (geo, mat, initHex) => {
+      const inst = new THREE.InstancedMesh(geo, mat, this._pedCap);
+      inst.count = 0;
+      inst.visible = false;
+      inst.frustumCulled = false;
+      inst.castShadow = false;
+      const c = new THREE.Color(initHex);
+      for (let i = 0; i < this._pedCap; i++) inst.setColorAt(i, c);
+      if (inst.instanceColor) inst.instanceColor.needsUpdate = true;
+      return inst;
+    };
+
+    this.pedTorsoInst = makePedInst(this.geos.pedTorso, this.mats.pedBodyMat, 0x1d4ed8);
+    this.pedBodyInst = this.pedTorsoInst; // backward-compatible alias
+    this.pedHeadInst = makePedInst(this.geos.pedHead, this.mats.pedHeadMat, 0xf2c6a0);
+    this.pedHairInst = makePedInst(this.geos.pedHair, this.mats.pedHairMat, 0x1c1917);
+    this.pedLeftLegInst = makePedInst(this.geos.pedLeg, this.mats.pedPantsMat, 0x1e293b);
+    this.pedRightLegInst = makePedInst(this.geos.pedLeg, this.mats.pedPantsMat, 0x1e293b);
+    this.pedLeftArmInst = makePedInst(this.geos.pedArm, this.mats.pedBodyMat, 0x1d4ed8);
+    this.pedRightArmInst = makePedInst(this.geos.pedArm, this.mats.pedBodyMat, 0x1d4ed8);
+    this._pedInstList = [
+      this.pedTorsoInst,
+      this.pedHeadInst,
+      this.pedHairInst,
+      this.pedLeftLegInst,
+      this.pedRightLegInst,
+      this.pedLeftArmInst,
+      this.pedRightArmInst
+    ];
+    this.vehicleGroup.add(...this._pedInstList);
   }
 
   _acquirePoolSprite(pool, index, { map, additive = false } = {}) {
@@ -27573,6 +27970,12 @@ class CityRenderer3D {
   _clearVehiclePool() {
     for (const item of this.vehiclePool) this.vehicleGroup.remove(item.obj);
     this.vehiclePool.length = 0;
+    for (const entry of this._vehActiveMap.values()) this.vehicleGroup.remove(entry.obj);
+    this._vehActiveMap.clear();
+    for (const bucket of this._vehSparePool.values()) {
+      for (const obj of bucket) this.vehicleGroup.remove(obj);
+    }
+    this._vehSparePool.clear();
   }
 
   resize() {
@@ -27752,6 +28155,42 @@ class CityRenderer3D {
             this._addBoxTo(this.infraGroup, wx, avgH + 0.22, wz, 0.30, 0.10, 0.30, this.mats.metroGlow, false);
             if (this.sim.getTile(x + 1, z)?.metro) this._addBoxTo(this.infraGroup, wx + 0.5, avgH + 0.22, wz, 0.78, 0.09, 0.22, this.mats.metroGlow, false);
             if (this.sim.getTile(x, z + 1)?.metro) this._addBoxTo(this.infraGroup, wx, avgH + 0.22, wz + 0.5, 0.22, 0.09, 0.78, this.mats.metroGlow, false);
+          }
+          // Translucent surface-road blueprint footprints so players clearly see where surface streets meet mountains
+          if (t.roadGround >= 1 && t.roadGround <= 3) {
+            this._addBoxTo(this.infraGroup, wx, avgH + 0.04, wz, 0.78, 0.03, 0.78, this.mats.surfaceRoadGhost, false);
+          }
+          // Glowing Amber-Gold 3D Mountain Road Tunnel Tubes + Green/Red Connection Portal Indicators!
+          if (t.roadGround === 4) {
+            const tunY = avgH + 0.30;
+            this._addBoxTo(this.infraGroup, wx, tunY, wz, 0.44, 0.16, 0.44, this.mats.tunnelGlow, false);
+            const dirs = [
+              { dx: 1, dz: 0, sx: 0.72, sz: 0.36, ox: 0.5, oz: 0, px: 0.46, pz: 0, psx: 0.10, psz: 0.56 },
+              { dx: -1, dz: 0, sx: 0, sz: 0, ox: 0, oz: 0, px: -0.46, pz: 0, psx: 0.10, psz: 0.56 },
+              { dx: 0, dz: 1, sx: 0.36, sz: 0.72, ox: 0, oz: 0.5, px: 0, pz: 0.46, psx: 0.56, psz: 0.10 },
+              { dx: 0, dz: -1, sx: 0, sz: 0, ox: 0, oz: 0, px: 0, pz: -0.46, psx: 0.56, psz: 0.10 }
+            ];
+            let tunLinks = 0;
+            let roadLinks = 0;
+            for (const dir of dirs) {
+              const nt = this.sim.getTile(x + dir.dx, z + dir.dz);
+              const nRoad = nt ? (nt.roadGround || 0) : 0;
+              if (nRoad === 4) {
+                tunLinks++;
+                if (dir.sx > 0) {
+                  const nAvgH = this.sim.getTileElev(x + dir.dx, z + dir.dz);
+                  this._addBoxTo(this.infraGroup, wx + dir.ox, (tunY + nAvgH + 0.30) * 0.5, wz + dir.oz, dir.sx, 0.14, dir.sz, this.mats.tunnelGlow, false);
+                }
+              } else if (nRoad >= 1 && nRoad <= 3) {
+                roadLinks++;
+                // Bright Emerald Portal Arch showing confirmed tunnel <-> surface road connection!
+                this._addBoxTo(this.infraGroup, wx + dir.px, tunY + 0.04, wz + dir.pz, dir.psx, 0.24, dir.psz, this.mats.tunnelPortalOk, false);
+              }
+            }
+            // Mark dead-end / unconnected tunnel terminus with Coral Red warning beacon so players know which end still needs digging out!
+            if (tunLinks + roadLinks <= 1 && roadLinks === 0) {
+              this._addBoxTo(this.infraGroup, wx, tunY + 0.15, wz, 0.34, 0.14, 0.34, this.mats.tunnelPortalWarn, false);
+            }
           }
         }
 
@@ -28042,9 +28481,10 @@ class CityRenderer3D {
             this._addBoxTo(this.buildingGroup, wx, avgH + 0.06, wz, 0.80, 0.10, 0.80, fm, false);
           } else {
             const fH = Math.max(0.06, avgH - minH + 0.08);
-            this._addBoxTo(this.buildingGroup, wx, avgH - fH * 0.5 + 0.02, wz, 0.92, fH, 0.92, this.mats.concrete, true);
+            // Inset concrete foundation slightly below plot pad (avgH + 0.016 vs bGrp y0 = avgH + 0.020) so they NEVER Z-fight!
+            this._addBoxTo(this.buildingGroup, wx, avgH - fH * 0.5 + 0.016, wz, 0.88, fH, 0.88, this.mats.concrete, true);
             const rotRad = (t.building.rot || 0) * (Math.PI * 0.5);
-            const bGrp = this.archLib.buildBuilding(t.building, wx, wz, avgH + 0.02, rotRad, this.animHooks);
+            const bGrp = this.archLib.buildBuilding(t.building, wx, wz, avgH + 0.020, rotRad, this.animHooks);
             this.buildingGroup.add(bGrp);
             this._registerBuildingEntry(bGrp, x, z);
           }
@@ -28056,6 +28496,8 @@ class CityRenderer3D {
 
     this.sim.buildingDirty = false;
     this.rebuildStats.building++;
+    // Force immediate same-frame X-ray refresh so building upgrades NEVER cause 1-5 frame solid-to-transparent flashes!
+    this._xrayAccum = 99;
   }
 
   // Backward-compatible full or granular static rebuild dispatcher
@@ -28139,7 +28581,13 @@ class CityRenderer3D {
       box.set(new THREE.Vector3(wx - 0.5, 0, wz - 0.5), new THREE.Vector3(wx + 0.5, 2, wz + 0.5));
     }
     if (!isFinite(box.min.x) || !isFinite(box.max.y)) return;
-    this.buildingEntries.push({ grp, x, z, box, meshes, ghost: 0 });
+    const entry = { grp, x, z, key: idx(x, z), box, meshes, ghost: 0 };
+    this.buildingEntries.push(entry);
+    // Immediately restore prior X-ray ghost state across building rebuilds so buildings NEVER flash solid!
+    const prevState = this._xrayStateByTile.get(entry.key);
+    if (prevState && prevState.ghost > 0 && this.overlayMode !== 'underground') {
+      this._setEntryGhost(entry, prevState.ghost);
+    }
   }
 
   _getGhostMaterial(orig, level) {
@@ -28154,8 +28602,11 @@ class CityRenderer3D {
         g.customProgramCacheKey = () => baseKeyFn() + '_ghost';
       }
       g.transparent = true;
-      g.opacity = level === 2 ? 0.16 : 0.30;
+      g.opacity = level === 2 ? 0.18 : 0.30;
       g.depthWrite = false;
+      g.polygonOffset = true;
+      g.polygonOffsetFactor = 1;
+      g.polygonOffsetUnits = 1;
       g.userData.ghostOf = orig;
       this._ghostMatCache.set(key, g);
     }
@@ -28198,7 +28649,7 @@ class CityRenderer3D {
 
   _updateXrayFading(dt) {
     this._xrayAccum += dt;
-    if (this._xrayAccum < 0.08) return;
+    if (this._xrayAccum < 0.05) return;
     this._xrayAccum = 0;
 
     for (const g of this._ghostMatCache.values()) {
@@ -28219,24 +28670,48 @@ class CityRenderer3D {
     const dx = tx - cam.x, dy = ty - cam.y, dz = tz - cam.z;
     const segLen = Math.hypot(dx, dy, dz) || 1;
     const stopT = Math.max(0, 1 - 0.55 / segLen);
+    // Only auto-fade sightline occluders when zoomed in (<= 26m) or inspecting a selected tile; wide aerial overviews stay crisp & solid!
+    const allowSightlineAuto = this.camDist <= 26.0 || focusTile !== null;
+    const now = this.clock || 0;
 
     for (const e of this.buildingEntries) {
       const isFocus = focusTile && e.x === focusTile.x && e.z === focusTile.z;
+      const state = this._xrayStateByTile.get(e.key) || { ghost: 0, holdUntil: 0 };
       let level = 0;
+
       if (mode === 'all') {
         level = isFocus ? 0 : 1;
+        state.holdUntil = 0;
       } else if (mode === 'auto' && !isFocus) {
         const containsTarget =
           tx >= e.box.min.x && tx <= e.box.max.x && tz >= e.box.min.z && tz <= e.box.max.z && ty <= e.box.max.y;
-        if (!containsTarget && this._segmentHitsBox(cam.x, cam.y, cam.z, dx * stopT, dy * stopT, dz * stopT, e.box, 0.18)) {
-          level = 2;
+        const cx = Math.max(e.box.min.x, Math.min(cam.x, e.box.max.x));
+        const cy = Math.max(e.box.min.y, Math.min(cam.y, e.box.max.y));
+        const cz = Math.max(e.box.min.z, Math.min(cam.z, e.box.max.z));
+        const camBoxDist = Math.hypot(cx - cam.x, cy - cam.y, cz - cam.z);
+
+        const wasGhost = state.ghost === 2 || e.ghost === 2;
+        if (wasGhost) {
+          // Wide exit hysteresis + 0.42s hold timer prevents rapid solid<->transparent strobing!
+          const stayLens = camBoxDist < 1.65;
+          const stayRay = allowSightlineAuto && !containsTarget &&
+            this._segmentHitsBox(cam.x, cam.y, cam.z, dx * stopT, dy * stopT, dz * stopT, e.box, 0.34);
+          if (stayLens || stayRay || now < state.holdUntil) {
+            level = 2;
+          }
         } else {
-          const cx = Math.max(e.box.min.x, Math.min(cam.x, e.box.max.x));
-          const cy = Math.max(e.box.min.y, Math.min(cam.y, e.box.max.y));
-          const cz = Math.max(e.box.min.z, Math.min(cam.z, e.box.max.z));
-          if (Math.hypot(cx - cam.x, cy - cam.y, cz - cam.z) < 1.1) level = 2;
+          const hitLens = camBoxDist < 1.05;
+          const hitRay = allowSightlineAuto && !containsTarget &&
+            this._segmentHitsBox(cam.x, cam.y, cam.z, dx * stopT, dy * stopT, dz * stopT, e.box, 0.08);
+          if (hitLens || hitRay) {
+            level = 2;
+            state.holdUntil = now + 0.42;
+          }
         }
       }
+
+      state.ghost = level;
+      this._xrayStateByTile.set(e.key, state);
       this._setEntryGhost(e, level);
     }
   }
@@ -28440,45 +28915,87 @@ class CityRenderer3D {
     }
     if (!isUnder) this._syncTrafficSignals(dt);
 
-    // Road Vehicles (zero per-frame material leaks!)
-    const rawCars = isUnder ? [] : this.traffic.vehicles;
-    const activeCount = Math.min(rawCars.length, this._maxRenderedVehicles);
-    while (this.vehiclePool.length < activeCount) {
-      const idxV = this.vehiclePool.length;
-      const v = rawCars[idxV];
-      const obj = this._createVehicleObject(v.kind, idxV);
-      this.vehicleGroup.add(obj);
-      this.vehiclePool.push({ kind: v.kind, obj });
+    // Road Vehicles (identity-bound per-vehicle pooling -> ZERO color swaps on despawn & ZERO per-frame leaks!)
+    const allVehicles = this.traffic.vehicles || [];
+    const visibleVehicles = [];
+    for (let i = 0; i < allVehicles.length && visibleVehicles.length < this._maxRenderedVehicles; i++) {
+      const v = allVehicles[i];
+      if (isUnder ? v.inTunnel : !v.inTunnel) {
+        visibleVehicles.push(v);
+      }
+    }
+    const activeVehSet = new Set(visibleVehicles);
+
+    // Return despawned or hidden vehicles to their matching (kind:variantIdx) spare bucket
+    for (const [veh, entry] of this._vehActiveMap.entries()) {
+      if (!activeVehSet.has(veh)) {
+        entry.obj.visible = false;
+        let bucket = this._vehSparePool.get(entry.key);
+        if (!bucket) {
+          bucket = [];
+          this._vehSparePool.set(entry.key, bucket);
+        }
+        bucket.push(entry.obj);
+        this._vehActiveMap.delete(veh);
+      }
     }
 
-    for (let i = 0; i < this.vehiclePool.length; i++) {
-      const slot = this.vehiclePool[i];
-      if (i >= activeCount || rawCars[i].inTunnel) {
-        slot.obj.visible = false;
-        continue;
+    this.vehiclePool.length = 0;
+    for (let i = 0; i < visibleVehicles.length; i++) {
+      const v = visibleVehicles[i];
+      const varIdx = typeof v.variantIdx === 'number'
+        ? (v.variantIdx & 15)
+        : (typeof v.id === 'number' ? (v.id % 12) : 0);
+      const poolKey = `${v.kind}:${varIdx}`;
+      let entry = this._vehActiveMap.get(v);
+      if (entry && entry.key !== poolKey) {
+        entry.obj.visible = false;
+        let oldBucket = this._vehSparePool.get(entry.key);
+        if (!oldBucket) {
+          oldBucket = [];
+          this._vehSparePool.set(entry.key, oldBucket);
+        }
+        oldBucket.push(entry.obj);
+        this._vehActiveMap.delete(v);
+        entry = null;
       }
-      const v = rawCars[i];
-      if (slot.kind !== v.kind) {
-        this.vehicleGroup.remove(slot.obj);
-        slot.obj = this._createVehicleObject(v.kind, i);
-        slot.kind = v.kind;
-        this.vehicleGroup.add(slot.obj);
+      if (!entry) {
+        const bucket = this._vehSparePool.get(poolKey);
+        let obj = bucket && bucket.length > 0 ? bucket.pop() : null;
+        if (!obj) {
+          obj = this._createVehicleObject(v.kind, varIdx);
+          this.vehicleGroup.add(obj);
+        }
+        entry = { key: poolKey, kind: v.kind, variantIdx: varIdx, obj };
+        this._vehActiveMap.set(v, entry);
       }
-      slot.obj.visible = true;
-      const deckY = this._vehicleDeckHeight(v, v.wx, v.wz);
-      if (deckY !== null) {
-        const ahead = this._vehicleDeckHeight(v, v.wx + v.dirX * 0.12, v.wz + v.dirZ * 0.12);
-        const behind = this._vehicleDeckHeight(v, v.wx - v.dirX * 0.12, v.wz - v.dirZ * 0.12);
-        const deckPitch = (ahead !== null && behind !== null) ? Math.atan2(ahead - behind, 0.24) : (v.pitch || 0);
-        slot.obj.position.set(v.wx, deckY + 0.004, v.wz);
-        slot.obj.rotation.set(-deckPitch, Math.atan2(v.dirX, v.dirZ), 0);
+
+      const obj = entry.obj;
+      obj.visible = true;
+      this.vehiclePool.push({ kind: v.kind, obj, vehicle: v });
+
+      if (isUnder) {
+        const tx = Math.floor(v.wx + HALF_GRID);
+        const tz = Math.floor(v.wz + HALF_GRID);
+        const tunY = inBounds(tx, tz) ? (this.sim.getTileElev(tx, tz) + 0.38) : (v.wy + 0.35);
+        obj.position.set(v.wx, tunY, v.wz);
+        obj.rotation.set(0, Math.atan2(v.dirX, v.dirZ), 0);
       } else {
-        slot.obj.position.set(v.wx, v.wy, v.wz);
-        slot.obj.rotation.set(-(v.pitch || 0), Math.atan2(v.dirX, v.dirZ), 0);
+        const deckY = this._vehicleDeckHeight(v, v.wx, v.wz);
+        if (deckY !== null) {
+          const ahead = this._vehicleDeckHeight(v, v.wx + v.dirX * 0.12, v.wz + v.dirZ * 0.12);
+          const behind = this._vehicleDeckHeight(v, v.wx - v.dirX * 0.12, v.wz - v.dirZ * 0.12);
+          const deckPitch = (ahead !== null && behind !== null) ? Math.atan2(ahead - behind, 0.24) : (v.pitch || 0);
+          obj.position.set(v.wx, deckY + 0.004, v.wz);
+          obj.rotation.set(-deckPitch, Math.atan2(v.dirX, v.dirZ), 0);
+        } else {
+          obj.position.set(v.wx, v.wy, v.wz);
+          obj.rotation.set(-(v.pitch || 0), Math.atan2(v.dirX, v.dirZ), 0);
+        }
       }
 
       if (v.kind === 'firetruck') {
-        const st = slot.obj.getObjectByName('strobe');
+        const st = obj.getObjectByName('strobe');
         if (st) st.material = strobeRed ? this.mats.redCross : this.mats.cyanGlow;
       }
     }
@@ -28528,67 +29045,180 @@ class CityRenderer3D {
     }
     for (let k = tCursor; k < this.trainCarPool.length; k++) this.trainCarPool[k].visible = false;
 
-    // Airliners
+    // Airliners (identity-bound pooling -> distinct liveries never swap on despawn!)
     const planes = isUnder ? [] : (this.traffic.aircraft || []);
-    while (this.airlinerPool.length < planes.length) {
-      const jet = this.archLib.createAirlinerObject();
-      this.vehicleGroup.add(jet);
-      this.airlinerPool.push(jet);
+    const activePlaneSet = new Set(planes);
+    for (const [pl, entry] of this._planeActiveMap.entries()) {
+      if (!activePlaneSet.has(pl)) {
+        entry.obj.visible = false;
+        let bucket = this._planeSparePool.get(entry.key);
+        if (!bucket) { bucket = []; this._planeSparePool.set(entry.key, bucket); }
+        bucket.push(entry.obj);
+        this._planeActiveMap.delete(pl);
+      }
     }
-    for (let i = 0; i < this.airlinerPool.length; i++) {
-      const jet = this.airlinerPool[i];
-      if (i >= planes.length) { jet.visible = false; continue; }
+    this.airlinerPool.length = 0;
+    for (let i = 0; i < planes.length; i++) {
       const p = planes[i];
+      const pVar = (p.variant || 0) & 3;
+      let entry = this._planeActiveMap.get(p);
+      if (!entry) {
+        const bucket = this._planeSparePool.get(pVar);
+        let jet = bucket && bucket.length > 0 ? bucket.pop() : null;
+        if (!jet) {
+          jet = this.archLib.createAirlinerObject(pVar);
+          this.vehicleGroup.add(jet);
+        }
+        entry = { key: pVar, obj: jet };
+        this._planeActiveMap.set(p, entry);
+      }
+      const jet = entry.obj;
+      const sc = Math.max(0.05, Math.min(1.0, p.scale !== undefined ? p.scale : 1.0));
       jet.visible = true;
       jet.position.set(p.wx, p.wy, p.wz);
       jet.rotation.set(-(p.pitch || 0), p.yaw || 0, p.roll || 0);
+      jet.scale.setScalar(sc);
+      this.airlinerPool.push(jet);
     }
 
-    // Cargo Ships
+    // Cargo Ships (identity-bound pooling -> container liveries never swap!)
     const ships = isUnder ? [] : (this.traffic.ships || []);
-    while (this.shipPool.length < ships.length) {
-      const sh = this.archLib.createCargoShipObject();
-      this.vehicleGroup.add(sh);
-      this.shipPool.push(sh);
+    const activeShipSet = new Set(ships);
+    for (const [shObj, entry] of this._shipActiveMap.entries()) {
+      if (!activeShipSet.has(shObj)) {
+        entry.obj.visible = false;
+        let bucket = this._shipSparePool.get(entry.key);
+        if (!bucket) { bucket = []; this._shipSparePool.set(entry.key, bucket); }
+        bucket.push(entry.obj);
+        this._shipActiveMap.delete(shObj);
+      }
     }
-    for (let i = 0; i < this.shipPool.length; i++) {
-      const sh = this.shipPool[i];
-      if (i >= ships.length) { sh.visible = false; continue; }
+    this.shipPool.length = 0;
+    for (let i = 0; i < ships.length; i++) {
       const s = ships[i];
+      const sVar = (s.variant || 0) & 3;
+      let entry = this._shipActiveMap.get(s);
+      if (!entry) {
+        const bucket = this._shipSparePool.get(sVar);
+        let sh = bucket && bucket.length > 0 ? bucket.pop() : null;
+        if (!sh) {
+          sh = this.archLib.createCargoShipObject(sVar);
+          this.vehicleGroup.add(sh);
+        }
+        entry = { key: sVar, obj: sh };
+        this._shipActiveMap.set(s, entry);
+      }
+      const sh = entry.obj;
       sh.visible = true;
       sh.position.set(s.wx, s.wy, s.wz);
       sh.rotation.set(-(s.pitch || 0), s.yaw || 0, s.roll || 0);
+      this.shipPool.push(sh);
     }
 
-    // Sidewalk Pedestrians (2 InstancedMeshes total, <= 240 citizens, ZERO per-frame allocations!)
+    // Articulated 3D Sidewalk Citizens (7 InstancedMeshes total, <= 240 citizens, per-citizen colors & animated stride -> ZERO flicker!)
     const peds = (!isUnder && this._maxPedestrians > 0 && Array.isArray(this.traffic.pedestrians))
       ? this.traffic.pedestrians
       : [];
     const pedCount = Math.min(peds.length, this._maxPedestrians, this._pedCap);
     if (pedCount > 0) {
-      this._tmpScale.set(1, 1, 1);
-      this._tmpQuat.identity();
+      const outfitPal = this._pedOutfitPalette;
+      const pantsPal = this._pedPantsPalette;
+      const hairPal = this._pedHairPalette;
+      const skinPal = this._pedSkinPalette;
+
       for (let i = 0; i < pedCount; i++) {
         const p = peds[i];
-        const bob = Math.abs(Math.sin(p.walkPhase || 0)) * 0.014;
-        const baseY = (p.wy || 0) + 0.036 + bob;
-        this._tmpPos.set(p.wx, baseY, p.wz);
-        this._tmpMat4.compose(this._tmpPos, this._tmpQuat, this._tmpScale);
-        this.pedBodyInst.setMatrixAt(i, this._tmpMat4);
+        const sc = p.heightScale || 1.0;
+        const phase = p.walkPhase || 0;
+        const swing = Math.sin(phase);
+        const legAng = swing * 0.44;
+        const armAng = -swing * 0.34;
+        const bob = Math.abs(swing) * 0.005 * sc;
+        const yaw = Math.atan2(p.dirX || 0, p.dirZ || 1);
+        const cosY = Math.cos(yaw);
+        const sinY = Math.sin(yaw);
+        const footY = (p.wy || 0) + 0.002 + bob;
 
-        this._tmpPos.set(p.wx, baseY + 0.048, p.wz);
+        const hipY = footY + 0.044 * sc;
+        const torsoY = footY + 0.062 * sc;
+        const shoulderY = footY + 0.085 * sc;
+        const headY = footY + 0.104 * sc;
+
+        this._tmpScale.set(sc, sc, sc);
+
+        // 1. Torso + Jacket
+        this._tmpEuler.set(0, yaw, 0, 'YXZ');
+        this._tmpQuat.setFromEuler(this._tmpEuler);
+        this._tmpPos.set(p.wx, torsoY, p.wz);
+        this._tmpMat4.compose(this._tmpPos, this._tmpQuat, this._tmpScale);
+        this.pedTorsoInst.setMatrixAt(i, this._tmpMat4);
+
+        // 2. Head & 3. Hair Crown
+        this._tmpPos.set(p.wx, headY, p.wz);
         this._tmpMat4.compose(this._tmpPos, this._tmpQuat, this._tmpScale);
         this.pedHeadInst.setMatrixAt(i, this._tmpMat4);
+        this.pedHairInst.setMatrixAt(i, this._tmpMat4);
+
+        // Local right vector in world XZ for Y-rotation `yaw`: (+cosY, -sinY)
+        const hipOff = 0.009 * sc;
+        const armOff = 0.023 * sc;
+
+        // 4. Left Leg (swings +legAng around local X)
+        this._tmpEuler.set(legAng, yaw, 0, 'YXZ');
+        this._tmpQuat.setFromEuler(this._tmpEuler);
+        this._tmpPos.set(p.wx + cosY * hipOff, hipY, p.wz - sinY * hipOff);
+        this._tmpMat4.compose(this._tmpPos, this._tmpQuat, this._tmpScale);
+        this.pedLeftLegInst.setMatrixAt(i, this._tmpMat4);
+
+        // 5. Right Leg (swings -legAng)
+        this._tmpEuler.set(-legAng, yaw, 0, 'YXZ');
+        this._tmpQuat.setFromEuler(this._tmpEuler);
+        this._tmpPos.set(p.wx - cosY * hipOff, hipY, p.wz + sinY * hipOff);
+        this._tmpMat4.compose(this._tmpPos, this._tmpQuat, this._tmpScale);
+        this.pedRightLegInst.setMatrixAt(i, this._tmpMat4);
+
+        // 6. Left Arm (counter-swings with right leg)
+        this._tmpEuler.set(armAng, yaw, 0, 'YXZ');
+        this._tmpQuat.setFromEuler(this._tmpEuler);
+        this._tmpPos.set(p.wx + cosY * armOff, shoulderY, p.wz - sinY * armOff);
+        this._tmpMat4.compose(this._tmpPos, this._tmpQuat, this._tmpScale);
+        this.pedLeftArmInst.setMatrixAt(i, this._tmpMat4);
+
+        // 7. Right Arm (counter-swings with left leg)
+        this._tmpEuler.set(-armAng, yaw, 0, 'YXZ');
+        this._tmpQuat.setFromEuler(this._tmpEuler);
+        this._tmpPos.set(p.wx - cosY * armOff, shoulderY, p.wz + sinY * armOff);
+        this._tmpMat4.compose(this._tmpPos, this._tmpQuat, this._tmpScale);
+        this.pedRightArmInst.setMatrixAt(i, this._tmpMat4);
+
+        // Write permanent per-citizen palette colors EVERY sync (eliminates 100% of splice-index outfit flickering!)
+        this._tmpColor.setHex(outfitPal[(p.colorIdx || 0) % outfitPal.length]);
+        this.pedTorsoInst.setColorAt(i, this._tmpColor);
+        this.pedLeftArmInst.setColorAt(i, this._tmpColor);
+        this.pedRightArmInst.setColorAt(i, this._tmpColor);
+
+        this._tmpColor.setHex(pantsPal[(p.pantsIdx || 0) % pantsPal.length]);
+        this.pedLeftLegInst.setColorAt(i, this._tmpColor);
+        this.pedRightLegInst.setColorAt(i, this._tmpColor);
+
+        this._tmpColor.setHex(skinPal[(p.skinIdx || 0) % skinPal.length]);
+        this.pedHeadInst.setColorAt(i, this._tmpColor);
+
+        this._tmpColor.setHex(hairPal[(p.hairIdx || 0) % hairPal.length]);
+        this.pedHairInst.setColorAt(i, this._tmpColor);
       }
-      this.pedBodyInst.count = pedCount;
-      this.pedHeadInst.count = pedCount;
-      this.pedBodyInst.instanceMatrix.needsUpdate = true;
-      this.pedHeadInst.instanceMatrix.needsUpdate = true;
-      this.pedBodyInst.visible = true;
-      this.pedHeadInst.visible = true;
+
+      for (const inst of this._pedInstList) {
+        inst.count = pedCount;
+        inst.instanceMatrix.needsUpdate = true;
+        if (inst.instanceColor) inst.instanceColor.needsUpdate = true;
+        inst.visible = true;
+      }
     } else {
-      this.pedBodyInst.visible = false;
-      this.pedHeadInst.visible = false;
+      for (const inst of this._pedInstList) {
+        inst.count = 0;
+        inst.visible = false;
+      }
     }
 
     // ==================== Zero-Leak Pooled VFX, Night Glow & Selection Overlays ====================
@@ -28730,17 +29360,25 @@ class CityRenderer3D {
     }
     this._hidePoolFrom(this.meteorPool, meteorCount);
 
-    // Build / Drag Preview Tiles (single reusable previewMat mutated in place!)
+    // Build / Drag Preview Tiles (single reusable previewMat mutated in place; X-ray visible through mountains when underground!)
     let prevCount = 0;
     if (this.previewTiles.length > 0) {
       this.mats.previewMat.color.setRGB(this.previewColor[0], this.previewColor[1], this.previewColor[2]);
+      if (this.mats.previewMat.depthTest !== !isUnder) {
+        this.mats.previewMat.depthTest = !isUnder;
+        this.mats.previewMat.depthWrite = !isUnder;
+        this.mats.previewMat.needsUpdate = true;
+      }
       for (const pos of this.previewTiles) {
         if (!inBounds(pos.x, pos.z)) continue;
         const { wx, wz } = tileToWorld(pos.x, pos.z);
-        const py = Math.max(this.sim.getTileElev(pos.x, pos.z), this.sim.getTileElev(pos.x, pos.z) + this.sim.waterDepth[idx(pos.x, pos.z)]) + 0.06;
+        const py = isUnder
+          ? this.sim.getTileElev(pos.x, pos.z) + 0.34
+          : Math.max(this.sim.getTileElev(pos.x, pos.z), this.sim.getTileElev(pos.x, pos.z) + this.sim.waterDepth[idx(pos.x, pos.z)]) + 0.06;
         const hl = this._acquirePoolMesh(this.previewMeshPool, prevCount++, this.geos.unitBox, this.mats.previewMat);
-        hl.scale.set(0.92, 0.06, 0.92);
+        hl.scale.set(0.92, isUnder ? 0.14 : 0.06, 0.92);
         hl.position.set(wx, py, wz);
+        hl.renderOrder = isUnder ? 25 : 4;
         hl.visible = true;
       }
     }
@@ -28830,8 +29468,12 @@ class CityRenderer3D {
     this.skyColor.copy(daySky).lerp(nightSky, night).lerp(sunsetSky, sunset * 0.65);
     this.fog.color.copy(this.skyColor);
 
-    this.sunLight.target.position.set(this.camTarget[0], this.camTarget[1], this.camTarget[2]);
-    this.sunLight.position.set(this.camTarget[0] + lx, this.camTarget[1] + ly, this.camTarget[2] + lz);
+    // Quantize shadow camera target to 0.5m world grid steps to stop directional shadow-texel swimming on building facades!
+    const snapX = Math.round(this.camTarget[0] * 2) * 0.5;
+    const snapY = Math.round(this.camTarget[1] * 2) * 0.5;
+    const snapZ = Math.round(this.camTarget[2] * 2) * 0.5;
+    this.sunLight.target.position.set(snapX, snapY, snapZ);
+    this.sunLight.position.set(snapX + lx, snapY + ly, snapZ + lz);
 
     const daySun = new THREE.Color(0xfff7e8);
     const sunsetSun = new THREE.Color(0xff8c4a);
@@ -29382,8 +30024,8 @@ class GameUI {
     this.renderer.servicePreviewTiles = [];
     this.dragBuildStart = null;
 
-    // Auto X-Ray view for Underground Pipes / Metro, and Power Grid view for Power/Dam tools!
-    if (toolId === 'water_pipe' || toolId === 'metro_line' || toolId === 'bulldoze_under') {
+    // Auto X-Ray view for Underground Pipes / Metro / Mountain Road Tunnels, and Power Grid view for Power/Dam tools!
+    if (toolId === 'water_pipe' || toolId === 'metro_line' || toolId === 'road_tunnel' || toolId === 'bulldoze_under') {
       this.renderer.overlayMode = 'underground';
       this.autoOverlayActive = true;
       this.updateOverlayLegend();
@@ -29464,7 +30106,7 @@ class GameUI {
     } else {
       el.classList.add('visible');
       const legends = {
-        underground: `<strong>🔵 地下透视蓝图视图</strong><br>青蓝管线 = 地下输水管（覆盖两侧4格）| 红管 = 地震破裂需抢修<br>亮紫隧道 = 地下地铁线路与运行中的地铁列车`,
+        underground: `<strong>🔵 地下透视蓝图视图</strong><br>青蓝管线 = 地下输水管（覆盖两侧4格）| 红管 = 地震破裂需抢修<br>亮紫隧道 = 地下地铁线路与地铁列车 | <strong>橙金隧道 = 穿山公路隧道（绿口已通地面路 · 红标为未打通盲端）</strong>`,
         power: `<strong>⚡ 高压电网覆盖视图</strong><br>蓝色地块 = 已通电区域 | 远距离电厂/大坝请架设【高压输电铁塔】接力`,
         landValue: `<strong>💎 地价热力视图</strong><br>翠绿 = 高地价核心区（可长出 48~64 层摩天大楼）`,
         traffic: `<strong>🚦 交通拥堵热力视图</strong><br>红橙色道路 = 严重堵车（会导致商店缺货！建议架二层高架、设单行道或修公交/地铁）`,
@@ -29643,6 +30285,35 @@ class GameUI {
       const overRoad = est.validTiles.some((p) => (this.sim.getTile(p.x, p.z)?.roadGround || 0) >= 1);
       const modeTxt = overRoad ? '桥下不断流·两侧辅道 + 中央上下匝道' : '平顺缓坡立体匝道';
       this.updateToolHint(`↗️ 规划 ${est.validTiles.length} 格【${modeTxt}】· 造价 ¥${est.cost.toLocaleString()}（松手确认）`);
+    } else if (this.activeTool === 'road_tunnel') {
+      // Inspect both ends of the dragged tunnel to guide players cleanly onto connecting surface roads!
+      const vTiles = est.validTiles;
+      const inPlan = new Set(vTiles.map((p) => `${p.x},${p.z}`));
+      const checkEndConnected = (pt) => {
+        for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const nx = pt.x + dx, nz = pt.z + dz;
+          if (inPlan.has(`${nx},${nz}`)) continue;
+          const nt = this.sim.getTile(nx, nz);
+          if (nt && (nt.roadGround || 0) >= 1) return true;
+        }
+        return false;
+      };
+      const firstEnd = vTiles[0];
+      const lastEnd = vTiles[vTiles.length - 1];
+      const cA = firstEnd ? checkEndConnected(firstEnd) : false;
+      const cB = (lastEnd && lastEnd !== firstEnd) ? checkEndConnected(lastEnd) : false;
+      const connCount = (cA ? 1 : 0) + (cB ? 1 : 0);
+
+      if (connCount >= 2) {
+        this.renderer.previewColor = [0.22, 0.92, 0.62];
+        this.updateToolHint(`🏔️ 穿山隧道 ${vTiles.length} 格 · ✅ 两端已接通地面道路！造价 ¥${est.cost.toLocaleString()}（松手确认）`);
+      } else if (connCount === 1) {
+        this.renderer.previewColor = [0.98, 0.78, 0.22];
+        this.updateToolHint(`🏔️ 穿山隧道 ${vTiles.length} 格 · ⚠️ 仅一端接通道路（拖出另一侧山脚连接地面路）· 造价 ¥${est.cost.toLocaleString()}`);
+      } else {
+        this.renderer.previewColor = [0.98, 0.56, 0.18];
+        this.updateToolHint(`🏔️ 穿山隧道 ${vTiles.length} 格 · 💡 提示：将隧道两端延伸至灰色地面道路处即可连通 · 造价 ¥${est.cost.toLocaleString()}`);
+      }
     } else {
       this.renderer.previewColor = this.activeTool.startsWith('bulldoze') ? [0.98, 0.30, 0.30] : [0.25, 0.88, 1.0];
       const item = CATALOG[this.activeTool];
