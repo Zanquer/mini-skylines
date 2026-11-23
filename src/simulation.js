@@ -4828,24 +4828,33 @@ export class CitySimulation {
     const powerShort = this.powerDemand > this.powerSupply;
     const waterShort = this.waterDemand > this.waterSupply;
 
-    // Live Road Traffic Accidents (dispatched Police Patrol clearance countdown!)
+    // Live Road Traffic Accidents & Severe Jam Police Interventions (dispatched Police Patrol countdown!)
     if (this.traffic && Array.isArray(this.traffic.accidents)) {
       for (let ai = 0; ai < this.traffic.accidents.length; ai++) {
         const acc = this.traffic.accidents[ai];
+        const isJam = acc.type === 'jam';
         const reasonText = acc.state === 'clearing'
-          ? `🚓 交警正在现场勘查清障，预计剩余 ${Math.ceil(acc.remainingTime)} 秒恢复通行（${acc.cause}）`
+          ? (isJam
+            ? `🚓 交警正在现场绿波指挥疏导，预计剩余 ${Math.ceil(acc.remainingTime)} 秒恢复畅通`
+            : `🚓 交警正在现场勘查清障，预计剩余 ${Math.ceil(acc.remainingTime)} 秒恢复通行（${acc.cause}）`)
           : (acc.state === 'police_en_route'
-            ? `🚓 交警巡逻车已紧急出警，正赶往现场处理【${acc.cause}】`
-            : `🚨 发生【${acc.cause}】，等待警察总局派交警处理（无警局时 ${Math.ceil(acc.selfClearTimer)} 秒后自行协商撤离）`);
+            ? (isJam
+              ? `🚓 交警巡逻车已紧急出警，正赶往现场指挥疏导拥堵路口`
+              : `🚓 交警巡逻车已紧急出警，正赶往现场处理【${acc.cause}】`)
+            : (isJam
+              ? `🚦 路口出现车流拥堵滞留，等待警察总局派交警疏导（无警局时 ${Math.ceil(acc.selfClearTimer)} 秒后缓慢自清）`
+              : `🚨 发生【${acc.cause}】，等待警察总局派交警处理（无警局时 ${Math.ceil(acc.selfClearTimer)} 秒后自行协商撤离）`));
         categories.disaster.push({
           category: 'disaster',
-          icon: '🚨',
-          title: `交通事故 · ${acc.roadName}`,
+          icon: isJam ? '🚦' : '🚨',
+          title: `${isJam ? '严重拥堵疏导' : '交通事故'} · ${acc.roadName}`,
           reason: reasonText,
-          actionTip: '确保道路连通已通电的【🚓 警察总局】可 3 倍速派交警专业清障，点击可跳转查看现场进度',
+          actionTip: isJam
+            ? '交警将启动人工绿波放行；长期治堵请点击路口切【🛑 主路优先】或【🔄 改建环岛】'
+            : '确保道路连通已通电的【🚓 警察总局】可 3 倍速派交警专业清障，点击可跳转查看现场进度',
           x: acc.x,
           z: acc.z,
-          severity: 4
+          severity: isJam ? 3 : 4
         });
       }
     }

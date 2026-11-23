@@ -1786,6 +1786,7 @@ export class TrafficManager {
     const primaryVeh = involved[0];
     const acc = {
       id: this._nextAccidentId++,
+      type: options.type || 'crash',
       x: chosenTile.x,
       z: chosenTile.z,
       wx: primaryVeh ? primaryVeh.wx : wCenter.wx,
@@ -1822,6 +1823,50 @@ export class TrafficManager {
       mood: 'warn'
     };
 
+    this.tryDispatchPoliceCar();
+    return acc;
+  }
+
+  // Dispatch Traffic Police to actively direct & clear a severe real-world traffic jam (instead of poof-deleting cars!)
+  triggerTrafficJamIntervention(tx, tz, options = {}) {
+    if (!inBounds(tx, tz) || this.accidents.length >= 3) return null;
+    const t = this.sim.getTile(tx, tz);
+    if (!t || !(t.roadGround >= 1 && t.roadGround <= 3) || t.dam || t.ramp) return null;
+    if (this.accidents.some((a) => Math.hypot(a.x - tx, a.z - tz) < 5.5)) return null;
+
+    const deg = this.roadDegree[idx(tx, tz)] || 0;
+    const roadName = deg >= 4
+      ? '四向十字路口'
+      : (deg === 3 ? '三向交叉路口' : (t.roadGround >= 2 ? '四车道主干道' : '城市街道'));
+    const wCenter = tileToWorld(tx, tz);
+    const totalTime = Number(options.duration || 7.0);
+    const acc = {
+      id: this._nextAccidentId++,
+      type: 'jam',
+      x: tx,
+      z: tz,
+      wx: wCenter.wx,
+      wy: this.getRoadNodeY(tx, tz, 0),
+      wz: wCenter.wz,
+      roadName,
+      cause: options.cause || '路口车流严重拥堵打结',
+      vehicleIds: [],
+      state: 'awaiting_police',
+      policeVehicleId: null,
+      policeStationTile: null,
+      totalTime,
+      remainingTime: totalTime,
+      selfClearTimer: Number(options.selfClearTime || 14.0),
+      elapsed: 0
+    };
+
+    this.accidents.push(acc);
+    t.congestion = Math.max(t.congestion || 0, 0.90);
+    this.sim.latestChirp = {
+      user: '@交警支队播报',
+      text: `🚦 (${acc.x},${acc.z}) ${acc.roadName}车辆拥堵滞留！已派附近警察总局【🚓 交警巡逻车】火速前往现场指挥疏导！`,
+      mood: 'warn'
+    };
     this.tryDispatchPoliceCar();
     return acc;
   }
@@ -1872,9 +1917,9 @@ export class TrafficManager {
         id: this._nextVehId++,
         variantIdx: 0,
         tripType: 'service',
-        tripLabel: '🚓 交警紧急出警处理事故',
+        tripLabel: acc.type === 'jam' ? '🚓 交警赶赴疏导拥堵路口' : '🚓 交警紧急出警处理事故',
         fromName,
-        toName: `事故现场 (${acc.x}, ${acc.z})`,
+        toName: `${acc.type === 'jam' ? '拥堵路口' : '事故现场'} (${acc.x}, ${acc.z})`,
         originTile: { x: bestStation.x, z: bestStation.z },
         destTile: { x: acc.x, z: acc.z },
         color: [0.95, 0.97, 1.0],
@@ -1930,12 +1975,12 @@ export class TrafficManager {
           acc.policeVehicleId = null;
         } else {
           const distToScene = Math.hypot(pv.wx - acc.wx, pv.wz - acc.wz);
-          const arrived = distToScene <= 0.95 || pv.policeOnSceneId === acc.id || pv.seg >= pv.path.length - 1;
+          const arrived = distToScene <= (acc.type === 'jam' ? 1.45 : 0.95) || pv.policeOnSceneId === acc.id || pv.seg >= pv.path.length - 1;
           if (arrived) {
             pv.policeOnSceneId = acc.id;
             pv.speed = 0;
             pv.stuckTimer = 0;
-            pv.tripLabel = `🚓 交警正在现场勘查清障`;
+            pv.tripLabel = acc.type === 'jam' ? '🚓 交警现场指挥绿波疏导' : '🚓 交警正在现场勘查清障';
             acc.state = 'clearing';
             for (const v of this.vehicles) {
               if (v.accidentId === acc.id) {
@@ -1944,7 +1989,9 @@ export class TrafficManager {
             }
             this.sim.latestChirp = {
               user: '@交警支队播报',
-              text: `🚓 交警巡逻车已抵达 (${acc.x},${acc.z}) 事故现场并布设警示锥桶，预计 ${Math.ceil(acc.remainingTime)} 秒后清障恢复通行！`,
+              text: acc.type === 'jam'
+                ? `🚓 交警巡逻车已抵达 (${acc.x},${acc.z}) 拥堵路口启动人工绿波指挥，正在疏导积压车流（预计 ${Math.ceil(acc.remainingTime)} 秒）！`
+                : `🚓 交警巡逻车已抵达 (${acc.x},${acc.z}) 事故现场并布设警示锥桶，预计 ${Math.ceil(acc.remainingTime)} 秒后清障恢复通行！`,
               mood: 'info'
             };
           }
@@ -1956,6 +2003,17 @@ export class TrafficManager {
         } else {
           pv.speed = 0;
           pv.stuckTimer = 0;
+          // Active Traffic-Police Green-Wave Jam Direction: visibly wave queued cars through the jammed intersection!
+          if (acc.type === 'jam') {
+            for (let vi = 0; vi < this.vehicles.length; vi++) {
+              const qv = this.vehicles[vi];
+              if (!qv || qv.accidentId || qv.policeOnSceneId || qv.inTunnel || qv.maxSpeed <= 0.1) continue;
+              if (Math.hypot(qv.wx - acc.wx, qv.wz - acc.wz) <= 2.65) {
+                qv._jamClearTimer = Math.max(qv._jamClearTimer || 0, 2.6);
+                qv.stuckTimer = 0;
+              }
+            }
+          }
           acc.remainingTime = Math.max(0, acc.remainingTime - effDt);
           if (acc.remainingTime <= 0) {
             this._clearAccidentEntities(acc, true);
@@ -1963,22 +2021,36 @@ export class TrafficManager {
             this.accidents.splice(i, 1);
             this.sim.latestChirp = {
               user: '@交警支队播报',
-              text: `✅ (${acc.x},${acc.z}) ${acc.roadName}交通事故已勘查清障完毕，道路恢复畅通！`,
+              text: acc.type === 'jam'
+                ? `✅ (${acc.x},${acc.z}) ${acc.roadName}经交警现场指挥疏导，车流已恢复顺畅通行！`
+                : `✅ (${acc.x},${acc.z}) ${acc.roadName}交通事故已勘查清障完毕，道路恢复畅通！`,
               mood: 'good'
             };
             continue;
           }
         }
       } else {
-        // Awaiting police (if city has no powered/reachable police station, drivers slowly self-clear after ~26s)
+        // Awaiting police (if city has no powered/reachable police station, drivers slowly self-clear)
         acc.selfClearTimer = Math.max(0, acc.selfClearTimer - effDt);
         if (acc.selfClearTimer <= 0) {
+          if (acc.type === 'jam') {
+            for (let vi = 0; vi < this.vehicles.length; vi++) {
+              const qv = this.vehicles[vi];
+              if (!qv || qv.accidentId || qv.policeOnSceneId || qv.inTunnel || qv.maxSpeed <= 0.1) continue;
+              if (Math.hypot(qv.wx - acc.wx, qv.wz - acc.wz) <= 2.65) {
+                qv._jamClearTimer = Math.max(qv._jamClearTimer || 0, 3.2);
+                qv.stuckTimer = 0;
+              }
+            }
+          }
           this._clearAccidentEntities(acc, false);
           this.totalAccidentsCleared++;
           this.accidents.splice(i, 1);
           this.sim.latestChirp = {
             user: '@市民路况播报',
-            text: `🚧 (${acc.x},${acc.z}) 事故双方自行协商撤离，道路缓慢恢复（建造【🚓 警察总局】可派交警 3 倍速专业处置！）`,
+            text: acc.type === 'jam'
+              ? `🚧 (${acc.x},${acc.z}) 拥堵路口车流缓慢自行疏通（建造【🚓 警察总局】可派交警第一时间绿波疏导！）`
+              : `🚧 (${acc.x},${acc.z}) 事故双方自行协商撤离，道路缓慢恢复（建造【🚓 警察总局】可派交警 3 倍速专业处置！）`,
             mood: 'info'
           };
           continue;
@@ -2766,6 +2838,11 @@ export class TrafficManager {
       let blockedBySignal = false;
       let blockedByVehicle = false;
 
+      if (v._jamClearTimer > 0) {
+        v._jamClearTimer = Math.max(0, v._jamClearTimer - effDt);
+      }
+      const inJamGreenWave = (v._jamClearTimer || 0) > 0;
+
       // Ground Intersection Control: 'signal' | 'yield' | 'roundabout' (never halts mid-ramp!)
       if (!isElevated && !nxt.onRamp) {
         const nxtIdx = idx(nxt.x, nxt.z);
@@ -2778,7 +2855,7 @@ export class TrafficManager {
           targetSpeed = Math.min(targetSpeed, v.maxSpeed * 0.82);
         }
 
-        if (v.kind !== 'firetruck' && v.kind !== 'police' && nxtDeg >= 3) {
+        if (v.kind !== 'firetruck' && v.kind !== 'police' && !inJamGreenWave && nxtDeg >= 3) {
           const jMode = nxtTile.junctionMode || 'signal';
           const moveVertical = Math.abs(nxt.z - cur.z) > 0;
 
@@ -2809,8 +2886,9 @@ export class TrafficManager {
         }
       }
 
-      // Full 360° 3D Bumper-to-Bumper, Intersection Cross-Traffic, Opposing-Turn & 4-Lane Overtaking Avoidance!
-      const latLimit = isMultiLane ? 0.145 : 0.175;
+      // Full 360° 3D Bumper-to-Bumper, Strict Total-Order Intersection Cross-Traffic, Opposing-Turn & 4-Lane Overtaking Avoidance!
+      // On 4-lane avenues, parallel lanes sit 0.13m apart (0.11 vs 0.24), so use 0.105m same-lane width so overtakers pass cleanly!
+      const latLimit = isMultiLane ? 0.105 : 0.175;
       let hardStop = false;
       for (let j = 0; j < this.vehicles.length; j++) {
         if (i === j) continue;
@@ -2831,10 +2909,11 @@ export class TrafficManager {
         const fwdDist = rvx * v.dirX + rvz * v.dirZ;
         const latDist = Math.abs(-rvx * v.dirZ + rvz * v.dirX);
         const safeGap = (v.length + o.length) * 0.62 + 0.14;
+        const oIsStoppedHazard = Boolean(o.accidentId || o.policeOnSceneId);
 
         if (sameDir >= 0.45) {
           // 1. Same-lane car-following & smooth speed matching + 4-lane parallel overtake (also routes around parked accidents)
-          const effLat = (o.accidentId || o.policeOnSceneId) ? Math.max(latLimit, 0.19) : latLimit;
+          const effLat = oIsStoppedHazard ? Math.max(latLimit, 0.19) : latLimit;
           if (fwdDist > 0.01 && fwdDist < safeGap * 1.50 && latDist < effLat) {
             if (fwdDist < safeGap) {
               if (allowOvertake && targetSpeed > 0 && o.speed < v.maxSpeed * 0.85 && !(v.laneChangeCooldown > 0)) {
@@ -2855,7 +2934,7 @@ export class TrafficManager {
             }
           }
         } else if (sameDir > -0.75) {
-          // 2. Predictive + Static Perpendicular / Turning / Roundabout cross-traffic guard (anticipates crossing vehicles 0.36s early -> ZERO intersection clipping!)
+          // 2. Strict Total-Order Predictive Cross-Traffic Guard (MATHEMATICALLY ZERO mutual-yield deadlocks!)
           const crossFwd = (v.length * 0.5 + o.width * 0.5) + 0.30 + Math.min(0.28, (v.speed || 0) * 0.16);
           const crossLat = (o.length * 0.5 + v.width * 0.5) + 0.16;
           const oLead = Math.min(0.48, (o.speed || 0) * 0.36);
@@ -2867,8 +2946,10 @@ export class TrafficManager {
           const predHit = futFwd > 0.01 && futFwd < crossFwd && futLat < crossLat * 1.05;
           if (directHit || predHit) {
             const oFwdToV = (-rvx) * o.dirX + (-rvz) * o.dirZ;
-            const oAlreadyInside = Boolean(o.accidentId || o.policeOnSceneId) || oFwdToV < 0.16 || o.speed > v.speed + 0.18;
-            const yieldToCross = oAlreadyInside || ((v.id || i) > (o.id || j));
+            // Strict antisymmetric order: only yield if `o` is a parked hazard OR strictly deeper inside than `v` OR wins deterministic ID tie-break!
+            const oStrictlyCloser = !inJamGreenWave && (oFwdToV + 0.08 < fwdDist);
+            const tieBreak = !inJamGreenWave && Math.abs(oFwdToV - fwdDist) <= 0.08 && ((v.id || i) > (o.id || j));
+            const yieldToCross = oIsStoppedHazard || oStrictlyCloser || tieBreak;
             if (yieldToCross) {
               targetSpeed = 0;
               blockedByVehicle = true;
@@ -2877,11 +2958,11 @@ export class TrafficManager {
             }
           }
         } else {
-          // 3. Opposing-direction left-turn / narrow-street overlap guard (prevents head-on clipping during turns!)
+          // 3. Opposing-direction left-turn / narrow-street overlap guard (prevents head-on clipping without deadlock!)
           const oppFwd = (v.length + o.length) * 0.56 + 0.16;
           const oppLat = (v.width + o.width) * 0.68;
           if (fwdDist > 0.01 && fwdDist < oppFwd && latDist < oppLat) {
-            const yieldOpp = Boolean(o.accidentId || o.policeOnSceneId) || ((v.id || i) > (o.id || j));
+            const yieldOpp = oIsStoppedHazard || (!inJamGreenWave && ((v.id || i) > (o.id || j)));
             if (yieldOpp) {
               targetSpeed = 0;
               blockedByVehicle = true;
@@ -2897,11 +2978,16 @@ export class TrafficManager {
       if (hardStop && targetSpeed === 0) v.speed = Math.min(v.speed, 0.04);
       if (v.speed < 0.01 && targetSpeed === 0) v.speed = 0;
 
-      // Smart Anti-Deadlock Timer: waiting cleanly at a red light NEVER deletes cars mid-road; genuine traffic jams reroute once then clear at 12s!
+      // Smart Anti-Vanish Jam & Police-Direction Timer:
+      //  - Waiting at a red light OR queued behind an active crash/jam police scene NEVER deletes cars!
+      //  - Severe real-world jams (v.maxSpeed > 0.1) summon 🚓 Traffic Police to wave cars through instead of poof-vanishing!
+      const nearActiveIncident = this.accidents.length > 0 && this.accidents.some(
+        (a) => Math.abs(a.x - cur.x) <= 3 && Math.abs(a.z - cur.z) <= 3
+      );
       v.stuckTimer = v.stuckTimer || 0;
       if (v.speed < 0.06) {
-        if (blockedBySignal && !blockedByVehicle && v.maxSpeed > 0.1) {
-          v.stuckTimer += effDt * 0.10;
+        if (v.maxSpeed > 0.1 && (nearActiveIncident || (blockedBySignal && !blockedByVehicle))) {
+          v.stuckTimer += effDt * 0.06;
         } else {
           v.stuckTimer += effDt;
         }
@@ -2909,13 +2995,20 @@ export class TrafficManager {
         v.stuckTimer = Math.max(0, v.stuckTimer - effDt * 2.5);
       }
 
-      if (v.stuckTimer >= 12.0) {
-        // Attempt one live detour around the jam before giving up (real jams with maxSpeed=0 or blocked exits still fire gridlockTimeouts!)
-        if (v.maxSpeed > 0.1 && !v._reroutedOnce && this.tryRerouteVehicle(v)) {
+      // Proactive Traffic Police Dispatch when a live vehicle has been stuck in a severe jam for >= 7.5s
+      if (v.maxSpeed > 0.1 && v.stuckTimer >= 7.5 && !nearActiveIncident && cur.layer === 0 && !cur.onRamp) {
+        if (!v._reroutedOnce && this.tryRerouteVehicle(v)) {
           v._reroutedOnce = true;
           v.stuckTimer = 3.0;
-        } else {
-          const oldIdx = idx(cur.x, cur.z);
+        } else if ((this.sim.population || 0) >= 120) {
+          this.triggerTrafficJamIntervention(cur.x, cur.z);
+        }
+      }
+
+      if (v.stuckTimer >= 12.0) {
+        const oldIdx = idx(cur.x, cur.z);
+        if (v.maxSpeed <= 0.1) {
+          // Immobilized vehicle (e.g. broken down / zero-maxSpeed gridlock fixture): fire economic timeout & clear cleanly
           if (cur.layer === 0 && !cur.onRamp && this.tileOccupancy[oldIdx] > 0) {
             this.tileOccupancy[oldIdx]--;
           }
@@ -2931,6 +3024,25 @@ export class TrafficManager {
           this.vehicles.splice(i, 1);
           continue;
         }
+
+        // Healthy live vehicle (v.maxSpeed > 0.1): NEVER poof-delete mid-road!
+        // Summon Traffic Police + record congestion impact + release via green-wave creep so it VISIBLY drives out!
+        if (cur.layer === 0 && !cur.onRamp && !nearActiveIncident && (this.sim.population || 0) >= 120) {
+          this.triggerTrafficJamIntervention(cur.x, cur.z);
+        }
+        if (!v._jamPenaltyReported) {
+          v._jamPenaltyReported = true;
+          this.modalSplit.gridlockTimeouts++;
+          if (cur.layer === 1) curTile.elevCongestion = 1.0;
+          else if (curTile.roadGround > 0) {
+            curTile.congestion = 1.0;
+            if (!gridlockTiles) gridlockTiles = new Set();
+            gridlockTiles.add(oldIdx);
+          }
+          this.sim.onTripGridlockTimeout?.(v);
+        }
+        v.stuckTimer = 0;
+        v._jamClearTimer = 4.2;
       }
 
       const prevSeg = v.seg;
@@ -3233,13 +3345,27 @@ export class TrafficManager {
     return { x: tx, z: tz, reversed: true };
   }
 
+  _findAdjacentBuildingDir(tx, tz) {
+    for (let k = 0; k < 4; k++) {
+      const d = RAMP_DIRS[k];
+      const nx = tx + d.dx;
+      const nz = tz + d.dz;
+      if (!inBounds(nx, nz)) continue;
+      const nt = this.sim.grid[idx(nx, nz)];
+      if (nt && nt.building && !nt.building.underConstruction) {
+        return { dx: d.dx, dz: d.dz };
+      }
+    }
+    return null;
+  }
+
   _syncPedTransform(p) {
     const w0 = tileToWorld(p.tx, p.tz);
     const w1 = tileToWorld(p.nx, p.nz);
     const dx = w1.wx - w0.wx;
     const dz = w1.wz - w0.wz;
     const len = Math.hypot(dx, dz);
-    if (len > 0.01) {
+    if (len > 0.01 && p.fadeState !== 'exiting') {
       p.dirX = dx / len;
       p.dirZ = dz / len;
     }
@@ -3248,8 +3374,26 @@ export class TrafficManager {
     const rightX = -p.dirZ;
     const rightZ = p.dirX;
     const frac = Math.min(1, Math.max(0, p.t));
-    p.wx = w0.wx + dx * frac + rightX * swOff;
-    p.wz = w0.wz + dz * frac + rightZ * swOff;
+    let bx = w0.wx + dx * frac + rightX * swOff;
+    let bz = w0.wz + dz * frac + rightZ * swOff;
+
+    // Smoothly step out of / into an adjacent building doorway instead of popping mid-sidewalk!
+    if (p.doorDir) {
+      if (p.fadeState === 'entering') {
+        const pull = (1.0 - (p.fadeScale ?? 1.0)) * 0.18;
+        bx += p.doorDir.dx * pull;
+        bz += p.doorDir.dz * pull;
+      } else if (p.fadeState === 'exiting') {
+        const stepIn = (1.0 - (p.fadeScale ?? 0)) * 0.22;
+        bx = (p._exitOriginX ?? bx) + p.doorDir.dx * stepIn;
+        bz = (p._exitOriginZ ?? bz) + p.doorDir.dz * stepIn;
+        p.dirX = p.doorDir.dx;
+        p.dirZ = p.doorDir.dz;
+      }
+    }
+
+    p.wx = bx;
+    p.wz = bz;
 
     const y0 = this.sim.isWaterTile(p.tx, p.tz)
       ? this.getRoadNodeY(p.tx, p.tz, 0)
@@ -3276,16 +3420,37 @@ export class TrafficManager {
     const baseCap = Math.min(240, Math.min(16, this._pedRoadPool.length * 0.55) + pop * 0.032);
     const targetPed = Math.min(240, Math.round(baseCap * timeScale));
 
-    // Trim gracefully when transitioning into quiet late night
-    while (this.pedestrians.length > targetPed + 8) {
-      this.pedestrians.pop();
+    // NEVER pop pedestrians mid-sidewalk! Gently send excess citizens home into nearby building doorways!
+    let activeWalkers = 0;
+    for (let i = 0; i < this.pedestrians.length; i++) {
+      if (!this.pedestrians[i].returningHome && this.pedestrians[i].fadeState !== 'exiting') {
+        activeWalkers++;
+      }
+    }
+    if (activeWalkers > targetPed) {
+      let toSendHome = activeWalkers - targetPed;
+      for (let i = 0; i < this.pedestrians.length && toSendHome > 0; i++) {
+        const p = this.pedestrians[i];
+        if (!p.returningHome && p.fadeState !== 'exiting') {
+          p.returningHome = true;
+          toSendHome--;
+        }
+      }
     }
 
-    // Spawn batch along active sidewalks up to targetPed (<= 240 hard cap)
+    // Spawn batch smoothly emerging from building doorways along active sidewalks (<= 240 hard cap)
     let spawnBudget = Math.min(6, Math.max(0, targetPed - this.pedestrians.length));
     while (spawnBudget-- > 0 && this.pedestrians.length < 240) {
-      const spot = this._pedRoadPool[(Math.random() * this._pedRoadPool.length) | 0];
-      if (!spot || !this._isPedRoadTile(spot.x, spot.z)) continue;
+      let spot = null;
+      let doorDir = null;
+      for (let tries = 0; tries < 4; tries++) {
+        const cand = this._pedRoadPool[(Math.random() * this._pedRoadPool.length) | 0];
+        if (!cand || !this._isPedRoadTile(cand.x, cand.z)) continue;
+        spot = cand;
+        doorDir = this._findAdjacentBuildingDir(cand.x, cand.z);
+        if (doorDir) break;
+      }
+      if (!spot) continue;
       const next = this._pickPedNextTile(spot.x, spot.z, -1, -1);
       const p = {
         id: this._nextPedId++,
@@ -3293,7 +3458,7 @@ export class TrafficManager {
         tz: spot.z,
         nx: next.x,
         nz: next.z,
-        t: Math.random() * 0.6,
+        t: Math.random() * 0.5,
         side: Math.random() < 0.5 ? 1 : -1,
         wx: 0,
         wy: 0,
@@ -3306,14 +3471,19 @@ export class TrafficManager {
         hairIdx: (Math.random() * 5) | 0,
         skinIdx: (Math.random() * 4) | 0,
         heightScale: 0.90 + Math.random() * 0.20,
+        fadeScale: 0.08,
+        fadeState: 'entering',
+        doorDir,
+        returningHome: false,
+        homeSearchBlocks: 0,
         speed: 0.085 + Math.random() * 0.045,
-        ttl: 55 + Math.random() * 65
+        ttl: 75 + Math.random() * 85
       };
       this._syncPedTransform(p);
       this.pedestrians.push(p);
     }
 
-    // Advance sidewalk walkers at calm realistic strolling speed
+    // Advance sidewalk walkers at calm realistic strolling speed (ZERO abrupt mid-sidewalk vanishing!)
     for (let i = this.pedestrians.length - 1; i >= 0; i--) {
       const p = this.pedestrians[i];
       if (!this._isPedRoadTile(p.tx, p.tz)) {
@@ -3321,7 +3491,41 @@ export class TrafficManager {
         continue;
       }
 
+      if (p.fadeState === 'entering') {
+        p.fadeScale = Math.min(1.0, (p.fadeScale ?? 0.08) + effDt * 1.9);
+        if (p.fadeScale >= 1.0) {
+          p.fadeScale = 1.0;
+          p.fadeState = 'walking';
+        }
+      } else if (p.fadeState === 'exiting') {
+        // Citizen smoothly walks into building doorway and fades cleanly inside!
+        p.fadeScale = Math.max(0, (p.fadeScale ?? 1.0) - effDt * 1.65);
+        p.walkPhase = (p.walkPhase + p.speed * effDt * 15) % (Math.PI * 2);
+        this._syncPedTransform(p);
+        if (p.fadeScale <= 0.02) {
+          this.pedestrians.splice(i, 1);
+        }
+        continue;
+      }
+
       p.ttl -= effDt;
+      if (p.ttl <= 0) {
+        p.returningHome = true;
+      }
+
+      // If citizen is ready to head indoors and is right beside a building doorway, walk smoothly inside!
+      if (p.returningHome && p.fadeState === 'walking') {
+        const bDir = this._findAdjacentBuildingDir(p.tx, p.tz);
+        if (bDir) {
+          p.fadeState = 'exiting';
+          p.doorDir = bDir;
+          p._exitOriginX = p.wx;
+          p._exitOriginZ = p.wz;
+          this._syncPedTransform(p);
+          continue;
+        }
+      }
+
       // Gentle pedestrian crosswalk courtesy yield when a moving vehicle is physically crossing directly ahead
       let pedYield = false;
       const vehs = this.vehicles;
@@ -3344,18 +3548,29 @@ export class TrafficManager {
       }
 
       if (p.t >= 1.0) {
-        if (p.ttl <= 0 && this.pedestrians.length > Math.floor(targetPed * 0.85)) {
-          this.pedestrians.splice(i, 1);
-          continue;
-        }
         const prevX = p.tx;
         const prevZ = p.tz;
         p.tx = p.nx;
         p.tz = p.nz;
         p.t -= 1.0;
         if (!this._isPedRoadTile(p.tx, p.tz)) {
-          this.pedestrians.splice(i, 1);
-          continue;
+          // Smooth turn-around instead of instant pop if next tile was unwalkable!
+          p.tx = prevX;
+          p.tz = prevZ;
+          p.t = 0.05;
+          p.side = -p.side;
+        }
+        if (p.returningHome) {
+          p.homeSearchBlocks = (p.homeSearchBlocks || 0) + 1;
+          const bDir = this._findAdjacentBuildingDir(p.tx, p.tz);
+          if (bDir || p.homeSearchBlocks >= 4) {
+            p.fadeState = 'exiting';
+            p.doorDir = bDir || { dx: -p.dirZ * p.side, dz: p.dirX * p.side };
+            p._exitOriginX = p.wx;
+            p._exitOriginZ = p.wz;
+            this._syncPedTransform(p);
+            continue;
+          }
         }
         const next = this._pickPedNextTile(p.tx, p.tz, prevX, prevZ);
         p.nx = next.x;

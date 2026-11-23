@@ -2371,7 +2371,8 @@ export class CityRenderer3D {
 
       for (let i = 0; i < pedCount; i++) {
         const p = peds[i];
-        const sc = p.heightScale || 1.0;
+        const fadeSc = p.fadeScale !== undefined ? Math.max(0.01, Math.min(1.0, p.fadeScale)) : 1.0;
+        const sc = (p.heightScale || 1.0) * fadeSc;
         const phase = p.walkPhase || 0;
         const swing = Math.sin(phase);
         const legAng = swing * 0.44;
@@ -2561,7 +2562,7 @@ export class CityRenderer3D {
           beacon.position.set(acc.wx, deckY + 0.36 + bob, acc.wz);
           beacon.visible = true;
         }
-        if (smokeCount < this._poolCaps.smoke) {
+        if (acc.type !== 'jam' && smokeCount < this._poolCaps.smoke) {
           const ph = (this.clock * 0.95 + aIdx * 0.37) % 1.0;
           const sp = this._acquirePoolSprite(this.smokePool, smokeCount++, { map: this.smokeTex });
           sp.material.color.setHex(0xe2e8f0);

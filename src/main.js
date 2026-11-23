@@ -92,24 +92,39 @@ function bootGame() {
     }
 
     if (assetManager.isExternalSupported && globalThis.THREE) {
-      setSplashProgress(0.45, '加载旗舰 PBR 物理材质包...');
+      setSplashProgress(0.45, '流式加载高清 PBR 主贴图（双桶缓存秒开）...');
+      let resolveAlbedo = null;
+      const albedoReadyPromise = new Promise((res) => { resolveAlbedo = res; });
+      let albedoDone = false;
       const pbrPromise = assetManager.loadPBRTextures(globalThis.THREE, {
         quality: savedQuality,
-        onProgress: (f, msg) => setSplashProgress(0.45 + f * 0.50, msg)
-      });
-      const loadedTex = await Promise.race([
-        pbrPromise,
-        new Promise((resolve) => setTimeout(() => resolve(null), 4200))
-      ]);
-      if (loadedTex && typeof renderer.applyExternalPBRTextures === 'function') {
-        renderer.applyExternalPBRTextures(loadedTex);
-      } else if (!loadedTex) {
-        pbrPromise.then((tex) => {
+        onProgress: (f, msg) => {
+          if (!albedoDone) setSplashProgress(0.45 + f * 0.50, msg);
+        },
+        onSuiteUpdate: (tex) => {
           if (tex && typeof renderer.applyExternalPBRTextures === 'function') {
             renderer.applyExternalPBRTextures(tex);
           }
-        }).catch(() => {});
-      }
+        },
+        onAlbedoReady: (tex) => {
+          albedoDone = true;
+          if (tex && typeof renderer.applyExternalPBRTextures === 'function') {
+            renderer.applyExternalPBRTextures(tex);
+          }
+          if (resolveAlbedo) resolveAlbedo(tex);
+        }
+      });
+      // Only wait up to 2.4s for the 14 lightweight Albedo color maps, then enter immediately while Normal/Roughness & GLBs stream live!
+      await Promise.race([
+        albedoReadyPromise,
+        pbrPromise,
+        new Promise((resolve) => setTimeout(() => resolve(null), 2400))
+      ]);
+      pbrPromise.then((tex) => {
+        if (tex && typeof renderer.applyExternalPBRTextures === 'function') {
+          renderer.applyExternalPBRTextures(tex);
+        }
+      }).catch(() => {});
 
       // Stream CC0 3D GLB pack (Zoo Wildlife Animals + Kenney Vehicles/Villas/Boats) asynchronously in background
       if (typeof assetManager.loadGLBModels === 'function') {
@@ -122,14 +137,14 @@ function bootGame() {
     }
 
     setSplashProgress(1.0, '就绪！欢迎回到山河天际线');
-    setTimeout(dismissSplash, 160);
+    setTimeout(dismissSplash, 140);
   })();
 
   setTimeout(() => {
     ui.showToast(
       restored
         ? `👋 已恢复离线进度【${sim.cityName}】(${sim.getFormattedDate()})`
-        : '🏞️ 山河天际线 Pro v8.3 已启动！体验交警出警事故清障、深锚穿山隧道口、连续环线地铁与全屏防覆盖建造！'
+        : '🏞️ 山河天际线 Pro v8.4 已启动！双桶永久贴图缓存、拥堵交警现场疏导与市民入户零突兀消失全面升级！'
     );
   }, 550);
 

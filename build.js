@@ -111,8 +111,8 @@ if (fs.existsSync(assetManifestPath)) {
   assetManifest = JSON.parse(fs.readFileSync(assetManifestPath, 'utf8'));
 }
 const codeHash = crypto.createHash('sha256').update(pwaAppJS).digest('hex').slice(0, 8);
-const assetHashPart = (assetManifest.version || 'v8.3-dev').split('-')[1] || 'dev';
-const buildVersion = `v8.3-${assetHashPart}-${codeHash}`;
+const assetHashPart = (assetManifest.version || 'v8.4-dev').split('-')[1] || 'dev';
+const buildVersion = `v8.4-${assetHashPart}-${codeHash}`;
 assetManifest.version = buildVersion;
 if (fs.existsSync(path.join(WWW, 'assets'))) {
   fs.writeFileSync(assetManifestPath, JSON.stringify(assetManifest, null, 2), 'utf8');
@@ -166,9 +166,12 @@ const webManifest = {
 };
 fs.writeFileSync(path.join(WWW, 'manifest.json'), JSON.stringify(webManifest, null, 2), 'utf8');
 
-// Auto-versioned Network-First (HTML/JS) + Cache-First (Binary Assets) Service Worker
+// Auto-versioned Dual-Bucket Service Worker:
+//  - CACHE_NAME (code shell: HTML/JS/manifests) rotates on every code update (Network-First)
+//  - ASSET_CACHE_NAME (10.87 MB binary PBR textures, GLB models & icons) persists across code releases (Cache-First)!
 const swCode = `// Auto-generated Service Worker for 山河天际线 Pro 3D (${buildVersion})
 const CACHE_NAME = 'mini-skylines-${buildVersion}';
+const ASSET_CACHE_NAME = 'mini-skylines-assets-${assetHashPart}';
 const CORE_SHELL = [
   './',
   './index.html',
@@ -190,7 +193,9 @@ self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys()
       .then((keys) => Promise.all(
-        keys.filter((k) => k.startsWith('mini-skylines-') && k !== CACHE_NAME).map((k) => caches.delete(k))
+        keys
+          .filter((k) => k.startsWith('mini-skylines-') && k !== CACHE_NAME && k !== ASSET_CACHE_NAME)
+          .map((k) => caches.delete(k))
       ))
       .then(() => self.clients.claim())
   );
@@ -205,9 +210,9 @@ self.addEventListener('fetch', (event) => {
   const isManifestJson = url.pathname.endsWith('manifest.json');
 
   if (isBinaryAsset && !isManifestJson) {
-    // Cache-First for immutable binary PBR textures, models & icons
+    // Persistent Cache-First for immutable binary PBR textures, GLB models & icons (survives code updates!)
     event.respondWith(
-      caches.open(CACHE_NAME).then((cache) =>
+      caches.open(ASSET_CACHE_NAME).then((cache) =>
         cache.match(event.request, { ignoreSearch: true }).then((cached) => {
           if (cached) return cached;
           return fetch(event.request).then((resp) => {

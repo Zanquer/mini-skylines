@@ -1399,9 +1399,10 @@ export class GameUI {
       if (progWrap && progFill) {
         const progLbl = document.getElementById('insp-prog-label');
         if (progLbl) {
+          const isJam = activeAcc.type === 'jam';
           progLbl.textContent = activeAcc.state === 'awaiting_police'
-            ? '⏳ 事故自行协商撤离进度'
-            : '🚓 交警事故清障进度';
+            ? (isJam ? '⏳ 拥堵缓慢自清进度' : '⏳ 事故自行协商撤离进度')
+            : (isJam ? '🚓 交警现场疏导进度' : '🚓 交警事故清障进度');
         }
         progWrap.style.display = 'block';
         progFill.style.width = `${pct}%`;
@@ -1609,15 +1610,16 @@ export class GameUI {
       let accBadgeHtml = '';
       let accRowHtml = '';
       if (tileAcc) {
+        const isJam = tileAcc.type === 'jam';
         const rem = tileAcc.state === 'awaiting_police' ? tileAcc.selfClearTimer : tileAcc.remainingTime;
-        const tot = tileAcc.state === 'awaiting_police' ? 26.0 : (tileAcc.totalTime || 10.0);
+        const tot = tileAcc.state === 'awaiting_police' ? (isJam ? 14.0 : 26.0) : (tileAcc.totalTime || 10.0);
         const pct = Math.max(4, Math.min(100, Math.round((1 - rem / Math.max(1, tot)) * 100)));
         accBadgeHtml = tileAcc.state === 'clearing'
-          ? `<span class="badge ok">🚓 交警现场清障 · 剩余 ${rem.toFixed(1)}s</span>`
+          ? `<span class="badge ok">${isJam ? '🚓 交警绿波疏导中' : '🚓 交警现场清障'} · 剩余 ${rem.toFixed(1)}s</span>`
           : (tileAcc.state === 'police_en_route'
             ? `<span class="badge info">🚓 交警出警赶赴中</span>`
-            : `<span class="badge warn">🚨 交通事故 · 等待交警 (${Math.ceil(rem)}s)</span>`);
-        accRowHtml = `<div style="grid-column:1/-1;color:#fde68a;">🚨 <strong>交通事故：</strong>${tileAcc.cause} · 预计 <strong>${rem.toFixed(1)} 秒</strong>恢复 (${pct}%)</div>`;
+            : `<span class="badge warn">${isJam ? '🚦 严重拥堵' : '🚨 交通事故'} · 等待交警 (${Math.ceil(rem)}s)</span>`);
+        accRowHtml = `<div style="grid-column:1/-1;color:#fde68a;">${isJam ? '🚦 <strong>拥堵疏导：</strong>' : '🚨 <strong>交通事故：</strong>'}${tileAcc.cause} · 预计 <strong>${rem.toFixed(1)} 秒</strong>恢复 (${pct}%)</div>`;
       }
 
       badgesEl.innerHTML = `
@@ -1736,18 +1738,21 @@ export class GameUI {
           : '💡 在漫游模式下点击路上行驶的【汽车】可追踪其起点、终点与货运/清运任务！';
       }
       if (tileAcc) {
+        const isJam = tileAcc.type === 'jam';
         const rem = tileAcc.state === 'awaiting_police' ? tileAcc.selfClearTimer : tileAcc.remainingTime;
-        const tot = tileAcc.state === 'awaiting_police' ? 26.0 : (tileAcc.totalTime || 10.0);
+        const tot = tileAcc.state === 'awaiting_police' ? (isJam ? 14.0 : 26.0) : (tileAcc.totalTime || 10.0);
         const pct = Math.max(4, Math.min(100, Math.round((1 - rem / Math.max(1, tot)) * 100)));
         const progLbl = document.getElementById('insp-prog-label');
         if (progLbl) {
           progLbl.textContent = tileAcc.state === 'awaiting_police'
-            ? '⏳ 事故自行协商撤离进度'
-            : '🚓 交警事故清障进度';
+            ? (isJam ? '⏳ 拥堵缓慢自清进度' : '⏳ 事故自行协商撤离进度')
+            : (isJam ? '🚓 交警现场疏导进度' : '🚓 交警事故清障进度');
         }
         progWrap.style.display = 'block';
         progFill.style.width = `${pct}%`;
-        hintEl.textContent = '🚓 交警抵达事故现场后将按真实处置倒计时勘查清障并恢复通行，建造【🚓 警察总局】可大幅提速！';
+        hintEl.textContent = isJam
+          ? '🚓 交警巡逻车抵达拥堵路口后将启动人工绿波指挥放行，不再让车辆凭空消失；建议顺手将该路口升级为【🔄 环岛】治本！'
+          : '🚓 交警抵达事故现场后将按真实处置倒计时勘查清障并恢复通行，建造【🚓 警察总局】可大幅提速！';
       } else {
         progWrap.style.display = 'none';
       }

@@ -144,70 +144,88 @@ export class AssetManager {
     }
   }
 
-  async loadPBRTextures(THREE, { quality = 'high', onProgress = null } = {}) {
+  async loadPBRTextures(THREE, { quality = 'high', onProgress = null, onSuiteUpdate = null, onAlbedoReady = null } = {}) {
     if (!THREE || !THREE.TextureLoader || !this.isExternalSupported) {
       if (onProgress) onProgress(1, '内置材质已就绪');
+      if (onAlbedoReady) onAlbedoReady(this.textures);
       return this.textures;
     }
     const manifest = await this.loadManifest();
     if (!manifest || !Array.isArray(manifest.textures)) {
       if (onProgress) onProgress(1, '使用内置高清材质');
+      if (onAlbedoReady) onAlbedoReady(this.textures);
       return this.textures;
     }
 
     const loadPbrMaps = quality !== 'eco';
-    const jobs = [];
+    const albedoJobs = [];
+    const detailJobs = [];
     for (const entry of manifest.textures) {
-      jobs.push({ key: entry.key, channel: 'map', url: this.baseUrl + entry.albedo, srgb: true });
+      albedoJobs.push({ key: entry.key, channel: 'map', url: this.baseUrl + entry.albedo, srgb: true });
       if (loadPbrMaps) {
-        if (entry.normal) jobs.push({ key: entry.key, channel: 'normalMap', url: this.baseUrl + entry.normal, srgb: false });
-        if (entry.roughness) jobs.push({ key: entry.key, channel: 'roughnessMap', url: this.baseUrl + entry.roughness, srgb: false });
+        if (entry.normal) detailJobs.push({ key: entry.key, channel: 'normalMap', url: this.baseUrl + entry.normal, srgb: false });
+        if (entry.roughness) detailJobs.push({ key: entry.key, channel: 'roughnessMap', url: this.baseUrl + entry.roughness, srgb: false });
       }
     }
 
     const loader = new THREE.TextureLoader();
-    let done = 0;
-    const total = Math.max(1, jobs.length);
-    const concurrency = 6;
-    let cursor = 0;
-
-    const runWorker = async () => {
-      while (cursor < jobs.length) {
-        const job = jobs[cursor++];
-        if (!this.textures[job.key]) this.textures[job.key] = {};
-        if (this.textures[job.key][job.channel]) {
-          done++;
-          if (onProgress) onProgress(done / total, `加载 PBR 纹理 (${done}/${total})`);
-          continue;
-        }
-        await new Promise((resolve) => {
-          loader.load(
-            job.url,
-            (tex) => {
-              tex.wrapS = THREE.RepeatWrapping;
-              tex.wrapT = THREE.RepeatWrapping;
-              tex.anisotropy = quality === 'high' ? 4 : 2;
-              tex.colorSpace = job.srgb ? THREE.SRGBColorSpace : (THREE.NoColorSpace || THREE.LinearSRGBColorSpace);
-              tex.needsUpdate = true;
-              this.textures[job.key][job.channel] = tex;
-              done++;
-              if (onProgress) onProgress(done / total, `加载高清 PBR 贴图 (${done}/${total})`);
-              resolve();
-            },
-            undefined,
-            () => {
-              done++;
-              if (onProgress) onProgress(done / total, `加载贴图 (${done}/${total})`);
-              resolve();
+    const runBatch = async (jobs, concurrency, phaseLabel, emitEvery) => {
+      let done = 0;
+      const total = Math.max(1, jobs.length);
+      let cursor = 0;
+      const loadOne = (job, attempt = 0) => new Promise((resolve) => {
+        loader.load(
+          job.url,
+          (tex) => {
+            tex.wrapS = THREE.RepeatWrapping;
+            tex.wrapT = THREE.RepeatWrapping;
+            tex.anisotropy = quality === 'high' ? 4 : 2;
+            tex.colorSpace = job.srgb ? THREE.SRGBColorSpace : (THREE.NoColorSpace || THREE.LinearSRGBColorSpace);
+            tex.needsUpdate = true;
+            this.textures[job.key][job.channel] = tex;
+            resolve(true);
+          },
+          undefined,
+          () => {
+            if (attempt < 1) {
+              setTimeout(() => loadOne(job, attempt + 1).then(resolve), 220);
+              return;
             }
-          );
-        });
-      }
+            resolve(false);
+          }
+        );
+      });
+
+      const runWorker = async () => {
+        while (cursor < jobs.length) {
+          const job = jobs[cursor++];
+          if (!this.textures[job.key]) this.textures[job.key] = {};
+          if (!this.textures[job.key][job.channel]) {
+            await loadOne(job, 0);
+          }
+          done++;
+          if (onProgress) onProgress(done / total, `${phaseLabel} (${done}/${total})`);
+          if (onSuiteUpdate && (done % emitEvery === 0 || done === total)) {
+            onSuiteUpdate(this.textures);
+          }
+        }
+      };
+
+      const workers = [];
+      for (let i = 0; i < Math.min(concurrency, jobs.length || 1); i++) workers.push(runWorker());
+      await Promise.all(workers);
     };
 
-    const workers = [];
-    for (let i = 0; i < concurrency; i++) workers.push(runWorker());
-    await Promise.all(workers);
+    // Stage 1: Priority 14 Albedo Color Maps first (high concurrency over HTTP/2 + instant per-map live hot-apply!)
+    await runBatch(albedoJobs, 10, '加载主视觉高清贴图', 2);
+    if (onSuiteUpdate) onSuiteUpdate(this.textures);
+    if (onAlbedoReady) onAlbedoReady(this.textures);
+
+    // Stage 2: Stream 28 Normal & Roughness relief maps smoothly in background with progressive hot-bind!
+    if (detailJobs.length > 0) {
+      await runBatch(detailJobs, 8, '补全 PBR 法线/光泽贴图', 4);
+      if (onSuiteUpdate) onSuiteUpdate(this.textures);
+    }
     return this.textures;
   }
 
@@ -322,8 +340,14 @@ export class AssetManager {
   }
 
   getCacheName() {
-    const ver = (this.manifest && this.manifest.version) || 'v7.0';
+    const ver = (this.manifest && this.manifest.version) || 'v8.4';
     return `mini-skylines-${ver}`;
+  }
+
+  getAssetCacheName() {
+    const ver = (this.manifest && this.manifest.version) || 'v8.4-dev';
+    const assetHash = ver.split('-')[1] || 'dev';
+    return `mini-skylines-assets-${assetHash}`;
   }
 
   async getOfflineCacheStatus() {
@@ -331,21 +355,27 @@ export class AssetManager {
       return { supported: false, version: 'offline-inline', cachedCount: 0, totalCount: 0, totalBytes: 0, complete: false };
     }
     const manifest = await this.loadManifest();
-    const version = (manifest && manifest.version) || 'v7.0';
+    const version = (manifest && manifest.version) || 'v8.4';
     const coreUrls = ['./', './index.html', './app.bundle.js', './vendor/three_classic.js', './manifest.json', './assets/manifest.json'];
     const assetUrls = manifest && Array.isArray(manifest.files) ? manifest.files.map((f) => './' + f.path) : [];
-    const allUrls = [...coreUrls, ...assetUrls];
+    const totalCount = coreUrls.length + assetUrls.length;
     const totalBytes = (manifest ? manifest.totalBytes : 0) + 1400000;
 
     let cachedCount = 0;
     try {
       const names = await caches.keys();
-      const targetName = names.find((n) => n === this.getCacheName()) || names.find((n) => n.startsWith('mini-skylines-'));
-      if (targetName) {
-        const cache = await caches.open(targetName);
-        for (const u of allUrls) {
-          const hit = await cache.match(u, { ignoreSearch: true });
-          if (hit) cachedCount++;
+      const codeCacheName = names.find((n) => n === this.getCacheName()) || names.find((n) => n.startsWith('mini-skylines-v'));
+      const assetCacheName = names.find((n) => n === this.getAssetCacheName()) || codeCacheName;
+      if (codeCacheName) {
+        const codeCache = await caches.open(codeCacheName);
+        for (const u of coreUrls) {
+          if (await codeCache.match(u, { ignoreSearch: true })) cachedCount++;
+        }
+      }
+      if (assetCacheName) {
+        const assetCache = await caches.open(assetCacheName);
+        for (const u of assetUrls) {
+          if (await assetCache.match(u, { ignoreSearch: true })) cachedCount++;
         }
       }
     } catch {}
@@ -354,9 +384,9 @@ export class AssetManager {
       supported: true,
       version,
       cachedCount,
-      totalCount: allUrls.length,
+      totalCount,
       totalBytes,
-      complete: allUrls.length > 0 && cachedCount >= allUrls.length - 1
+      complete: totalCount > 0 && cachedCount >= totalCount - 1
     };
   }
 
@@ -367,25 +397,29 @@ export class AssetManager {
     const manifest = await this.loadManifest();
     const coreUrls = ['./', './index.html', './app.bundle.js', './vendor/three_classic.js', './manifest.json', './assets/manifest.json'];
     const assetUrls = manifest && Array.isArray(manifest.files) ? manifest.files.map((f) => './' + f.path) : [];
-    const allUrls = [...coreUrls, ...assetUrls];
+    const items = [
+      ...coreUrls.map((url) => ({ url, isAsset: false })),
+      ...assetUrls.map((url) => ({ url, isAsset: true }))
+    ];
 
-    const cacheName = this.getCacheName();
-    const cache = await caches.open(cacheName);
+    const codeCache = await caches.open(this.getCacheName());
+    const assetCache = await caches.open(this.getAssetCacheName());
     let done = 0;
     let failed = 0;
-    const total = Math.max(1, allUrls.length);
+    const total = Math.max(1, items.length);
 
-    const concurrency = 4;
+    const concurrency = 6;
     let cursor = 0;
     const run = async () => {
-      while (cursor < allUrls.length) {
-        const url = allUrls[cursor++];
+      while (cursor < items.length) {
+        const item = items[cursor++];
+        const targetCache = item.isAsset ? assetCache : codeCache;
         try {
-          const existing = await cache.match(url, { ignoreSearch: true });
+          const existing = await targetCache.match(item.url, { ignoreSearch: true });
           if (!existing) {
-            const resp = await fetch(url, { cache: 'reload' });
+            const resp = await fetch(item.url, { cache: 'reload' });
             if (resp && resp.ok) {
-              await cache.put(url, resp.clone());
+              await targetCache.put(item.url, resp.clone());
             } else {
               failed++;
             }
@@ -402,7 +436,7 @@ export class AssetManager {
     for (let i = 0; i < concurrency; i++) workers.push(run());
     await Promise.all(workers);
 
-    return { ok: failed === 0, cached: done - failed, total: allUrls.length, failed, version: this.manifest?.version || 'v7.0' };
+    return { ok: failed === 0, cached: done - failed, total: items.length, failed, version: this.manifest?.version || 'v8.4' };
   }
 
   async checkForUpdates() {
