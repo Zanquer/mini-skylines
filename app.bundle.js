@@ -4360,10 +4360,16 @@ signals.push(
 );
 }
 }
-if (!rmSelf && !isJunctionOrTurn && (t.roadGround >= 2 || isWaterBridge) && ((x + z) % 2 === 0)) {
+const nearTunnelPortal =
+(inBounds(x, z - 1) && grid[idx(x, z - 1)].roadGround === 4) ||
+(inBounds(x, z + 1) && grid[idx(x, z + 1)].roadGround === 4) ||
+(inBounds(x - 1, z) && grid[idx(x - 1, z)].roadGround === 4) ||
+(inBounds(x + 1, z) && grid[idx(x + 1, z)].roadGround === 4);
+if (!rmSelf && !isJunctionOrTurn && !nearTunnelPortal && (t.roadGround >= 2 || isWaterBridge) && ((x + z) % 2 === 0)) {
 const cx = x0 + 0.5;
 const cz = z0 + 0.5;
 const lampSides = isWaterBridge ? [-1, 1] : [(((x + z) >> 1) & 1) ? 1 : -1];
+const lampOffset = isWaterBridge ? 0.45 : 0.415;
 const runEW = hasEW && !hasNS;
 for (let sIdx = 0; sIdx < lampSides.length; sIdx++) {
 const side = lampSides[sIdx];
@@ -4372,7 +4378,7 @@ const sideDir = side < 0 ? 0 : 1;
 if (conn[sideDir]) continue;
 if (hasGroundFlareTaperInto(x - 1, z, 3, sideDir) || hasGroundFlareTaperInto(x + 1, z, 2, sideDir)) continue;
 const lx = cx;
-const lz = cz + side * 0.46;
+const lz = cz + side * lampOffset;
 if (pylonFootprints.some((p) => !p.isElev && Math.hypot(p.x - lx, p.z - lz) < 0.42)) continue;
 lamps.push({
 x: lx,
@@ -4385,7 +4391,7 @@ isElev: false
 const sideDir = side < 0 ? 2 : 3;
 if (conn[sideDir]) continue;
 if (hasGroundFlareTaperInto(x, z - 1, 1, sideDir) || hasGroundFlareTaperInto(x, z + 1, 0, sideDir)) continue;
-const lx = cx + side * 0.46;
+const lx = cx + side * lampOffset;
 const lz = cz;
 if (pylonFootprints.some((p) => !p.isElev && Math.hypot(p.x - lx, p.z - lz) < 0.42)) continue;
 lamps.push({
@@ -4604,6 +4610,9 @@ bConcrete.addCylinder(cx, cz, bedY, topY, 0.082, 0.072, 10, cPier[0], cPier[1], 
 }
 }
 }
+const cPortalCornice = [toCol(0.76), toCol(0.78), toCol(0.81)];
+const cPortalWing = [toCol(0.58), toCol(0.60), toCol(0.64)];
+const cPortalWarn = [toCol(0.96), toCol(0.74), toCol(0.14)];
 for (let z = 0; z < GRID_SIZE; z++) {
 for (let x = 0; x < GRID_SIZE; x++) {
 const t = grid[idx(x, z)];
@@ -4621,43 +4630,76 @@ const inX = -fdx;
 const inZ = -fdz;
 const ax0 = e.p0x, az0 = e.p0z;
 const ax1 = e.p1x, az1 = e.p1z;
-const bx0 = ax0 + inX * 0.24, bz0 = az0 + inZ * 0.24;
-const bx1 = ax1 + inX * 0.24, bz1 = az1 + inZ * 0.24;
-bRoad4.addQuad(ax0, e.y0, az0, bx0, e.y0, bz0, bx1, e.y1, bz1, ax1, e.y1, az1, 0, 0, 0, 0.25, 1, 0.25, 1, 0);
+const bx0 = ax0 + inX * 0.16, bz0 = az0 + inZ * 0.16;
+const bx1 = ax1 + inX * 0.16, bz1 = az1 + inZ * 0.16;
+const thY0 = e.y0 + 0.015;
+const thY1 = e.y1 + 0.015;
+bRoad4.addQuad(ax0, thY0, az0, bx0, thY0, bz0, bx1, thY1, bz1, ax1, thY1, az1, 0, 0, 0, 0.22, 1, 0.22, 1, 0);
 const baseY = Math.min(e.y0, e.y1);
-const topArchY = Math.max(e.y0, e.y1) + 0.44;
-const midX = (ax0 + ax1) * 0.5 + inX * 0.14;
-const midZ = (az0 + az1) * 0.5 + inZ * 0.14;
+const topArchY = Math.max(e.y0, e.y1) + 0.45;
+const edgeMidX = (ax0 + ax1) * 0.5;
+const edgeMidZ = (az0 + az1) * 0.5;
 const sideVx = ax1 - ax0;
 const sideVz = az1 - az0;
-for (const s of [-0.41, 0.41]) {
-const px = midX + sideVx * s;
-const pz = midZ + sideVz * s;
+const anchorDown = 0.90; // Deep subsurface foundation skirt -> NEVER floats even from low ground-level mountain angles!
+for (const s of [-0.43, 0.43]) {
+const px = edgeMidX + sideVx * s;
+const pz = edgeMidZ + sideVz * s;
 bConcrete.addBeam(
-px - inX * 0.11, pz - inZ * 0.11, baseY, baseY,
-px + inX * 0.13, pz + inZ * 0.13, baseY, baseY,
-0.085, topArchY - baseY, 0.12, true, true, false,
+px, pz, baseY, baseY,
+px + inX * 0.44, pz + inZ * 0.44, baseY, baseY,
+0.085, topArchY - baseY, anchorDown, true, true, false,
 cPortal[0], cPortal[1], cPortal[2]
 );
 }
-const pL0x = midX - sideVx * 0.49, pL0z = midZ - sideVz * 0.49;
-const pR0x = midX + sideVx * 0.49, pR0z = midZ + sideVz * 0.49;
+for (const s of [-0.525, 0.525]) {
+const wx = edgeMidX + sideVx * s;
+const wz = edgeMidZ + sideVz * s;
 bConcrete.addBeam(
-pL0x, pL0z, topArchY - 0.11, topArchY - 0.11,
-pR0x, pR0z, topArchY - 0.11, topArchY - 0.11,
-0.12, 0.15, 0.0, true, true, true,
+wx + inX * 0.02, wz + inZ * 0.02, baseY, baseY,
+wx + inX * 0.36, wz + inZ * 0.36, baseY, baseY,
+0.042, (topArchY - baseY) * 0.62, anchorDown, true, true, false,
+cPortalWing[0], cPortalWing[1], cPortalWing[2]
+);
+}
+const pL0x = edgeMidX - sideVx * 0.51, pL0z = edgeMidZ - sideVz * 0.51;
+const pR0x = edgeMidX + sideVx * 0.51, pR0z = edgeMidZ + sideVz * 0.51;
+const headMidIn = 0.08;
+bConcrete.addBeam(
+pL0x + inX * headMidIn, pL0z + inZ * headMidIn, topArchY - 0.11, topArchY - 0.11,
+pR0x + inX * headMidIn, pR0z + inZ * headMidIn, topArchY - 0.11, topArchY - 0.11,
+0.085, 0.15, 0.0, true, true, true,
 cPortal[0], cPortal[1], cPortal[2]
 );
-const boreCenterX = midX + inX * 0.07;
-const boreCenterZ = midZ + inZ * 0.07;
-const bLx = boreCenterX - sideVx * 0.33;
-const bLz = boreCenterZ - sideVz * 0.33;
-const bRx = boreCenterX + sideVx * 0.33;
-const bRz = boreCenterZ + sideVz * 0.33;
+bConcrete.addBeam(
+pL0x + inX * 0.06, pL0z + inZ * 0.06, topArchY + 0.035, topArchY + 0.035,
+pR0x + inX * 0.06, pR0z + inZ * 0.06, topArchY + 0.035, topArchY + 0.035,
+0.105, 0.045, 0.01, true, true, true,
+cPortalCornice[0], cPortalCornice[1], cPortalCornice[2]
+);
+const hoodCenterIn = 0.29;
+bConcrete.addBeam(
+edgeMidX - sideVx * 0.48 + inX * hoodCenterIn, edgeMidZ - sideVz * 0.48 + inZ * hoodCenterIn, topArchY - 0.10, topArchY - 0.10,
+edgeMidX + sideVx * 0.48 + inX * hoodCenterIn, edgeMidZ + sideVz * 0.48 + inZ * hoodCenterIn, topArchY - 0.10, topArchY - 0.10,
+0.155, 0.13, 0.0, true, true, true,
+cPortalWing[0], cPortalWing[1], cPortalWing[2]
+);
+bConcrete.addBeam(
+edgeMidX - sideVx * 0.36 - inX * 0.012, edgeMidZ - sideVz * 0.36 - inZ * 0.012, topArchY - 0.105, topArchY - 0.105,
+edgeMidX + sideVx * 0.36 - inX * 0.012, edgeMidZ + sideVz * 0.36 - inZ * 0.012, topArchY - 0.105, topArchY - 0.105,
+0.016, 0.032, 0.006, true, true, true,
+cPortalWarn[0], cPortalWarn[1], cPortalWarn[2]
+);
+const boreCenterX = edgeMidX + inX * 0.13;
+const boreCenterZ = edgeMidZ + inZ * 0.13;
+const bLx = boreCenterX - sideVx * 0.355;
+const bLz = boreCenterZ - sideVz * 0.355;
+const bRx = boreCenterX + sideVx * 0.355;
+const bRz = boreCenterZ + sideVz * 0.355;
 bTunnelDark.addQuad(
 bRx, topArchY - 0.09, bRz,
-bRx, baseY - 0.01, bRz,
-bLx, baseY - 0.01, bLz,
+bRx, baseY - 0.06, bRz,
+bLx, baseY - 0.06, bLz,
 bLx, topArchY - 0.09, bLz
 );
 }
@@ -8456,6 +8498,26 @@ this._addMesh(grp, this.geos.vehTruckHL, this.m.vehHeadlight, 0, 0, 0, 1, 1, 1, 
 this._addMesh(grp, this.geos.vehTruckTL, this.m.vehTaillight, 0, 0, 0, 1, 1, 1, false);
 const strobe = this._addMesh(grp, this.geos.box, this.m.beaconRed, 0, 0.190, 0.165, 0.115, 0.018, 0.028, false);
 strobe.name = 'strobe';
+return grp;
+}
+if (k === 'police') {
+if (this._placeFittedGLB(grp, 'cc0_police', 0, 0, 0, 0.165, 0.145, 0.34, false, 0)) {
+const stL = this._addMesh(grp, this.geos.box, this.m.beaconRed, -0.026, 0.140, 0.005, 0.046, 0.016, 0.024, false);
+stL.name = 'strobe';
+const stR = this._addMesh(grp, this.geos.box, this.m.cyanGlow, 0.026, 0.140, 0.005, 0.046, 0.016, 0.024, false);
+stR.name = 'strobeB';
+return grp;
+}
+this._addMesh(grp, this.geos.vehSedanBody, this.m.carPearlWhite, 0, 0, 0, 1, 1, 1, true);
+this._addMesh(grp, this.geos.box, this.m.airlineBlue, 0, 0.048, -0.004, 0.148, 0.024, 0.255, false);
+this._addMesh(grp, this.geos.vehSedanCabin, this.m.cockpitGlass, 0, 0, 0, 1, 1, 1, true);
+this._addMesh(grp, this.geos.vehSedanWheels, this.m.tireRubber, 0, 0, 0, 1, 1, 1, true);
+this._addMesh(grp, this.geos.vehSedanHL, this.m.vehHeadlight, 0, 0, 0, 1, 1, 1, false);
+this._addMesh(grp, this.geos.vehSedanTL, this.m.vehTaillight, 0, 0, 0, 1, 1, 1, false);
+const stL = this._addMesh(grp, this.geos.box, this.m.beaconRed, -0.025, 0.118, -0.010, 0.044, 0.015, 0.024, false);
+stL.name = 'strobe';
+const stR = this._addMesh(grp, this.geos.box, this.m.cyanGlow, 0.025, 0.118, -0.010, 0.044, 0.015, 0.024, false);
+stR.name = 'strobeB';
 return grp;
 }
 if (k === 'garbagetruck') {
@@ -13458,6 +13520,26 @@ disaster: []
 };
 const powerShort = this.powerDemand > this.powerSupply;
 const waterShort = this.waterDemand > this.waterSupply;
+if (this.traffic && Array.isArray(this.traffic.accidents)) {
+for (let ai = 0; ai < this.traffic.accidents.length; ai++) {
+const acc = this.traffic.accidents[ai];
+const reasonText = acc.state === 'clearing'
+? `🚓 交警正在现场勘查清障，预计剩余 ${Math.ceil(acc.remainingTime)} 秒恢复通行（${acc.cause}）`
+: (acc.state === 'police_en_route'
+? `🚓 交警巡逻车已紧急出警，正赶往现场处理【${acc.cause}】`
+: `🚨 发生【${acc.cause}】，等待警察总局派交警处理（无警局时 ${Math.ceil(acc.selfClearTimer)} 秒后自行协商撤离）`);
+categories.disaster.push({
+category: 'disaster',
+icon: '🚨',
+title: `交通事故 · ${acc.roadName}`,
+reason: reasonText,
+actionTip: '确保道路连通已通电的【🚓 警察总局】可 3 倍速派交警专业清障，点击可跳转查看现场进度',
+x: acc.x,
+z: acc.z,
+severity: 4
+});
+}
+}
 for (let z = 0; z < GRID_SIZE; z++) {
 for (let x = 0; x < GRID_SIZE; x++) {
 const t = this.grid[idx(x, z)];
@@ -14703,6 +14785,7 @@ return a + diff * t;
 class TrafficManager {
 constructor(sim) {
 this.sim = sim;
+if (sim) sim.traffic = this;
 this.vehicles = [];
 this.trains = [];      // HSR multi-car bullet trains & underground metro trains!
 this.aircraft = [];    // 3D Wide-body Airliners approaching/landing/climbing at airports!
@@ -14710,11 +14793,14 @@ this.ships = [];       // 3D Cargo Container Ships sailing SE Sea Bay <-> Seapor
 this.leisureBoats = []; // 3D Coastal CC0 Sailboats & Fishing Boats cruising the bay!
 this.busStops = [];    // Active roadside EV bus stop tiles collected during refreshRoadGraph!
 this.pedestrians = []; // Lightweight sidewalk pedestrians (<= 240, pure data, zero Three.js dependency)
+this.accidents = [];   // Active road traffic accidents awaiting or being cleared by Traffic Police
 this._pedRoadPool = [];
 this._pedSpawnTimer = 0;
 this.spawnTimer = 0;
 this.trainTimer = 0;
 this.fireTimer = 0;
+this.policeTimer = 0;
+this._accidentCooldown = 28;
 this.aircraftTimer = 0;
 this.shipTimer = 2.0;
 this._boatSpawnTimer = 1.0;
@@ -14725,6 +14811,8 @@ this._nextTrainId = 1;
 this._nextShipId = 1;
 this._nextBoatId = 1;
 this._nextPedId = 1;
+this._nextAccidentId = 1;
+this.totalAccidentsCleared = 0;
 const N = GRID_SIZE * GRID_SIZE;
 this.roadDegree = new Uint8Array(N);
 this.tileOccupancy = new Uint8Array(N);
@@ -14761,10 +14849,14 @@ this.ships.length = 0;
 this.leisureBoats.length = 0;
 this.busStops.length = 0;
 this.pedestrians.length = 0;
+this.accidents.length = 0;
 this._pedRoadPool.length = 0;
 this._pedSpawnTimer = 0;
 this.spawnTimer = 0;
 this.fireTimer = 0;
+this.policeTimer = 0;
+this._accidentCooldown = 28;
+this.totalAccidentsCleared = 0;
 this.trainTimer = 0;
 this.aircraftTimer = 0;
 this.shipTimer = 2.0;
@@ -14822,6 +14914,7 @@ I: '现代工业厂房',
 O: '甲级写字楼',
 waste_plant: '环保垃圾焚烧厂',
 fire_station: '消防总署',
+police_station: '警察总局',
 police: '警察总局',
 hospital: '综合医院',
 school: '市立理工大学',
@@ -15335,6 +15428,17 @@ return y0 + 0.5 * (y1 - y0) * distFromCenter;
 sampleSegmentHeight(p0, p1, t) {
 const ct = Math.min(1, Math.max(0, t));
 if (!p0.onRamp && !p1.onRamp) {
+if (p0.layer === 0 && p1.layer === 0) {
+const t0 = this.sim.getTile(p0.x, p0.z);
+const t1 = this.sim.getTile(p1.x, p1.z);
+const isT0 = Boolean(t0 && t0.roadGround === 4);
+const isT1 = Boolean(t1 && t1.roadGround === 4);
+if (isT0 !== isT1) {
+return isT0
+? this.getRoadNodeY(p1.x, p1.z, 0)
+: this.getRoadNodeY(p0.x, p0.z, 0);
+}
+}
 const y0 = this.getRoadNodeY(p0.x, p0.z, p0.layer);
 const y1 = this.getRoadNodeY(p1.x, p1.z, p1.layer);
 return (1 - ct) * y0 + ct * y1;
@@ -15417,6 +15521,9 @@ rWeight = Math.sin(clampedT * Math.PI * 0.5);
 }
 laneOff += 0.08 * rWeight;
 }
+if (p0.layer === 0 && p1.layer === 0 && (t0?.roadGround === 4 || t1?.roadGround === 4)) {
+return Math.min(0.165, laneOff);
+}
 return Math.min(0.34, laneOff);
 }
 syncVehicleTransform(v, effDt = 0) {
@@ -15455,13 +15562,30 @@ const laneOff = v.curLaneOff;
 v.wx = w0.wx + vx * v.t + rightX * laneOff;
 v.wz = w0.wz + vz * v.t + rightZ * laneOff;
 v.wy = this.sampleSegmentHeight(p0, p1, v.t);
+const t0 = this.sim.getTile(p0.x, p0.z);
+const t1 = this.sim.getTile(p1.x, p1.z);
+const isT0 = p0.layer === 0 && !p0.onRamp && t0?.roadGround === 4;
+const isT1 = p1.layer === 0 && !p1.onRamp && t1?.roadGround === 4;
+if (isT0 !== isT1) {
+v.pitch = 0;
+const ct = v.t || 0;
+if (!isT0 && isT1) {
+v.inTunnel = ct >= 0.62;
+v._portalFade = ct <= 0.50 ? 1.0 : Math.max(0.42, 1.0 - ((ct - 0.50) / 0.12) * 0.58);
+} else {
+v.inTunnel = ct < 0.38;
+v._portalFade = ct >= 0.50 ? 1.0 : Math.max(0.42, 0.42 + ((ct - 0.38) / 0.12) * 0.58);
+}
+} else {
 const tLo = Math.max(0, (v.t || 0) - 0.05);
 const tHi = Math.min(1, (v.t || 0) + 0.05);
 const dtSpan = tHi - tLo;
 const dy = dtSpan > 1e-4 ? (this.sampleSegmentHeight(p0, p1, tHi) - this.sampleSegmentHeight(p0, p1, tLo)) : 0;
 const rawSlope = (len > 0.05 && dtSpan > 1e-4) ? Math.atan2(dy, dtSpan * len) : 0;
 v.pitch = effDt <= 0 ? rawSlope : ((v.pitch || 0) * 0.78 + rawSlope * 0.22);
-v.inTunnel = p0.layer === 0 && !p0.onRamp && this.sim.getTile(p0.x, p0.z)?.roadGround === 4;
+v.inTunnel = Boolean(isT0 && isT1);
+v._portalFade = 1.0;
+}
 }
 tryRerouteVehicle(v) {
 const cur = v.path && v.path[v.seg];
@@ -15483,6 +15607,12 @@ const altAcc = this.sim.findRoadAccess(bt.x, bt.z);
 if (altAcc) {
 newPath = this.findRoadPath(cur.x, cur.z, altAcc.rx, altAcc.rz, startOnRamp, startLayer, false);
 }
+}
+}
+if ((!newPath || newPath.length < 2) && v.kind === 'police' && v.policeTargetAccidentId) {
+const acc = this.accidents.find((a) => a.id === v.policeTargetAccidentId);
+if (acc) {
+newPath = this.findRoadPath(cur.x, cur.z, acc.x, acc.z, startOnRamp, startLayer, false);
 }
 }
 if (newPath && newPath.length >= 2) {
@@ -15660,6 +15790,14 @@ const p = this.pedestrians[i];
 const pt = this.sim.getTile(p.tx, p.tz);
 if (!pt || !(pt.roadGround === 1 || pt.roadGround === 2) || !this.isGroundRoadPassable(pt) || pt.dam || pt.ramp) {
 this.pedestrians.splice(i, 1);
+}
+}
+for (let i = this.accidents.length - 1; i >= 0; i--) {
+const acc = this.accidents[i];
+const at = this.sim.getTile(acc.x, acc.z);
+if (!at || !(at.roadGround >= 1 && at.roadGround <= 3) || at.dam) {
+this._clearAccidentEntities(acc, false);
+this.accidents.splice(i, 1);
 }
 }
 this.purgeInvalidShipsAndAircraft();
@@ -16070,6 +16208,349 @@ inTunnel: false
 this.syncVehicleTransform(v, 0);
 this.vehicles.push(v);
 this.refreshActiveModalCounts();
+}
+_clearAccidentEntities(acc, sendPoliceHome = true) {
+if (!acc) return;
+for (let i = 0; i < this.vehicles.length; i++) {
+const v = this.vehicles[i];
+if (v.accidentId === acc.id) {
+v.accidentId = null;
+v.accidentYawOffset = 0;
+v.stuckTimer = 0;
+if (v._origTripLabel) v.tripLabel = v._origTripLabel;
+}
+if (v.kind === 'police' && (v.policeOnSceneId === acc.id || v.policeTargetAccidentId === acc.id)) {
+v.policeOnSceneId = null;
+v.policeTargetAccidentId = null;
+v.stuckTimer = 0;
+v.policeReturning = true;
+v.tripLabel = '🚓 交警勘查完毕返航';
+if (sendPoliceHome && acc.policeStationTile) {
+const cur = v.path && v.path[Math.min(v.seg, v.path.length - 1)];
+const stAcc = this.sim.findRoadAccess(acc.policeStationTile.x, acc.policeStationTile.z);
+if (cur && stAcc) {
+const retPath = this.findRoadPath(cur.x, cur.z, stAcc.rx, stAcc.rz, false, 0, false);
+if (retPath && retPath.length >= 2) {
+v.path = retPath;
+v.seg = 0;
+v.t = 0;
+v.toName = v.fromName || '警察总局';
+v.destTile = { x: acc.policeStationTile.x, z: acc.policeStationTile.z };
+this.syncVehicleTransform(v, 0);
+continue;
+}
+}
+}
+if (v.path && v.seg >= v.path.length - 1) {
+v.seg = Math.max(0, v.path.length - 2);
+v.t = 0.96;
+}
+}
+}
+}
+triggerTrafficAccident(tx = null, tz = null, options = {}) {
+if (this.accidents.length >= 3) return null;
+this.ensureRampGraphFresh();
+const isEligibleVeh = (v) => (
+v && !v.inTunnel && !v.accidentId && !v.policeOnSceneId &&
+v.kind !== 'firetruck' && v.kind !== 'police' && v.kind !== 'bus' &&
+v.path && v.path[v.seg] && (v.path[v.seg].layer || 0) === 0 && !v.path[v.seg].onRamp
+);
+let chosenTile = null;
+let involved = [];
+if (typeof tx === 'number' && typeof tz === 'number' && inBounds(tx, tz)) {
+const t = this.sim.getTile(tx, tz);
+if (!t || !(t.roadGround >= 1 && t.roadGround <= 3) || t.dam || t.ramp) return null;
+if (this.accidents.some((a) => a.x === tx && a.z === tz)) return null;
+chosenTile = t;
+for (let i = 0; i < this.vehicles.length && involved.length < 2; i++) {
+const v = this.vehicles[i];
+if (!isEligibleVeh(v)) continue;
+const cur = v.path[v.seg];
+if (Math.abs(cur.x - tx) <= 1 && Math.abs(cur.z - tz) <= 1) {
+involved.push(v);
+}
+}
+if (involved.length === 0) {
+let nb = null;
+for (const d of RAMP_DIRS) {
+const nx = tx + d.dx, nz = tz + d.dz;
+const nt = this.sim.getTile(nx, nz);
+if (nt && nt.roadGround >= 1 && nt.roadGround <= 3 && !nt.dam) {
+nb = { x: nx, z: nz, layer: 0, onRamp: false };
+break;
+}
+}
+if (nb) {
+const w0 = tileToWorld(tx, tz);
+const staged = {
+kind: 'car',
+id: this._nextVehId++,
+variantIdx: (this._nextAccidentId * 3) % 10,
+tripType: 'commute',
+tripLabel: '🚗 市民通勤',
+fromName: '城区道路',
+toName: '市区干道',
+originTile: { x: tx, z: tz },
+destTile: { x: nb.x, z: nb.z },
+color: [0.92, 0.94, 0.97],
+length: 0.30,
+width: 0.145,
+height: 0.12,
+path: [{ x: tx, z: tz, layer: 0, onRamp: false }, nb],
+seg: 0,
+t: 0.18,
+speed: 0,
+maxSpeed: 1.85,
+stuckTimer: 0,
+laneSlot: 0,
+laneChangeCooldown: 0,
+wx: w0.wx,
+wy: this.getRoadNodeY(tx, tz, 0),
+wz: w0.wz,
+dirX: nb.x - tx,
+dirZ: nb.z - tz,
+inTunnel: false
+};
+this.syncVehicleTransform(staged, 0);
+this.vehicles.push(staged);
+involved.push(staged);
+}
+}
+} else {
+let bestScore = -1;
+for (let i = 0; i < this.vehicles.length; i++) {
+const v = this.vehicles[i];
+if (!isEligibleVeh(v)) continue;
+const cur = v.path[v.seg];
+const t = this.sim.getTile(cur.x, cur.z);
+if (!t || !(t.roadGround >= 1 && t.roadGround <= 3) || t.dam || t.ramp) continue;
+if (this.accidents.some((a) => Math.hypot(a.x - cur.x, a.z - cur.z) < 5)) continue;
+const ti = idx(cur.x, cur.z);
+const deg = this.roadDegree[ti] || 0;
+const score = (deg >= 3 ? 3.0 : 1.0) + (this.tileOccupancy[ti] || 0) * 1.4 + (t.congestion || 0) * 2.0;
+if (score > bestScore) {
+bestScore = score;
+chosenTile = t;
+involved = [v];
+}
+}
+if (chosenTile && involved.length === 1) {
+const v0 = involved[0];
+for (let i = 0; i < this.vehicles.length; i++) {
+const o = this.vehicles[i];
+if (o === v0 || !isEligibleVeh(o)) continue;
+if (Math.hypot(o.wx - v0.wx, o.wz - v0.wz) <= 1.05) {
+involved.push(o);
+break;
+}
+}
+}
+}
+if (!chosenTile) return null;
+const deg = this.roadDegree[idx(chosenTile.x, chosenTile.z)] || 0;
+const roadName = deg >= 4
+? '四向十字路口'
+: (deg === 3 ? '三向交叉路口' : (chosenTile.roadGround >= 2 ? '四车道主干道' : '城市街道'));
+const wInfo = typeof this.sim.getWeatherInfo === 'function' ? this.sim.getWeatherInfo() : { id: 'sunny' };
+const isBadWeather = wInfo.id === 'rain' || wInfo.id === 'storm' || wInfo.id === 'snow' || wInfo.id === 'blizzard';
+const cause = options.cause || (
+isBadWeather
+? '雨雪路面打滑追尾剐蹭'
+: (deg >= 3 ? '繁忙路口抢行刮擦事故' : '并线未让行轻微碰撞')
+);
+const highSafety = (chosenTile.safety || 0) >= 60;
+const totalTime = Number(options.duration || (isBadWeather ? 11.5 : (highSafety ? 8.5 : 10.0)));
+const wCenter = tileToWorld(chosenTile.x, chosenTile.z);
+const primaryVeh = involved[0];
+const acc = {
+id: this._nextAccidentId++,
+x: chosenTile.x,
+z: chosenTile.z,
+wx: primaryVeh ? primaryVeh.wx : wCenter.wx,
+wy: primaryVeh ? primaryVeh.wy : this.getRoadNodeY(chosenTile.x, chosenTile.z, 0),
+wz: primaryVeh ? primaryVeh.wz : wCenter.wz,
+roadName,
+cause,
+vehicleIds: involved.map((v) => v.id),
+state: 'awaiting_police',
+policeVehicleId: null,
+policeStationTile: null,
+totalTime,
+remainingTime: totalTime,
+selfClearTimer: Number(options.selfClearTime || 26.0),
+elapsed: 0
+};
+for (let k = 0; k < involved.length; k++) {
+const v = involved[k];
+v._origTripLabel = v._origTripLabel || v.tripLabel;
+v.accidentId = acc.id;
+v.accidentYawOffset = k === 0 ? 0.28 : -0.34;
+v.speed = 0;
+v.stuckTimer = 0;
+v.tripLabel = `🚨 交通事故现场（${cause}）`;
+}
+this.accidents.push(acc);
+this._accidentCooldown = 48;
+chosenTile.congestion = Math.max(chosenTile.congestion || 0, 0.85);
+this.sim.latestChirp = {
+user: '@交警支队播报',
+text: `🚨 (${acc.x},${acc.z}) ${acc.roadName}发生【${acc.cause}】！道路局部缓行，已呼叫附近警察总局派交警巡逻车赶赴现场处理。`,
+mood: 'warn'
+};
+this.tryDispatchPoliceCar();
+return acc;
+}
+tryDispatchPoliceCar() {
+if (this.accidents.length === 0) return;
+for (let aIdx = 0; aIdx < this.accidents.length; aIdx++) {
+const acc = this.accidents[aIdx];
+if (acc.state !== 'awaiting_police') continue;
+let bestPath = null;
+let bestStation = null;
+for (let i = 0; i < this.sim.grid.length; i++) {
+const t = this.sim.grid[i];
+const b = t.building;
+if (b && (b.type === 'police_station' || b.type === 'police') && !b.abandoned && !b.underConstruction && t.powered) {
+const srcAcc = this.sim.findRoadAccess(t.x, t.z);
+if (!srcAcc) continue;
+let p = null;
+if (srcAcc.rx === acc.x && srcAcc.rz === acc.z) {
+p = [
+{ x: acc.x, z: acc.z, layer: 0, onRamp: false },
+{ x: acc.x, z: acc.z, layer: 0, onRamp: false }
+];
+} else {
+p = this.findRoadPath(srcAcc.rx, srcAcc.rz, acc.x, acc.z, false, 0, false);
+}
+if (p && p.length >= 2 && (!bestPath || p.length < bestPath.length)) {
+bestPath = p;
+bestStation = t;
+}
+}
+}
+if (!bestPath || !bestStation) continue;
+const fromName = this.getEndpointName({
+bx: bestStation.x,
+bz: bestStation.z,
+building: bestStation.building
+});
+const w0 = tileToWorld(bestPath[0].x, bestPath[0].z);
+const pv = {
+kind: 'police',
+policeTargetAccidentId: acc.id,
+policeOnSceneId: null,
+policeReturning: false,
+id: this._nextVehId++,
+variantIdx: 0,
+tripType: 'service',
+tripLabel: '🚓 交警紧急出警处理事故',
+fromName,
+toName: `事故现场 (${acc.x}, ${acc.z})`,
+originTile: { x: bestStation.x, z: bestStation.z },
+destTile: { x: acc.x, z: acc.z },
+color: [0.95, 0.97, 1.0],
+length: 0.34,
+width: 0.15,
+height: 0.145,
+path: bestPath,
+seg: 0,
+t: 0,
+speed: 2.4,
+maxSpeed: 2.85,
+stuckTimer: 0,
+laneSlot: 0,
+laneChangeCooldown: 0,
+wx: w0.wx,
+wy: this.getRoadNodeY(bestPath[0].x, bestPath[0].z, 0),
+wz: w0.wz,
+dirX: 0,
+dirZ: -1,
+inTunnel: false
+};
+this.syncVehicleTransform(pv, 0);
+this.vehicles.push(pv);
+acc.state = 'police_en_route';
+acc.policeVehicleId = pv.id;
+acc.policeStationTile = { x: bestStation.x, z: bestStation.z };
+this.refreshActiveModalCounts();
+}
+}
+updateAccidents(effDt) {
+if (this.accidents.length === 0) return;
+for (let i = this.accidents.length - 1; i >= 0; i--) {
+const acc = this.accidents[i];
+acc.elapsed += effDt;
+const t = this.sim.getTile(acc.x, acc.z);
+if (!t || !(t.roadGround >= 1 && t.roadGround <= 3) || t.dam) {
+this._clearAccidentEntities(acc, false);
+this.accidents.splice(i, 1);
+continue;
+}
+t.congestion = Math.max(t.congestion || 0, 0.80);
+let pv = acc.policeVehicleId
+? this.vehicles.find((v) => v.id === acc.policeVehicleId)
+: null;
+if (acc.state === 'police_en_route') {
+if (!pv) {
+acc.state = 'awaiting_police';
+acc.policeVehicleId = null;
+} else {
+const distToScene = Math.hypot(pv.wx - acc.wx, pv.wz - acc.wz);
+const arrived = distToScene <= 0.95 || pv.policeOnSceneId === acc.id || pv.seg >= pv.path.length - 1;
+if (arrived) {
+pv.policeOnSceneId = acc.id;
+pv.speed = 0;
+pv.stuckTimer = 0;
+pv.tripLabel = `🚓 交警正在现场勘查清障`;
+acc.state = 'clearing';
+for (const v of this.vehicles) {
+if (v.accidentId === acc.id) {
+v.tripLabel = '🚨 交警现场定责清障中';
+}
+}
+this.sim.latestChirp = {
+user: '@交警支队播报',
+text: `🚓 交警巡逻车已抵达 (${acc.x},${acc.z}) 事故现场并布设警示锥桶，预计 ${Math.ceil(acc.remainingTime)} 秒后清障恢复通行！`,
+mood: 'info'
+};
+}
+}
+} else if (acc.state === 'clearing') {
+if (!pv) {
+acc.state = 'awaiting_police';
+acc.policeVehicleId = null;
+} else {
+pv.speed = 0;
+pv.stuckTimer = 0;
+acc.remainingTime = Math.max(0, acc.remainingTime - effDt);
+if (acc.remainingTime <= 0) {
+this._clearAccidentEntities(acc, true);
+this.totalAccidentsCleared++;
+this.accidents.splice(i, 1);
+this.sim.latestChirp = {
+user: '@交警支队播报',
+text: `✅ (${acc.x},${acc.z}) ${acc.roadName}交通事故已勘查清障完毕，道路恢复畅通！`,
+mood: 'good'
+};
+continue;
+}
+}
+} else {
+acc.selfClearTimer = Math.max(0, acc.selfClearTimer - effDt);
+if (acc.selfClearTimer <= 0) {
+this._clearAccidentEntities(acc, false);
+this.totalAccidentsCleared++;
+this.accidents.splice(i, 1);
+this.sim.latestChirp = {
+user: '@市民路况播报',
+text: `🚧 (${acc.x},${acc.z}) 事故双方自行协商撤离，道路缓慢恢复（建造【🚓 警察总局】可派交警 3 倍速专业处置！）`,
+mood: 'info'
+};
+continue;
+}
+}
+}
 }
 _hasSpawnClearance(wx, wz, layer = 0, minDist = 0.68) {
 const minSq = minDist * minDist;
@@ -16672,6 +17153,27 @@ if (this.fireTimer >= 0.9) {
 this.fireTimer = 0;
 this.tryDispatchFireTruck();
 }
+this.policeTimer += effDt;
+if (this.policeTimer >= 0.9) {
+this.policeTimer = 0;
+this.tryDispatchPoliceCar();
+}
+this._accidentCooldown = Math.max(0, (this._accidentCooldown || 0) - effDt);
+if (
+this._accidentCooldown <= 0 &&
+this.accidents.length < 2 &&
+(this.sim.population || 0) >= 250 &&
+this.vehicles.length >= 12
+) {
+const wInfo = typeof this.sim.getWeatherInfo === 'function' ? this.sim.getWeatherInfo() : { id: 'sunny' };
+const weatherRisk = wInfo.id === 'storm' || wInfo.id === 'blizzard'
+? 3.0
+: (wInfo.id === 'rain' || wInfo.id === 'snow' ? 2.0 : 1.0);
+if (Math.random() < 0.0065 * weatherRisk * effDt) {
+this.triggerTrafficAccident();
+}
+}
+this.updateAccidents(effDt);
 this.trainTimer += effDt;
 if (this.trainTimer >= 1.8) {
 this.trainTimer = 0;
@@ -16694,11 +17196,23 @@ v.stuckTimer = 0;
 this.syncVehicleTransform(v, effDt);
 continue;
 }
+if (v.accidentId || v.policeOnSceneId) {
+v.speed = 0;
+v.stuckTimer = 0;
+this.syncVehicleTransform(v, effDt);
+continue;
+}
 let nxt = v.path[v.seg + 1];
 if (!nxt) {
 if (v.kind === 'firetruck' && v.fireTargetIdx !== undefined) {
 const bt = this.sim.grid[v.fireTargetIdx];
 if (bt && bt.building) bt.building.fire = 0;
+}
+if (v.kind === 'police' && v.policeTargetAccidentId && this.accidents.some((a) => a.id === v.policeTargetAccidentId)) {
+v.policeOnSceneId = v.policeTargetAccidentId;
+v.speed = 0;
+v.stuckTimer = 0;
+continue;
 }
 this.sim.onTripComplete?.(v);
 this.sim.onTripCompleted?.(v);
@@ -16754,7 +17268,7 @@ const enteringRoundabout = nxtDeg >= 3 && nxtTile.junctionMode === 'roundabout';
 if (inRoundaboutHub || (enteringRoundabout && v.t > 0.30)) {
 targetSpeed = Math.min(targetSpeed, v.maxSpeed * 0.82);
 }
-if (v.kind !== 'firetruck' && nxtDeg >= 3) {
+if (v.kind !== 'firetruck' && v.kind !== 'police' && nxtDeg >= 3) {
 const jMode = nxtTile.junctionMode || 'signal';
 const moveVertical = Math.abs(nxt.z - cur.z) > 0;
 if (jMode === 'roundabout') {
@@ -16781,6 +17295,7 @@ blockedBySignal = true;
 }
 }
 const latLimit = isMultiLane ? 0.145 : 0.175;
+let hardStop = false;
 for (let j = 0; j < this.vehicles.length; j++) {
 if (i === j) continue;
 const o = this.vehicles[j];
@@ -16793,13 +17308,14 @@ if (Math.abs((v.wy || 0) - (o.wy || 0)) > 0.22) continue;
 const rvx = o.wx - v.wx;
 const rvz = o.wz - v.wz;
 const distSq = rvx * rvx + rvz * rvz;
-if (distSq > 0.56) continue; // > 0.75 units away
+if (distSq > 1.12) continue; // > 1.06 units away
 const sameDir = v.dirX * o.dirX + v.dirZ * o.dirZ;
 const fwdDist = rvx * v.dirX + rvz * v.dirZ;
 const latDist = Math.abs(-rvx * v.dirZ + rvz * v.dirX);
-const safeGap = (v.length + o.length) * 0.62 + 0.12;
+const safeGap = (v.length + o.length) * 0.62 + 0.14;
 if (sameDir >= 0.45) {
-if (fwdDist > 0.01 && fwdDist < safeGap * 1.45 && latDist < latLimit) {
+const effLat = (o.accidentId || o.policeOnSceneId) ? Math.max(latLimit, 0.19) : latLimit;
+if (fwdDist > 0.01 && fwdDist < safeGap * 1.50 && latDist < effLat) {
 if (fwdDist < safeGap) {
 if (allowOvertake && targetSpeed > 0 && o.speed < v.maxSpeed * 0.85 && !(v.laneChangeCooldown > 0)) {
 const altSlot = v.laneSlot === 1 ? 0 : 1;
@@ -16811,26 +17327,50 @@ continue;
 }
 targetSpeed = 0;
 blockedByVehicle = true;
+if (fwdDist < safeGap * 0.74) hardStop = true;
 break;
 } else {
-targetSpeed = Math.min(targetSpeed, Math.max(0.15, o.speed * 0.92));
+targetSpeed = Math.min(targetSpeed, Math.max(0.12, o.speed * 0.90));
 }
 }
 } else if (sameDir > -0.75) {
-if (fwdDist > 0.03 && fwdDist < 0.48 && latDist < 0.28) {
+const crossFwd = (v.length * 0.5 + o.width * 0.5) + 0.30 + Math.min(0.28, (v.speed || 0) * 0.16);
+const crossLat = (o.length * 0.5 + v.width * 0.5) + 0.16;
+const oLead = Math.min(0.48, (o.speed || 0) * 0.36);
+const fRvx = rvx + o.dirX * oLead;
+const fRvz = rvz + o.dirZ * oLead;
+const futFwd = fRvx * v.dirX + fRvz * v.dirZ;
+const futLat = Math.abs(-fRvx * v.dirZ + fRvz * v.dirX);
+const directHit = fwdDist > 0.01 && fwdDist < crossFwd && latDist < crossLat;
+const predHit = futFwd > 0.01 && futFwd < crossFwd && futLat < crossLat * 1.05;
+if (directHit || predHit) {
 const oFwdToV = (-rvx) * o.dirX + (-rvz) * o.dirZ;
-const oAlreadyInside = oFwdToV < 0.12 || o.speed > v.speed + 0.22;
+const oAlreadyInside = Boolean(o.accidentId || o.policeOnSceneId) || oFwdToV < 0.16 || o.speed > v.speed + 0.18;
 const yieldToCross = oAlreadyInside || ((v.id || i) > (o.id || j));
 if (yieldToCross) {
 targetSpeed = 0;
 blockedByVehicle = true;
+if ((directHit && fwdDist < crossFwd * 0.85) || (predHit && futFwd < crossFwd * 0.72)) hardStop = true;
+break;
+}
+}
+} else {
+const oppFwd = (v.length + o.length) * 0.56 + 0.16;
+const oppLat = (v.width + o.width) * 0.68;
+if (fwdDist > 0.01 && fwdDist < oppFwd && latDist < oppLat) {
+const yieldOpp = Boolean(o.accidentId || o.policeOnSceneId) || ((v.id || i) > (o.id || j));
+if (yieldOpp) {
+targetSpeed = 0;
+blockedByVehicle = true;
+if (fwdDist < oppFwd * 0.75) hardStop = true;
 break;
 }
 }
 }
 }
-const accel = targetSpeed < v.speed ? 8.5 : 3.4;
+const accel = targetSpeed < v.speed ? (hardStop ? 24.0 : 10.5) : 3.4;
 v.speed += (targetSpeed - v.speed) * Math.min(1, effDt * accel);
+if (hardStop && targetSpeed === 0) v.speed = Math.min(v.speed, 0.04);
 if (v.speed < 0.01 && targetSpeed === 0) v.speed = 0;
 v.stuckTimer = v.stuckTimer || 0;
 if (v.speed < 0.06) {
@@ -16887,6 +17427,15 @@ text: '🧯 消防救援车已抵达现场扑灭烈火，化险为夷！',
 mood: 'good'
 };
 }
+}
+if (v.kind === 'police' && v.policeTargetAccidentId && this.accidents.some((a) => a.id === v.policeTargetAccidentId)) {
+v.seg = Math.max(0, v.path.length - 2);
+v.t = 0.72;
+v.policeOnSceneId = v.policeTargetAccidentId;
+v.speed = 0;
+v.stuckTimer = 0;
+this.syncVehicleTransform(v, effDt);
+continue;
 }
 if (v.kind === 'garbagetruck' && v.destTile) {
 const dtTile = this.sim.getTile(v.destTile.x, v.destTile.z);
@@ -17193,8 +17742,25 @@ this.pedestrians.splice(i, 1);
 continue;
 }
 p.ttl -= effDt;
+let pedYield = false;
+const vehs = this.vehicles;
+for (let vj = 0; vj < vehs.length; vj++) {
+const veh = vehs[vj];
+if (!veh || veh.inTunnel || (veh.speed || 0) < 0.08) continue;
+const dx = veh.wx - p.wx;
+const dz = veh.wz - p.wz;
+if (dx * dx + dz * dz < 0.085) {
+const ahead = dx * (p.dirX || 0) + dz * (p.dirZ || 0);
+if (ahead > -0.02 && ahead < 0.28) {
+pedYield = true;
+break;
+}
+}
+}
+if (!pedYield) {
 p.t += p.speed * effDt;
 p.walkPhase = (p.walkPhase + p.speed * effDt * 15) % (Math.PI * 2);
+}
 if (p.t >= 1.0) {
 if (p.ttl <= 0 && this.pedestrians.length > Math.floor(targetPed * 0.85)) {
 this.pedestrians.splice(i, 1);
@@ -18162,6 +18728,8 @@ this.previewRimPool = [];
 this.scaffoldPool = [];
 this.meteorPool = [];
 this.damWarnPool = [];
+this.accidentBeaconPool = [];
+this.accidentConePool = [];
 this.tornadoRings = [];
 this._initPersistentOverlayMeshes();
 this._loadEmbeddedGLBs();
@@ -18497,7 +19065,8 @@ this.selectedTileRim.scale.set(1.01, 0.08, 1.01);
 this.selectedTileRim.renderOrder = 29;
 this.selectedTileRim.visible = false;
 this.uiOverlayGroup.add(this.selectedTileRim);
-this.selectedVehicleHalo = new THREE.Mesh(this.geos.cylTower, this.mats.goldGlow);
+this.selectedVehicleHalo = new THREE.Mesh(this.geos.taperSpire, this.mats.goldGlow);
+this.selectedVehicleHalo.rotation.x = Math.PI;
 this.selectedVehicleHalo.visible = false;
 this.uiOverlayGroup.add(this.selectedVehicleHalo);
 for (let r = 0; r < 12; r++) {
@@ -18506,12 +19075,14 @@ ring.visible = false;
 this.uiOverlayGroup.add(ring);
 this.tornadoRings.push(ring);
 }
-this._poolCaps = { glow: 56, fire: 64, smoke: 96, spray: 48, damWarn: 16, preview: 64, scaffold: 32, meteor: 8 };
+this._poolCaps = { glow: 56, fire: 64, smoke: 96, spray: 48, damWarn: 16, preview: 64, scaffold: 32, meteor: 8, accidentBeacon: 8, accidentCone: 24 };
 for (let i = 0; i < this._poolCaps.glow; i++) this._acquirePoolSprite(this.glowPool, i, { map: this.glowTex, additive: true });
 for (let i = 0; i < this._poolCaps.fire; i++) this._acquirePoolSprite(this.firePool, i, { map: this.smokeTex });
 for (let i = 0; i < this._poolCaps.smoke; i++) this._acquirePoolSprite(this.smokePool, i, { map: this.smokeTex });
 for (let i = 0; i < this._poolCaps.spray; i++) this._acquirePoolSprite(this.sprayPool, i, { map: this.smokeTex });
 for (let i = 0; i < this._poolCaps.damWarn; i++) this._acquirePoolMesh(this.damWarnPool, i, this.geos.waterSphere, this.mats.redCross);
+for (let i = 0; i < this._poolCaps.accidentBeacon; i++) this._acquirePoolMesh(this.accidentBeaconPool, i, this.geos.waterSphere, this.mats.redCross);
+for (let i = 0; i < this._poolCaps.accidentCone; i++) this._acquirePoolMesh(this.accidentConePool, i, this.geos.taperSpire, this.mats.meteorGlow);
 for (let i = 0; i < this._poolCaps.preview; i++) this._acquirePoolMesh(this.previewMeshPool, i, this.geos.unitBox, this.mats.previewMat);
 for (let i = 0; i < this._poolCaps.preview; i++) this._acquirePoolMesh(this.previewRimPool, i, this.geos.unitBox, this.mats.previewRimMat);
 for (let i = 0; i < this._poolCaps.scaffold; i++) this._acquirePoolMesh(this.scaffoldPool, i, this.geos.unitBox, this.mats.goldGlow);
@@ -19675,7 +20246,20 @@ if (cur.layer === 1) {
 if (tA.ramp || tB.ramp) return null;
 return this._sampleInfraHeight(ih.elevCornerY, wx, wz);
 }
-if (tA.dam || tB.dam || tA.roadGround === 4 || tB.roadGround === 4) return null;
+if (tA.dam || tB.dam) return null;
+const isT0 = tA.roadGround === 4;
+const isT1 = tB.roadGround === 4;
+if (isT0 && isT1) return null;
+if (isT0 !== isT1) {
+const surf = isT0 ? nxt : cur;
+const sx0 = surf.x - HALF_GRID + 0.02;
+const sx1 = surf.x - HALF_GRID + 0.98;
+const sz0 = surf.z - HALF_GRID + 0.02;
+const sz1 = surf.z - HALF_GRID + 0.98;
+const cx = Math.max(sx0, Math.min(sx1, wx));
+const cz = Math.max(sz0, Math.min(sz1, wz));
+return this._sampleInfraHeight(ih.roadCornerY, cx, cz) + 0.012;
+}
 return this._sampleInfraHeight(ih.roadCornerY, wx, wz);
 }
 _syncTrafficSignals(dt) {
@@ -19784,34 +20368,52 @@ this._vehActiveMap.set(v, entry);
 const obj = entry.obj;
 obj.visible = true;
 let vScale = 1.0;
-if (!v.busLineId && v.path && v.path.length >= 2) {
+if (!v.busLineId && !v.accidentId && !v.policeOnSceneId && v.path && v.path.length >= 2) {
 if (v.seg === 0 && v.t < 0.22) vScale = 0.35 + (v.t / 0.22) * 0.65;
 else if (v.seg >= v.path.length - 2 && v.t > 0.78) vScale = 0.35 + ((1.0 - v.t) / 0.22) * 0.65;
 }
+if (!isUnder && typeof v._portalFade === 'number' && v._portalFade < 1.0) {
+vScale *= v._portalFade;
+}
 obj.scale.setScalar(Math.max(0.35, Math.min(1.0, vScale)));
 this.vehiclePool.push({ kind: v.kind, obj, vehicle: v });
+const yawBase = Math.atan2(v.dirX, v.dirZ) + (v.accidentYawOffset || 0);
 if (isUnder) {
 const tx = Math.floor(v.wx + HALF_GRID);
 const tz = Math.floor(v.wz + HALF_GRID);
 const tunY = inBounds(tx, tz) ? (this.sim.getTileElev(tx, tz) + 0.38) : (v.wy + 0.35);
 obj.position.set(v.wx, tunY, v.wz);
-obj.rotation.set(0, Math.atan2(v.dirX, v.dirZ), 0);
+obj.rotation.set(0, yawBase, 0);
 } else {
 const deckY = this._vehicleDeckHeight(v, v.wx, v.wz);
+const pCur = v.path && v.path[v.seg];
+const pNxt = v.path && v.path[v.seg + 1];
+const onPortalSeg = Boolean(
+pCur && pNxt && pCur.layer === 0 && pNxt.layer === 0 &&
+((this.sim.getTile(pCur.x, pCur.z)?.roadGround === 4) !== (this.sim.getTile(pNxt.x, pNxt.z)?.roadGround === 4))
+);
 if (deckY !== null) {
+let deckPitch = 0;
+if (!onPortalSeg) {
 const ahead = this._vehicleDeckHeight(v, v.wx + v.dirX * 0.12, v.wz + v.dirZ * 0.12);
 const behind = this._vehicleDeckHeight(v, v.wx - v.dirX * 0.12, v.wz - v.dirZ * 0.12);
-const deckPitch = (ahead !== null && behind !== null) ? Math.atan2(ahead - behind, 0.24) : (v.pitch || 0);
+deckPitch = (ahead !== null && behind !== null) ? Math.atan2(ahead - behind, 0.24) : (v.pitch || 0);
+}
 obj.position.set(v.wx, deckY + 0.004, v.wz);
-obj.rotation.set(-deckPitch, Math.atan2(v.dirX, v.dirZ), 0);
+obj.rotation.set(-deckPitch, yawBase, 0);
 } else {
 obj.position.set(v.wx, v.wy, v.wz);
-obj.rotation.set(-(v.pitch || 0), Math.atan2(v.dirX, v.dirZ), 0);
+obj.rotation.set(onPortalSeg ? 0 : -(v.pitch || 0), yawBase, 0);
 }
 }
 if (v.kind === 'firetruck') {
 const st = obj.getObjectByName('strobe');
 if (st) st.material = strobeRed ? this.mats.redCross : this.mats.cyanGlow;
+} else if (v.kind === 'police') {
+const stL = obj.getObjectByName('strobe');
+const stR = obj.getObjectByName('strobeB');
+if (stL) stL.material = strobeRed ? this.mats.redCross : this.mats.cyanGlow;
+if (stR) stR.material = strobeRed ? this.mats.cyanGlow : this.mats.redCross;
 }
 }
 const cursors = { hsrHead: 0, hsrMid: 0, metroHead: 0, metroMid: 0 };
@@ -20051,6 +20653,8 @@ let fireCount = 0;
 let smokeCount = 0;
 let sprayCount = 0;
 let damWarnCount = 0;
+let accBeaconCount = 0;
+let accConeCount = 0;
 let glowCount = 0;
 if (!isUnder) {
 for (let i = 0; i < this.sim.grid.length; i++) {
@@ -20111,6 +20715,39 @@ sp.position.set(s.x + ph * 0.22, s.y + ph * 0.65, s.z - ph * 0.12);
 sp.scale.setScalar(0.24 + ph * 0.45);
 sp.visible = true;
 }
+const activeAccidents = Array.isArray(this.traffic?.accidents) ? this.traffic.accidents : [];
+for (let aIdx = 0; aIdx < activeAccidents.length; aIdx++) {
+const acc = activeAccidents[aIdx];
+const deckY = this.sim.infraHeights?.roadCornerY
+? this._sampleInfraHeight(this.sim.infraHeights.roadCornerY, acc.wx, acc.wz)
+: (acc.wy || this.sim.getTileElev(acc.x, acc.z) + 0.03);
+const coneOffsets = [[-0.25, -0.22], [0.25, -0.22], [-0.25, 0.22], [0.25, 0.22]];
+for (let ci = 0; ci < coneOffsets.length && accConeCount < this._poolCaps.accidentCone; ci++) {
+const cone = this._acquirePoolMesh(this.accidentConePool, accConeCount++, this.geos.taperSpire, this.mats.meteorGlow);
+cone.scale.set(0.095, 0.085, 0.095);
+cone.position.set(acc.wx + coneOffsets[ci][0], deckY + 0.045, acc.wz + coneOffsets[ci][1]);
+cone.visible = true;
+}
+if (accBeaconCount < this._poolCaps.accidentBeacon) {
+const beacon = this._acquirePoolMesh(this.accidentBeaconPool, accBeaconCount++, this.geos.waterSphere, this.mats.redCross);
+const bob = Math.sin(this.clock * 6.5 + aIdx) * 0.035;
+beacon.material = acc.state === 'clearing'
+? (strobeRed ? this.mats.cyanGlow : this.mats.goldGlow)
+: (strobeRed ? this.mats.redCross : this.mats.goldGlow);
+beacon.scale.setScalar(0.17);
+beacon.position.set(acc.wx, deckY + 0.36 + bob, acc.wz);
+beacon.visible = true;
+}
+if (smokeCount < this._poolCaps.smoke) {
+const ph = (this.clock * 0.95 + aIdx * 0.37) % 1.0;
+const sp = this._acquirePoolSprite(this.smokePool, smokeCount++, { map: this.smokeTex });
+sp.material.color.setHex(0xe2e8f0);
+sp.material.opacity = 0.50 * (1 - ph);
+sp.position.set(acc.wx + ph * 0.08, deckY + 0.14 + ph * 0.38, acc.wz - ph * 0.06);
+sp.scale.setScalar(0.18 + ph * 0.22);
+sp.visible = true;
+}
+}
 if (night > 0.20 && this._maxGlowSprites > 0 && this.glowTex) {
 const glowAlpha = Math.min(1, (night - 0.20) / 0.55);
 for (let i = 0; i < this.animHooks.beacons.length && glowCount < this._maxGlowSprites; i++) {
@@ -20144,6 +20781,8 @@ this._hidePoolFrom(this.firePool, fireCount);
 this._hidePoolFrom(this.smokePool, smokeCount);
 this._hidePoolFrom(this.sprayPool, sprayCount);
 this._hidePoolFrom(this.damWarnPool, damWarnCount);
+this._hidePoolFrom(this.accidentBeaconPool, accBeaconCount);
+this._hidePoolFrom(this.accidentConePool, accConeCount);
 this._hidePoolFrom(this.glowPool, glowCount);
 let meteorCount = 0;
 if (this.disasters) {
@@ -20266,9 +20905,12 @@ this.selectedTileRim.visible = false;
 this._syncWeatherParticles(dt, isUnder);
 if (!isUnder && this.selectedVehicle && this.traffic.vehicles.includes(this.selectedVehicle) && !this.selectedVehicle.inTunnel) {
 const v = this.selectedVehicle;
-const pulse = 1.0 + Math.sin(this.clock * 7.5) * 0.14;
-this.selectedVehicleHalo.scale.set(0.68 * pulse, 0.035, 0.68 * pulse);
-this.selectedVehicleHalo.position.set(v.wx, (v.wy || 0) + 0.24, v.wz);
+const bob = Math.sin(this.clock * 6.5) * 0.035;
+const pulse = 1.0 + Math.sin(this.clock * 7.5) * 0.10;
+const baseY = this._vehicleDeckHeight(v, v.wx, v.wz) ?? (v.wy || 0);
+this.selectedVehicleHalo.scale.set(0.14 * pulse, 0.16, 0.14 * pulse);
+this.selectedVehicleHalo.position.set(v.wx, baseY + 0.34 + bob, v.wz);
+this.selectedVehicleHalo.rotation.y = this.clock * 2.2;
 this.selectedVehicleHalo.visible = true;
 } else {
 this.selectedVehicleHalo.visible = false;
@@ -21691,23 +22333,58 @@ const gridEl = document.getElementById('insp-grid');
 const actionsEl = document.getElementById('insp-actions');
 const hintEl = document.getElementById('insp-hint');
 const progWrap = document.getElementById('insp-prog-wrap');
+const progFill = document.getElementById('insp-prog-fill');
 const stuckSec = Number(veh.stuckTimer || 0);
 const rawSpd = Number(veh.speed ?? veh.curSpeed ?? 0);
 const kmh = veh.speedKmh !== undefined ? Math.round(veh.speedKmh) : Math.max(0, Math.round(rawSpd * 32));
 const dx = veh.destTile?.x ?? veh.destTile?.tx;
 const dz = veh.destTile?.z ?? veh.destTile?.tz;
 const hasDest = typeof dx === 'number' && typeof dz === 'number';
-titleEl.textContent = veh.tripLabel ? `🚗 ${veh.tripLabel}` : '🚗 市民/货运车辆追踪';
+const activeAcc = (Array.isArray(this.traffic?.accidents) && (veh.accidentId || veh.policeOnSceneId || veh.policeTargetAccidentId))
+? this.traffic.accidents.find((a) => a.id === (veh.accidentId || veh.policeOnSceneId || veh.policeTargetAccidentId))
+: null;
+titleEl.textContent = veh.tripLabel
+? (veh.kind === 'police' ? veh.tripLabel : (veh.accidentId ? veh.tripLabel : `🚗 ${veh.tripLabel}`))
+: '🚗 市民/货运车辆追踪';
 let typeBadge = '🚗 市民通勤/消费';
-if (veh.tripType === 'freight') typeBadge = '🚚 工业货运供应链';
+if (veh.kind === 'police') typeBadge = '🚓 交警执勤巡逻车';
+else if (veh.accidentId) typeBadge = '🚨 交通事故涉事车辆';
+else if (veh.tripType === 'freight') typeBadge = '🚚 工业货运供应链';
 else if (veh.tripType === 'service' || (veh.tripLabel && (veh.tripLabel.includes('垃圾') || veh.tripLabel.includes('消防')))) {
 typeBadge = '🚒 市政特种执勤';
 }
-badgesEl.innerHTML = `
-<span class="badge info">${typeBadge}</span>
+let statusBadgeHtml = `
 <span class="badge ${stuckSec > 3 ? 'warn' : 'ok'}">
 ${stuckSec > 3 ? `🚦 堵车等待 ${stuckSec.toFixed(1)}s` : '🟢 顺畅行驶中'}
 </span>
+`;
+let extraAccRow = '';
+if (activeAcc) {
+const rem = activeAcc.state === 'awaiting_police' ? activeAcc.selfClearTimer : activeAcc.remainingTime;
+const tot = activeAcc.state === 'awaiting_police' ? 26.0 : (activeAcc.totalTime || 10.0);
+const pct = Math.max(4, Math.min(100, Math.round((1 - rem / Math.max(1, tot)) * 100)));
+statusBadgeHtml = activeAcc.state === 'clearing'
+? `<span class="badge ok">🚓 交警现场清障中 · 剩余 ${rem.toFixed(1)}s</span>`
+: (activeAcc.state === 'police_en_route'
+? `<span class="badge info">🚓 交警巡逻车赶赴中</span>`
+: `<span class="badge warn">⏳ 等待交警 · 自清 ${Math.ceil(rem)}s</span>`);
+extraAccRow = `<div style="grid-column:1/-1;color:#fde68a;">🚨 事故原因：<strong>${activeAcc.cause}</strong> · 处置进度 <strong>${pct}%</strong></div>`;
+if (progWrap && progFill) {
+const progLbl = document.getElementById('insp-prog-label');
+if (progLbl) {
+progLbl.textContent = activeAcc.state === 'awaiting_police'
+? '⏳ 事故自行协商撤离进度'
+: '🚓 交警事故清障进度';
+}
+progWrap.style.display = 'block';
+progFill.style.width = `${pct}%`;
+}
+} else if (progWrap) {
+progWrap.style.display = 'none';
+}
+badgesEl.innerHTML = `
+<span class="badge info">${typeBadge}</span>
+${statusBadgeHtml}
 `;
 gridEl.innerHTML = `
 <div class="veh-route-box">
@@ -21715,7 +22392,8 @@ gridEl.innerHTML = `
 <div style="margin-top:3px;">🏁 <strong>目的地：</strong><span style="color:#7dd3fc;font-weight:700;">${veh.toName || (hasDest ? `地块 (${dx}, ${dz})` : '城际干道')}</span></div>
 </div>
 <div>当前车速：<strong>${kmh} km/h</strong></div>
-<div>受阻等待：<strong>${stuckSec.toFixed(1)} / 12s</strong></div>
+<div>${activeAcc ? `预计疏通：<strong>${(activeAcc.state === 'awaiting_police' ? activeAcc.selfClearTimer : activeAcc.remainingTime).toFixed(1)} 秒</strong>` : `受阻等待：<strong>${stuckSec.toFixed(1)} / 12s</strong>`}</div>
+${extraAccRow}
 `;
 if (hasDest) {
 this.renderer.selectedTile = { x: dx, z: dz };
@@ -21739,8 +22417,9 @@ this.flyToTile(dx, dz);
 actionsEl.style.display = 'none';
 actionsEl.innerHTML = '';
 }
-progWrap.style.display = 'none';
-hintEl.textContent = '💡 若路口死锁等待超 12 秒，货车超时会导致商场断货、垃圾车超时会导致小区垃圾成山！可点击拥堵路口切换【🛑 支路让主路】或【🔄 改建环岛】。';
+hintEl.textContent = activeAcc
+? '🚓 交警巡逻车抵达现场后将布设警示锥桶并按倒计时勘查清障；完善【🚓 警察总局】覆盖可缩短处置耗时！'
+: '💡 若路口死锁等待超 12 秒，货车超时会导致商场断货、垃圾车超时会导致小区垃圾成山！可点击拥堵路口切换【🛑 支路让主路】或【🔄 改建环岛】。';
 card.classList.add('open');
 }
 inspectTile(x, z) {
@@ -21854,6 +22533,8 @@ this.showToast('⚓ 请在海湾深水区拖拽布设海运航道，货轮将优
 }
 }
 if (!b.abandoned && b.level < this.sim.getMaxLevelForZone(b.type) && !b.underConstruction && ['RL','RH','CL','CH','I','O'].includes(b.type)) {
+const progLbl = document.getElementById('insp-prog-label');
+if (progLbl) progLbl.textContent = '建筑升级进度';
 progWrap.style.display = 'block';
 progFill.style.width = `${Math.min(100, Math.round(b.upgradeProgress || 0))}%`;
 } else {
@@ -21878,8 +22559,25 @@ roundabout: '🔄 环岛流转'
 }[curJMode] || '🚦 标准红绿灯';
 const dirArrows = ['⬆️ 向北单行', '⬇️ 向南单行', '⬅️ 向西单行', '➡️ 向东单行'];
 const isOneWay = typeof t.roadDir === 'number' && t.roadDir >= 0;
+const tileAcc = Array.isArray(this.traffic?.accidents)
+? this.traffic.accidents.find((a) => a.x === x && a.z === z)
+: null;
+let accBadgeHtml = '';
+let accRowHtml = '';
+if (tileAcc) {
+const rem = tileAcc.state === 'awaiting_police' ? tileAcc.selfClearTimer : tileAcc.remainingTime;
+const tot = tileAcc.state === 'awaiting_police' ? 26.0 : (tileAcc.totalTime || 10.0);
+const pct = Math.max(4, Math.min(100, Math.round((1 - rem / Math.max(1, tot)) * 100)));
+accBadgeHtml = tileAcc.state === 'clearing'
+? `<span class="badge ok">🚓 交警现场清障 · 剩余 ${rem.toFixed(1)}s</span>`
+: (tileAcc.state === 'police_en_route'
+? `<span class="badge info">🚓 交警出警赶赴中</span>`
+: `<span class="badge warn">🚨 交通事故 · 等待交警 (${Math.ceil(rem)}s)</span>`);
+accRowHtml = `<div style="grid-column:1/-1;color:#fde68a;">🚨 <strong>交通事故：</strong>${tileAcc.cause} · 预计 <strong>${rem.toFixed(1)} 秒</strong>恢复 (${pct}%)</div>`;
+}
 badgesEl.innerHTML = `
 <span class="badge info">海拔 ${elev}m</span>
+${accBadgeHtml}
 ${deg >= 3 ? `<span class="badge ok">${jBadgeLabel}</span>` : ''}
 ${isOneWay ? `<span class="badge info">${dirArrows[t.roadDir] || '➡️ 单行道'}</span>` : ''}
 ${t.banTrucks ? `<span class="badge warn">🚫 禁行重卡</span>` : ''}
@@ -21898,6 +22596,7 @@ gridEl.innerHTML = `
 <div>地价 / 噪音：<strong>${Math.round(t.landValue)} / ${Math.round(t.noise || 0)}</strong></div>
 <div>水体污染：<strong>${Math.round((this.sim.waterPoll[z * 56 + x] || 0) * 100)}%</strong></div>
 <div>路面拥堵：<strong>${Math.round((t.congestion || 0) * 100)}%</strong></div>
+${accRowHtml}
 ${busRow}
 `;
 const canManageRoad = (t.roadGround === 1 || t.roadGround === 2) && !t.dam;
@@ -21987,7 +22686,22 @@ hintEl.textContent = wDepth > 0.1
 ? '💡 上游干净河岸适合建【抽水站】，西北深V急流峡谷适合横拉【水力发电大坝】！'
 : '💡 在漫游模式下点击路上行驶的【汽车】可追踪其起点、终点与货运/清运任务！';
 }
+if (tileAcc) {
+const rem = tileAcc.state === 'awaiting_police' ? tileAcc.selfClearTimer : tileAcc.remainingTime;
+const tot = tileAcc.state === 'awaiting_police' ? 26.0 : (tileAcc.totalTime || 10.0);
+const pct = Math.max(4, Math.min(100, Math.round((1 - rem / Math.max(1, tot)) * 100)));
+const progLbl = document.getElementById('insp-prog-label');
+if (progLbl) {
+progLbl.textContent = tileAcc.state === 'awaiting_police'
+? '⏳ 事故自行协商撤离进度'
+: '🚓 交警事故清障进度';
+}
+progWrap.style.display = 'block';
+progFill.style.width = `${pct}%`;
+hintEl.textContent = '🚓 交警抵达事故现场后将按真实处置倒计时勘查清障并恢复通行，建造【🚓 警察总局】可大幅提速！';
+} else {
 progWrap.style.display = 'none';
+}
 }
 card.classList.add('open');
 }
@@ -22017,6 +22731,25 @@ this.renderer.previewTiles = [];
 const badgesEl = document.getElementById('insp-badges');
 if (badgesEl) {
 badgesEl.innerHTML = `<span class="badge ok">✅ 该车辆已抵达终点或结束行程</span>`;
+}
+}
+} else if (
+this.renderer?.selectedTile &&
+document.getElementById('inspector-card')?.classList.contains('open') &&
+Array.isArray(this.traffic?.accidents) &&
+this.traffic.accidents.some((a) => a.x === this.renderer.selectedTile.x && a.z === this.renderer.selectedTile.z)
+) {
+const st = this.renderer.selectedTile;
+const tileAcc = this.traffic.accidents.find((a) => a.x === st.x && a.z === st.z);
+if (tileAcc) {
+const rem = tileAcc.state === 'awaiting_police' ? tileAcc.selfClearTimer : tileAcc.remainingTime;
+const tot = tileAcc.state === 'awaiting_police' ? 26.0 : (tileAcc.totalTime || 10.0);
+const pct = Math.max(4, Math.min(100, Math.round((1 - rem / Math.max(1, tot)) * 100)));
+const progWrap = document.getElementById('insp-prog-wrap');
+const progFill = document.getElementById('insp-prog-fill');
+if (progWrap && progFill) {
+progWrap.style.display = 'block';
+progFill.style.width = `${pct}%`;
 }
 }
 }
@@ -23359,7 +24092,7 @@ setTimeout(() => {
 ui.showToast(
 restored
 ? `👋 已恢复离线进度【${sim.cityName}】(${sim.getFormattedDate()})`
-: '🏞️ 山河天际线 Pro v8.2 已启动！体验超清 PBR 建筑、动态天气、⚓海运航道、连续环线地铁与全屏防覆盖建造！'
+: '🏞️ 山河天际线 Pro v8.3 已启动！体验交警出警事故清障、深锚穿山隧道口、连续环线地铁与全屏防覆盖建造！'
 );
 }, 550);
 let lastTime = performance.now();
