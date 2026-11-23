@@ -110,6 +110,15 @@ function bootGame() {
           }
         }).catch(() => {});
       }
+
+      // Stream CC0 3D GLB pack (Zoo Wildlife Animals + Kenney Vehicles/Villas/Boats) asynchronously in background
+      if (typeof assetManager.loadGLBModels === 'function') {
+        assetManager.loadGLBModels(globalThis.THREE).then((glbs) => {
+          if (glbs && typeof renderer.applyExternalGLBModels === 'function') {
+            renderer.applyExternalGLBModels(glbs);
+          }
+        }).catch(() => {});
+      }
     }
 
     setSplashProgress(1.0, '就绪！欢迎回到山河天际线');
@@ -159,6 +168,8 @@ function bootGame() {
     const focusElev = inBounds(cx, cz) ? sim.getTileElev(cx, cz) : 0.3;
     const sunAngle = (sim.dayProgress - 0.25) * Math.PI * 2;
     const night = Math.max(0, Math.min(1, (-Math.sin(sunAngle) + 0.16) / 0.42));
+    const wObj = sim.weather || { state: 'clear', intensity: 0 };
+    const rainInt = (wObj.state === 'rain' || wObj.state === 'storm') ? Math.max(0.35, wObj.intensity || 0.7) : 0;
     return {
       camDist: renderer.camDist,
       focusElev,
@@ -166,6 +177,8 @@ function bootGame() {
       damNear,
       population: sim.population || 0,
       night,
+      rainIntensity: rainInt,
+      weatherState: wObj.state || 'clear',
       disasterActive: Boolean((disasters.meteors && disasters.meteors.length > 0) || disasters.tornado || disasters.shakeTime > 0)
     };
   }

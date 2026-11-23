@@ -2299,6 +2299,49 @@ export class ArchitectureLibrary {
     return true;
   }
 
+  // Fits a normalized CC0 GLB prototype (minY=0, centered XZ) uniformly inside (targetW, targetH, targetD)
+  _placeFittedGLB(grp, key, px, py, pz, targetW, targetH, targetD, ab = false, ry = 0) {
+    const proto = this.glbProtos && this.glbProtos[key];
+    if (!proto) return null;
+    const os = (proto.userData && proto.userData.origSize) || { x: 1, y: 1, z: 1 };
+    const sx = targetW / Math.max(0.01, os.x);
+    const sy = targetH / Math.max(0.01, os.y);
+    const sz = targetD / Math.max(0.01, os.z);
+    const u = Math.min(sx, sy, sz);
+    const inst = proto.clone();
+    if (ab) {
+      inst.traverse((ch) => {
+        if (ch.isMesh && ch.material) {
+          ch.material = Array.isArray(ch.material)
+            ? ch.material.map((mt) => this._getDustyGLBMat(mt))
+            : this._getDustyGLBMat(ch.material);
+        }
+      });
+    }
+    inst.position.set(px, py, pz);
+    inst.scale.set(u, u, u);
+    if (ry !== 0) inst.rotation.y = ry;
+    grp.add(inst);
+    return inst;
+  }
+
+  _getBusLineMat(colorHex) {
+    if (!colorHex) return this.m.busTurquoise;
+    if (!this._busLineMats) this._busLineMats = new Map();
+    let mat = this._busLineMats.get(colorHex);
+    if (!mat) {
+      mat = new this.THREE.MeshStandardMaterial({
+        color: colorHex,
+        roughness: 0.28,
+        metalness: 0.25,
+        emissive: colorHex,
+        emissiveIntensity: 0.16
+      });
+      this._busLineMats.set(colorHex, mat);
+    }
+    return mat;
+  }
+
   // ==================== Master Building Factory ====================
 
   buildBuilding(b, x, z, y0, rotRad = 0, hooks = {}) {
@@ -2315,8 +2358,12 @@ export class ArchitectureLibrary {
     // Grounded Contact AO Shadow Skirt under every building
     if (type === 'stadium') {
       this._addContactAO(grp, 1.34, 1.14, 0.002);
-    } else if (type === 'landmark' || type === 'amusement_park' || type === 'nuclear_plant' || type === 'solar_plant' || type === 'seaport') {
-      this._addContactAO(grp, 1.16, 1.16, 0.002);
+    } else if (
+      type === 'landmark' || type === 'amusement_park' || type === 'nuclear_plant' ||
+      type === 'solar_plant' || type === 'seaport' || type === 'zoo' ||
+      type === 'botanical_garden' || type === 'museum' || type === 'tv_tower'
+    ) {
+      this._addContactAO(grp, 1.18, 1.18, 0.002);
     } else if (type === 'airport') {
       this._addContactAO(grp, 1.72, 1.12, 0.002);
     } else if (type === 'power_wind') {
@@ -2344,6 +2391,18 @@ export class ArchitectureLibrary {
         break;
       case 'landmark':
         this._buildLandmarkObelisk(grp, ab, x, y0, z, rotRad, hooks);
+        break;
+      case 'zoo':
+        this._buildZoo(grp, ab, hooks);
+        break;
+      case 'botanical_garden':
+        this._buildBotanicalGarden(grp, ab);
+        break;
+      case 'museum':
+        this._buildMuseum(grp, ab);
+        break;
+      case 'tv_tower':
+        this._buildTvTower(grp, ab, x, y0, z, rotRad, hooks);
         break;
       case 'stadium':
         this._buildOlympicStadium(grp, ab);
@@ -2422,6 +2481,17 @@ export class ArchitectureLibrary {
     this._addMesh(grp, this.geos.box, hedgeMat, 0, 0.052, -0.42, 0.84, 0.06, 0.04, true);
     this._addMesh(grp, this.geos.box, hedgeMat, -0.42, 0.052, -0.05, 0.04, 0.06, 0.72, true);
     this._addMesh(grp, this.geos.box, hedgeMat, 0.42, 0.052, -0.05, 0.04, 0.06, 0.72, true);
+
+    // Showcase Kenney CC0 Suburban Villas on Lv.1-2 non-abandoned plots when external GLB pack is loaded!
+    if (lv <= 2 && !ab && (v % 2 === 0)) {
+      const cc0Keys = ['cc0_villa_a', 'cc0_villa_b', 'cc0_villa_c', 'cc0_villa_d'];
+      const key = cc0Keys[(v >> 1) % cc0Keys.length];
+      if (this._placeFittedGLB(grp, key, 0, 0.024, 0.03, 0.68, lv === 2 ? 0.56 : 0.46, 0.62, false, 0)) {
+        this._addTinyTree(grp, -0.30, 0.024, -0.30, 0.62);
+        this._addTinyTree(grp, 0.30, 0.024, -0.28, 0.56);
+        return;
+      }
+    }
 
     const baseY = 0.024;
     const mainH = lv >= 3 ? 0.51 : 0.34;
@@ -3128,6 +3198,8 @@ export class ArchitectureLibrary {
   }
 
   _buildSeaport(grp, ab, x, y0, z, rotRad, hooks) {
+    // Deep-water concrete quay seawall foundation down to y = -0.65 so coastal port NEVER floats over sloping seabed!
+    this._addMesh(grp, this.geos.box, ab ? this.m.abandoned : this.m.damConcrete, 0, -0.32, -0.02, 1.08, 0.68, 0.96, false);
     this._addMesh(grp, this.geos.box, ab ? this.m.abandoned : this.m.roofConcrete, 0, 0.03, -0.02, 1.08, 0.18, 0.96, true);
     if (!ab) {
       this._addMesh(grp, this.geos.box, this.m.craneYellow, 0, 0.125, 0.44, 1.06, 0.018, 0.035, false);
@@ -3377,6 +3449,241 @@ export class ArchitectureLibrary {
     }
   }
 
+  // ==================== 4 New Flagship Cultural & Tourism Landmarks (v8.0) ====================
+
+  // 1. Wildlife Safari Zoo (Animated Quaternius CC0 Stag/Deer/Alpaca/Fox + Sculpted Giraffe & Giant Panda!)
+  _buildZoo(grp, ab, hooks) {
+    const THREE = this.THREE;
+    const lawnMat = ab ? this.m.abandonedRust : this.m.lawn;
+    const woodMat = ab ? this.m.abandoned : this.m.teakDeck;
+    const stoneMat = ab ? this.m.abandoned : this.m.parapetStone;
+
+    // Lush park enclosure base + timber perimeter fence + sandy savanna paddock + watering hole
+    this._addMesh(grp, this.geos.box, lawnMat, 0, 0.016, 0, 1.08, 0.032, 1.08, false);
+    this._addMesh(grp, this.geos.box, stoneMat, 0, 0.030, 0.38, 0.86, 0.014, 0.24, false);
+    this._addMesh(grp, this.geos.box, woodMat, 0, 0.034, 0.02, 0.14, 0.016, 0.72, false);
+    this._addMesh(grp, this.geos.cyl24, ab ? this.m.abandoned : this.m.poolWater, -0.24, 0.032, -0.18, 0.34, 0.014, 0.28, false);
+    this._addMesh(grp, this.geos.cyl24, stoneMat, -0.24, 0.028, -0.18, 0.40, 0.014, 0.34, false);
+
+    // Timber Safari Entrance Archway at +Z street edge
+    this._addMesh(grp, this.geos.cyl16, woodMat, -0.24, 0.16, 0.46, 0.045, 0.28, 0.045, true);
+    this._addMesh(grp, this.geos.cyl16, woodMat, 0.24, 0.16, 0.46, 0.045, 0.28, 0.045, true);
+    this._addMesh(grp, this.geos.box, woodMat, 0, 0.29, 0.46, 0.56, 0.045, 0.06, true);
+    if (!ab) {
+      this._addMesh(grp, this.geos.box, this.m.neonGold, 0, 0.30, 0.495, 0.34, 0.035, 0.015, false);
+    }
+
+    // Perimeter wooden safari railings
+    for (const [fx, fz, fsx, fsz] of [
+      [-0.51, 0, 0.024, 1.02], [0.51, 0, 0.024, 1.02], [0, -0.51, 1.02, 0.024]
+    ]) {
+      this._addMesh(grp, this.geos.box, woodMat, fx, 0.075, fz, fsx, 0.016, fsz, false);
+      this._addMesh(grp, this.geos.box, woodMat, fx, 0.048, fz, fsx, 0.014, fsz, false);
+    }
+
+    // Thatched Safari Viewing Gazebo & Bamboo Shelter
+    this._addMesh(grp, this.geos.cyl16, woodMat, 0.30, 0.12, -0.32, 0.035, 0.18, 0.035, true);
+    this._addMesh(grp, this.geos.cone8, ab ? this.m.abandonedRust : this.m.terracottaRoof, 0.30, 0.25, -0.32, 0.24, 0.12, 0.24, true);
+
+    // Savanna shade trees
+    for (const [tx, tz, sc] of [[-0.40, -0.38, 0.78], [0.40, -0.02, 0.72], [-0.42, 0.18, 0.65]]) {
+      this._addTinyTree(grp, tx, 0.028, tz, sc);
+    }
+
+    if (ab) return;
+
+    // Animated Wildlife Ensemble inside the Zoo Enclosure!
+    const registerWalker = (animalGrp, cx, cz, radius, speed, phase) => {
+      animalGrp.position.set(cx, 0.032, cz);
+      grp.add(animalGrp);
+      if (hooks && Array.isArray(hooks.zooAnimals)) {
+        hooks.zooAnimals.push({ obj: animalGrp, cx, cz, radius, speed, phase, baseY: 0.032 });
+      }
+    };
+
+    // Helper: Sculpted Procedural Giraffe (always available!)
+    const makeGiraffe = () => {
+      const g = new THREE.Group();
+      this._addMesh(g, this.geos.box, this.m.craneYellow, 0, 0.11, 0, 0.055, 0.065, 0.11, true);
+      this._addMesh(g, this.geos.cyl16, this.m.craneYellow, 0, 0.21, 0.045, 0.026, 0.17, 0.026, true);
+      this._addMesh(g, this.geos.box, this.m.craneYellow, 0, 0.295, 0.065, 0.032, 0.028, 0.055, true);
+      this._addMesh(g, this.geos.box, this.m.teakDeck, 0, 0.12, 0.02, 0.058, 0.024, 0.032, false);
+      this._addMesh(g, this.geos.box, this.m.teakDeck, 0, 0.21, 0.045, 0.029, 0.022, 0.029, false);
+      for (const [lx, lz] of [[-0.018, 0.036], [0.018, 0.036], [-0.018, -0.036], [0.018, -0.036]]) {
+        this._addMesh(g, this.geos.cyl16, this.m.craneYellow, lx, 0.045, lz, 0.014, 0.09, 0.014, false);
+      }
+      return g;
+    };
+
+    // Helper: Sculpted Giant Panda
+    const makePanda = () => {
+      const g = new THREE.Group();
+      this._addMesh(g, this.geos.sphere16, this.m.whiteComposite, 0, 0.062, 0, 0.092, 0.078, 0.115, true);
+      this._addMesh(g, this.geos.sphere16, this.m.whiteComposite, 0, 0.098, 0.055, 0.068, 0.064, 0.068, true);
+      this._addMesh(g, this.geos.sphere16, this.m.asphalt, -0.025, 0.132, 0.045, 0.026, 0.026, 0.020, false);
+      this._addMesh(g, this.geos.sphere16, this.m.asphalt, 0.025, 0.132, 0.045, 0.026, 0.026, 0.020, false);
+      this._addMesh(g, this.geos.box, this.m.asphalt, 0, 0.058, 0.022, 0.095, 0.045, 0.038, false);
+      for (const [lx, lz] of [[-0.032, 0.032], [0.032, 0.032], [-0.032, -0.032], [0.032, -0.032]]) {
+        this._addMesh(g, this.geos.cyl16, this.m.asphalt, lx, 0.022, lz, 0.026, 0.044, 0.026, false);
+      }
+      return g;
+    };
+
+    // Slot 1: Real Quaternius CC0 Antlered Stag (or Giraffe fallback)
+    const a1 = new THREE.Group();
+    if (!this._placeFittedGLB(a1, 'zoo_stag', 0, 0, 0, 0.22, 0.24, 0.22, false, 0)) {
+      a1.add(makeGiraffe());
+    }
+    registerWalker(a1, 0.26, 0.08, 0.14, 0.55, 0.4);
+
+    // Slot 2: Real Quaternius CC0 Fluffy Alpaca (or Giant Panda fallback)
+    const a2 = new THREE.Group();
+    if (!this._placeFittedGLB(a2, 'zoo_alpaca', 0, 0, 0, 0.18, 0.20, 0.18, false, 0)) {
+      a2.add(makePanda());
+    }
+    registerWalker(a2, -0.22, 0.16, 0.12, 0.48, 2.1);
+
+    // Slot 3: Real Quaternius CC0 Red Fox (or Giraffe)
+    const a3 = new THREE.Group();
+    if (!this._placeFittedGLB(a3, 'zoo_fox', 0, 0, 0, 0.14, 0.12, 0.15, false, 0)) {
+      a3.add(makeGiraffe());
+    }
+    registerWalker(a3, 0.22, -0.14, 0.12, 0.72, 4.0);
+
+    // Slot 4: Always include iconic sculpted Giraffe & Panda highlight!
+    registerWalker(makeGiraffe(), -0.04, -0.32, 0.11, 0.38, 1.2);
+    registerWalker(makePanda(), 0.34, 0.24, 0.07, 0.32, 5.2);
+  }
+
+  // 2. Royal Victorian Botanical Garden (Crystal Glass Conservatory Dome, Rose Parterres, Lotus Pond & Cherry Blossoms)
+  _buildBotanicalGarden(grp, ab) {
+    const stoneMat = ab ? this.m.abandoned : this.m.parapetStone;
+    const whiteMat = ab ? this.m.abandoned : this.m.whiteComposite;
+    const glassMat = ab ? this.m.dustyCBD : this.m.atriumGlass;
+    const lawnMat = ab ? this.m.abandonedRust : this.m.lawn;
+
+    // Symmetrical granite plaza & lush botanical lawns
+    this._addMesh(grp, this.geos.box, ab ? this.m.pavingPlazaDusty : this.m.pavingPlaza, 0, 0.016, 0, 1.08, 0.032, 1.08, false);
+    this._addMesh(grp, this.geos.box, lawnMat, -0.30, 0.032, 0.26, 0.34, 0.012, 0.34, false);
+    this._addMesh(grp, this.geos.box, lawnMat, 0.30, 0.032, 0.26, 0.34, 0.012, 0.34, false);
+
+    // Formal rose, tulip & lavender flowerbed parterres
+    if (!ab) {
+      this._addMesh(grp, this.geos.box, this.m.craneRed, -0.30, 0.044, 0.26, 0.20, 0.018, 0.20, false);
+      this._addMesh(grp, this.geos.box, this.m.neonGold, 0.30, 0.044, 0.26, 0.20, 0.018, 0.20, false);
+      this._addMesh(grp, this.geos.box, this.m.neonViolet, -0.34, 0.044, -0.34, 0.18, 0.018, 0.18, false);
+      this._addMesh(grp, this.geos.box, this.m.neonMagenta, 0.34, 0.044, -0.34, 0.18, 0.018, 0.18, false);
+    }
+
+    // Iconic Crystal Glass Conservatory Dome (centered at z = -0.10)
+    const cz = -0.08;
+    this._addMesh(grp, this.geos.cyl24, stoneMat, 0, 0.07, cz, 0.56, 0.08, 0.56, true);
+    this._addMesh(grp, this.geos.cyl24, glassMat, 0, 0.22, cz, 0.50, 0.22, 0.50, false);
+    this._addMesh(grp, this.geos.hemiDome, glassMat, 0, 0.33, cz, 0.52, 0.34, 0.52, true);
+    // Victorian white-steel structural conservatory ribs & lantern finial
+    for (let r = 0; r < 4; r++) {
+      this._addMesh(grp, this.geos.box, whiteMat, 0, 0.34, cz, 0.535, 0.016, 0.016, false, (r * Math.PI) / 4);
+      this._addMesh(grp, this.geos.box, whiteMat, 0, 0.22, cz, 0.515, 0.22, 0.016, false, (r * Math.PI) / 4);
+    }
+    this._addMesh(grp, this.geos.cyl16, whiteMat, 0, 0.67, cz, 0.09, 0.08, 0.09, true);
+    this._addMesh(grp, this.geos.cone8, this.m.brushedSilver, 0, 0.74, cz, 0.06, 0.08, 0.06, true);
+    // Twin vaulted glass conservatory side wings
+    this._addMesh(grp, this.geos.box, glassMat, -0.34, 0.15, cz, 0.26, 0.18, 0.22, false);
+    this._addMesh(grp, this.geos.box, glassMat, 0.34, 0.15, cz, 0.26, 0.18, 0.22, false);
+    this._addMesh(grp, this.geos.box, whiteMat, -0.34, 0.245, cz, 0.28, 0.018, 0.24, true);
+    this._addMesh(grp, this.geos.box, whiteMat, 0.34, 0.245, cz, 0.28, 0.018, 0.24, true);
+    // Lush tropical tree thriving inside the transparent crystal conservatory!
+    if (!ab) {
+      this._addTinyTree(grp, 0, 0.08, cz, 1.05);
+    }
+
+    // Front Koi Lotus Reflecting Pond + White Arched Stone Footbridge
+    this._addMesh(grp, this.geos.cyl24, ab ? this.m.abandoned : this.m.poolWater, 0, 0.036, 0.32, 0.26, 0.014, 0.20, false);
+    this._addMesh(grp, this.geos.box, whiteMat, 0, 0.056, 0.32, 0.08, 0.018, 0.24, true);
+
+    // Ornamental Cherry-Blossom & Emerald Trees framing corners
+    for (const [tx, tz, pink] of [[-0.44, 0.40, true], [0.44, 0.40, true], [-0.44, -0.44, false], [0.44, -0.44, false]]) {
+      this._addMesh(grp, this.geos.cyl16, this.m.teakDeck, tx, 0.07, tz, 0.025, 0.09, 0.025, false);
+      this._addMesh(grp, this.geos.treeCrown, ab ? this.m.abandonedRust : (pink ? this.m.neonMagenta : this.m.lawn), tx, 0.15, tz, 0.68, 0.68, 0.68, true);
+    }
+  }
+
+  // 3. Contemporary City Art Museum (Travertine Colonnade, Cantilevered Glass Gallery, Reflecting Pool & Golden Sculpture)
+  _buildMuseum(grp, ab) {
+    const stoneMat = ab ? this.m.abandoned : this.m.parapetStone;
+    const whiteMat = ab ? this.m.abandoned : this.m.whiteComposite;
+    const glassMat = ab ? this.m.dustyCBD : this.m.cbdSlateSilver;
+
+    // Grand tiered travertine museum plaza & front reflecting pool
+    this._addMesh(grp, this.geos.box, ab ? this.m.pavingPlazaDusty : this.m.pavingPlaza, 0, 0.016, 0, 1.04, 0.032, 1.04, false);
+    this._addMesh(grp, this.geos.box, stoneMat, 0, 0.052, -0.06, 0.90, 0.044, 0.72, true);
+    this._addMesh(grp, this.geos.box, ab ? this.m.abandoned : this.m.poolWater, 0, 0.036, 0.36, 0.62, 0.014, 0.18, false);
+    if (!ab) {
+      // Modern golden abstract sculpture centerpiece in reflecting pool
+      const sculp = this._addMesh(grp, this.geos.oct, this.m.neonGold, 0, 0.14, 0.36, 0.09, 0.16, 0.09, true);
+      sculp.rotation.set(0.35, 0.6, 0.25);
+    }
+
+    // Lower colonnade hall + cantilevered modern upper exhibition wing
+    this._addMesh(grp, this.geos.box, glassMat, 0, 0.24, -0.08, 0.76, 0.34, 0.48, true);
+    for (let cx = -0.34; cx <= 0.35; cx += 0.17) {
+      this._addMesh(grp, this.geos.cyl16, whiteMat, cx, 0.24, 0.19, 0.036, 0.34, 0.036, true);
+    }
+    this._addMesh(grp, this.geos.box, whiteMat, 0, 0.47, -0.04, 0.90, 0.16, 0.62, true);
+    this._addMesh(grp, this.geos.box, glassMat, 0, 0.47, 0.275, 0.74, 0.10, 0.015, false);
+    // Sawtooth sculptural museum skylight roof
+    this._addMesh(grp, this.geos.box, ab ? this.m.abandoned : this.m.atriumGlass, 0, 0.585, -0.04, 0.56, 0.07, 0.34, false);
+    this._addMesh(grp, this.geos.parapetFrame, stoneMat, 0, 0.57, -0.04, 0.91, 0.05, 0.63, true);
+  }
+
+  // 4. Oriental Skyline Observation TV Tower (5.5m Soaring Tripod Legs, Glowing Observation Spheres & Night Light Show!)
+  _buildTvTower(grp, ab, x, y0, z, rotRad, hooks) {
+    const whiteMat = ab ? this.m.abandoned : this.m.whiteComposite;
+    const silverMat = ab ? this.m.abandoned : this.m.brushedSilver;
+    const glassMat = ab ? this.m.dustyCBD : this.m.cbdIceBlue;
+    const accentCyan = ab ? this.m.abandoned : this.m.neonCyan;
+    const accentMag = ab ? this.m.abandoned : this.m.neonMagenta;
+    const accentGold = ab ? this.m.abandoned : this.m.neonGold;
+
+    // Octagonal waterfront reception plaza & illuminated entry podium
+    this._addMesh(grp, this.geos.cyl24, ab ? this.m.pavingPlazaDusty : this.m.pavingPlaza, 0, 0.02, 0, 1.06, 0.04, 1.06, false);
+    this._addMesh(grp, this.geos.oct, glassMat, 0, 0.16, 0, 0.64, 0.24, 0.64, true);
+    this._addMesh(grp, this.geos.cyl24, silverMat, 0, 0.29, 0, 0.68, 0.03, 0.68, true);
+
+    // 3 Dramatic Angled Tripod Legs + Central Express Elevator Core rising to 3.3m
+    this._addMesh(grp, this.geos.cyl16, silverMat, 0, 1.95, 0, 0.13, 3.65, 0.13, true);
+    for (let k = 0; k < 3; k++) {
+      const ang = (k * Math.PI * 2) / 3;
+      const leg = this._addMesh(grp, this.geos.cyl16, whiteMat, Math.cos(ang) * 0.24, 1.05, Math.sin(ang) * 0.24, 0.095, 1.85, 0.095, true);
+      leg.rotation.z = Math.cos(ang) * 0.18;
+      leg.rotation.x = -Math.sin(ang) * 0.18;
+      // Twin upper slender columns between lower & upper spheres
+      this._addMesh(grp, this.geos.cyl16, whiteMat, Math.cos(ang) * 0.11, 2.48, Math.sin(ang) * 0.11, 0.055, 1.65, 0.055, true);
+    }
+
+    // Lower Luminous Observation Sphere (y = 1.68)
+    this._addMesh(grp, this.geos.sphere16, glassMat, 0, 1.68, 0, 0.42, 0.42, 0.42, true);
+    if (!ab) {
+      this._addMesh(grp, this.geos.cyl24, accentCyan, 0, 1.68, 0, 0.44, 0.035, 0.44, false);
+      this._addMesh(grp, this.geos.cyl24, accentMag, 0, 1.54, 0, 0.36, 0.025, 0.36, false);
+    }
+
+    // Upper Grand Sky-Deck Revolving Restaurant Sphere (y = 3.28)
+    this._addMesh(grp, this.geos.sphere16, glassMat, 0, 3.28, 0, 0.34, 0.34, 0.34, true);
+    this._addMesh(grp, this.geos.cyl24, silverMat, 0, 3.32, 0, 0.38, 0.04, 0.38, true);
+    if (!ab) {
+      this._addMesh(grp, this.geos.cyl24, accentMag, 0, 3.28, 0, 0.36, 0.032, 0.36, false);
+      this._addMesh(grp, this.geos.cyl24, accentGold, 0, 3.44, 0, 0.28, 0.024, 0.28, false);
+    }
+
+    // Space Capsule Pod (y = 4.18) + Soaring Red-White Broadcast Spire (to y = 5.45)
+    this._addMesh(grp, this.geos.sphere16, silverMat, 0, 4.18, 0, 0.18, 0.18, 0.18, true);
+    if (!ab) this._addMesh(grp, this.geos.cyl24, accentCyan, 0, 4.18, 0, 0.195, 0.022, 0.195, false);
+    this._addMesh(grp, this.geos.cyl16, whiteMat, 0, 4.65, 0, 0.042, 0.85, 0.056, true);
+    this._addMesh(grp, this.geos.cyl16, ab ? this.m.abandonedRust : this.m.craneRed, 0, 5.15, 0, 0.020, 0.55, 0.034, false);
+    this._addBeacon(grp, hooks, 0, 5.46, 0, x, y0, z, rotRad, ab);
+  }
+
   _buildMetroStation(grp, ab) {
     this._addMesh(grp, this.geos.box, ab ? this.m.pavingPlazaDusty : this.m.pavingPlaza, 0, 0.015, 0, 0.90, 0.03, 0.90, false);
     const vault = this._addMesh(grp, this.geos.capsule, ab ? this.m.dustyCBD : this.m.atriumGlass, 0, 0.14, 0, 1.25, 0.82, 0.72, true);
@@ -3418,7 +3725,7 @@ export class ArchitectureLibrary {
   // ==================== 4. True-Proportion 3D Road Vehicles, CR400 Train, Airliner & Cargo Ship ====================
 
   // True-Proportion Modern 3D Road Vehicles (facing +Z, tire bottoms at y = 0.000, night headlights & ruby taillights!)
-  createRealisticVehicleObject(kind = 'car', variantIdx = 0) {
+  createRealisticVehicleObject(kind = 'car', variantIdx = 0, lineColorHex = null) {
     const THREE = this.THREE;
     const grp = new THREE.Group();
     grp.rotation.order = 'YXZ';
@@ -3427,9 +3734,10 @@ export class ArchitectureLibrary {
     const k = String(kind || 'car').toLowerCase();
 
     if (k === 'bus') {
-      // Contemporary Low-Floor Chinese EV Transit Bus (L ≈ 0.50, W ≈ 0.162, H ≈ 0.186)
+      // Contemporary Low-Floor Chinese EV Transit Bus (L ≈ 0.50, W ≈ 0.162, H ≈ 0.186) with Custom Route Color Livery!
+      const stripeMat = this._getBusLineMat(lineColorHex);
       this._addMesh(grp, this.geos.vehBusBody, this.m.carPearlWhite, 0, 0, 0, 1, 1, 1, true);
-      this._addMesh(grp, this.geos.vehBusStripe, this.m.busTurquoise, 0, 0, 0, 1, 1, 1, false);
+      this._addMesh(grp, this.geos.vehBusStripe, stripeMat, 0, 0, 0, 1, 1, 1, false);
       this._addMesh(grp, this.geos.vehBusDark, this.m.cockpitGlass, 0, 0, 0, 1, 1, 1, false);
       this._addMesh(grp, this.geos.vehBusWheels, this.m.tireRubber, 0, 0, 0, 1, 1, 1, true);
       this._addMesh(grp, this.geos.vehBusHL, this.m.vehHeadlight, 0, 0, 0, 1, 1, 1, false);
@@ -3438,7 +3746,12 @@ export class ArchitectureLibrary {
     }
 
     if (k === 'firetruck') {
-      // Municipal Aerial-Ladder Fire Engine + named 'strobe' lightbar!
+      // Municipal Aerial-Ladder Fire Engine (uses Kenney CC0 firetruck.glb when loaded + named 'strobe' lightbar!)
+      if (this._placeFittedGLB(grp, 'cc0_firetruck', 0, 0, 0, 0.19, 0.22, 0.44, false, 0)) {
+        const strobe = this._addMesh(grp, this.geos.box, this.m.beaconRed, 0, 0.205, 0.14, 0.11, 0.018, 0.028, false);
+        strobe.name = 'strobe';
+        return grp;
+      }
       this._addMesh(grp, this.geos.vehFireBody, this.m.craneRed, 0, 0, 0, 1, 1, 1, true);
       this._addMesh(grp, this.geos.vehFireSilver, this.m.brushedSilver, 0, 0, 0, 1, 1, 1, true);
       this._addMesh(grp, this.geos.vehTruckGlass, this.m.cockpitGlass, 0, 0, 0, 1, 1, 1, false);
@@ -3452,6 +3765,9 @@ export class ArchitectureLibrary {
     }
 
     if (k === 'garbagetruck') {
+      if (this._placeFittedGLB(grp, 'cc0_garbage', 0, 0, 0, 0.19, 0.22, 0.44, false, 0)) {
+        return grp;
+      }
       // Clean White Cab + Emerald-Green Rear-Loader Compactor Hopper Truck
       this._addMesh(grp, this.geos.vehTruckCab, this.m.carPearlWhite, 0, 0, 0, 1, 1, 1, true);
       this._addMesh(grp, this.geos.vehGarbageHopper, this.m.garbageGreen, 0, 0, 0, 1, 1, 1, true);
@@ -3599,6 +3915,22 @@ export class ArchitectureLibrary {
     return grp;
   }
 
+  // Scenic Coastal Leisure Sailboat / Fishing Boat (uses Kenney CC0 watercraft GLBs when loaded + crisp sailboat fallback!)
+  createLeisureBoatObject(variant = 0) {
+    const THREE = this.THREE;
+    const grp = new THREE.Group();
+    grp.rotation.order = 'YXZ';
+    const key = (variant & 1) === 0 ? 'cc0_sailboat' : 'cc0_fishingboat';
+    if (this._placeFittedGLB(grp, key, 0, 0, 0, 0.34, 0.62, 0.56, false, 0)) {
+      return grp;
+    }
+    this._addMesh(grp, this.geos.box, this.m.whiteComposite, 0, 0.045, 0, 0.16, 0.07, 0.44, true);
+    this._addMesh(grp, this.geos.box, this.m.airlineBlue, 0, 0.02, 0, 0.15, 0.03, 0.42, false);
+    this._addMesh(grp, this.geos.cyl16, this.m.brushedSilver, 0, 0.26, 0.02, 0.014, 0.42, 0.014, false);
+    this._addMesh(grp, this.geos.box, this.m.whiteComposite, 0, 0.28, -0.06, 0.012, 0.32, 0.18, true);
+    return grp;
+  }
+
   // ==================== 5. Atmospheric Procedural Sky Dome ====================
 
   createSkyDome() {
@@ -3609,6 +3941,8 @@ export class ArchitectureLibrary {
       uTime: { value: 0.0 },
       uNight: { value: 0.0 },
       uSunset: { value: 0.0 },
+      uCloudCover: { value: 0.0 },
+      uOvercast: { value: 0.0 },
       uSunDir: { value: new THREE.Vector3(0.45, 0.75, 0.48).normalize() }
     };
 
@@ -3625,6 +3959,8 @@ export class ArchitectureLibrary {
       uniform float uTime;
       uniform float uNight;
       uniform float uSunset;
+      uniform float uCloudCover;
+      uniform float uOvercast;
       uniform vec3 uSunDir;
       varying vec3 vDir;
 
@@ -3726,18 +4062,25 @@ export class ArchitectureLibrary {
           float cBase = fbm(cloudUV * 1.05 + vec2(uTime * 0.011, uTime * 0.006));
           float cirrus = noise2D(cloudUV * vec2(2.6, 0.75) - vec2(uTime * 0.018, 0.0));
 
-          float cumulusMask = smoothstep(0.50, 0.78, cBase);
-          float cirrusMask = smoothstep(0.62, 0.88, cirrus) * 0.35;
-          float cloudAlpha = clamp(cumulusMask * 0.78 + cirrusMask, 0.0, 0.86) * smoothstep(0.015, 0.20, d.y);
+          float covShift = uCloudCover * 0.34;
+          float cumulusMask = smoothstep(0.50 - covShift, 0.78 - covShift * 0.65, cBase);
+          float cirrusMask = smoothstep(0.62 - covShift * 0.5, 0.88, cirrus) * 0.35;
+          float cloudAlpha = clamp(cumulusMask * (0.78 + uCloudCover * 0.22) + cirrusMask, 0.0, 0.94) * smoothstep(0.015, 0.20, d.y);
 
           vec3 cloudDay = mix(vec3(0.76, 0.84, 0.94), vec3(1.0, 0.99, 0.98), smoothstep(0.48, 0.76, cBase));
+          vec3 cloudStorm = mix(vec3(0.28, 0.33, 0.40), vec3(0.52, 0.58, 0.66), smoothstep(0.35, 0.72, cBase));
+          cloudDay = mix(cloudDay, cloudStorm, uOvercast);
           vec3 cloudSunset = mix(vec3(0.52, 0.34, 0.48), vec3(1.0, 0.64, 0.38), smoothstep(0.45, 0.74, cBase));
           vec3 cloudNight = vec3(0.07, 0.11, 0.20);
 
-          vec3 cloudCol = mix(cloudDay, cloudSunset, uSunset * 0.82);
+          vec3 cloudCol = mix(cloudDay, cloudSunset, uSunset * 0.82 * (1.0 - uOvercast * 0.75));
           cloudCol = mix(cloudCol, cloudNight, uNight * 0.88);
           sky = mix(sky, cloudCol, cloudAlpha * (1.0 - uNight * 0.42));
         }
+
+        // Subtle overcast sky desaturation during rain/storm/fog/snow
+        vec3 overcastBase = mix(vec3(0.52, 0.60, 0.68), vec3(0.05, 0.07, 0.11), uNight);
+        sky = mix(sky, overcastBase, uOvercast * 0.45);
 
         if (d.y < 0.0) {
           vec3 abyss = mix(vec3(0.56, 0.74, 0.90), vec3(0.03, 0.05, 0.10), uNight);
@@ -3764,7 +4107,7 @@ export class ArchitectureLibrary {
     let elapsed = 0;
     let lastStamp = typeof performance !== 'undefined' ? performance.now() : 0;
 
-    const update = (dayProgress = 0.35, night, sunDir) => {
+    const update = (dayProgress = 0.35, night, sunDir, weatherState = 'clear', weatherIntensity = 0) => {
       const now = typeof performance !== 'undefined' ? performance.now() : lastStamp + 16;
       const dt = Math.min(0.1, Math.max(0.001, (now - lastStamp) * 0.001));
       lastStamp = now;
@@ -3779,6 +4122,11 @@ export class ArchitectureLibrary {
 
       uniforms.uNight.value = calcNight;
       uniforms.uSunset.value = Math.max(0, 1 - Math.abs(sunElev - 0.06) / 0.30);
+      const wi = Math.max(0, Math.min(1, weatherIntensity || 0));
+      const targetCloud = weatherState === 'storm' ? 1.0 : (weatherState === 'rain' ? 0.88 : (weatherState === 'snow' ? 0.78 : (weatherState === 'fog' ? 0.65 : (weatherState === 'cloudy' ? 0.55 : 0.0))));
+      const targetOver = weatherState === 'storm' ? 0.92 : (weatherState === 'rain' ? 0.72 : (weatherState === 'fog' ? 0.68 : (weatherState === 'snow' ? 0.52 : (weatherState === 'cloudy' ? 0.25 : 0.0))));
+      uniforms.uCloudCover.value = targetCloud * Math.max(0.4, wi);
+      uniforms.uOvercast.value = targetOver * Math.max(0.4, wi);
 
       if (sunDir) {
         if (typeof sunDir.x === 'number') {

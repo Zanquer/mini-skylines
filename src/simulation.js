@@ -51,10 +51,14 @@ export const CATALOG = {
   waste_plant:   { id: 'waste_plant',   name: '环保垃圾焚烧厂', cost: 2100, upkeep: 52, powerOut: 180, trashCap: 2600, unlockPop: 350, unlockLevel: 3, icon: '♻️', desc: '焚烧处理城市垃圾并产出 +180 MW 电力！缺乏垃圾处理会导致垃圾围城致病荒废' },
 
   // Air/Sea Trade Hubs & Tourism Wonders
-  seaport:        { id: 'seaport',        name: '深水集装箱海港', cost: 4200, upkeep: 92, unlockPop: 1100, unlockLevel: 8, icon: '🚢', desc: '必须建在海湾或深水河岸！远洋货轮靠泊出口工业品，工业与商业税收 +12%' },
-  airport:        { id: 'airport',        name: '国际民航机场', cost: 6400, upkeep: 145, unlockPop: 1600, unlockLevel: 10, icon: '✈️', desc: '宽体客机起降！吸引全球商务客与游客，全城商业与办公税收 +15%' },
-  amusement_park: { id: 'amusement_park', name: '滨海摩天轮乐园', cost: 3600, upkeep: 72, unlockPop: 900, unlockLevel: 6, icon: '🎡', desc: '巨型动态摩天轮游乐园，大幅拉升周边豪宅与商业地价及市民幸福度' },
-  stadium:        { id: 'stadium',        name: '奥林匹克体育中心', cost: 5200, upkeep: 105, unlockPop: 1100, unlockLevel: 7, icon: '🏟️', desc: '定期举办大型球赛与演唱会，比赛日发放巨额门票分红并引爆全城幸福感！' },
+  seaport:          { id: 'seaport',          name: '深水集装箱海港', cost: 4200, upkeep: 92, unlockPop: 1100, unlockLevel: 8, icon: '🚢', desc: '必须建在海湾或深水河岸！远洋货轮靠泊出口工业品，工业与商业税收 +12%' },
+  airport:          { id: 'airport',          name: '国际民航机场', cost: 6400, upkeep: 145, unlockPop: 1600, unlockLevel: 10, icon: '✈️', desc: '3.8单位全长发光跑道与宽体客机起降！吸引全球游客，商业与办公税收 +15%（后方需预留5格净空跑道，可按R旋转）' },
+  zoo:              { id: 'zoo',              name: '野生动物园', cost: 3800, upkeep: 68, unlockPop: 700, unlockLevel: 5, icon: '🦁', desc: '3D 珍稀动物漫步园区（雄鹿/羊驼/赤狐/长颈鹿/大熊猫）！大幅拉升旅游收入、市民幸福度与科普教育' },
+  botanical_garden: { id: 'botanical_garden', name: '皇家植物园', cost: 3400, upkeep: 58, unlockPop: 500, unlockLevel: 4, icon: '🌺', desc: '维多利亚水晶玻璃温室穹顶与樱花锦鲤园！强力净化周边空气污染与交通噪音，极高地价与旅游加成' },
+  museum:           { id: 'museum',           name: '城市艺术博物馆', cost: 3200, upkeep: 62, unlockPop: 700, unlockLevel: 5, icon: '🏛️', desc: '现代石材玻璃文化殿堂与水景雕塑广场，强力提升全城教育素养、旅游客流与周边地价' },
+  tv_tower:         { id: 'tv_tower',         name: '东方观光电视塔', cost: 7200, upkeep: 135, unlockPop: 1400, unlockLevel: 8, icon: '🗼', desc: '超高层发光观光球体地标塔！全城旅游客流暴涨、商办税收 +10%，夜间绽放城市霓虹灯光秀' },
+  amusement_park:   { id: 'amusement_park',   name: '滨海摩天轮乐园', cost: 3600, upkeep: 72, unlockPop: 900, unlockLevel: 6, icon: '🎡', desc: '巨型动态摩天轮游乐园，大幅拉升周边豪宅与商业地价、旅游客流及市民幸福度' },
+  stadium:          { id: 'stadium',          name: '奥林匹克体育中心', cost: 5200, upkeep: 105, unlockPop: 1100, unlockLevel: 7, icon: '🏟️', desc: '定期举办大型球赛与演唱会，比赛日发放巨额门票分红并引爆全城幸福感！' },
 
   // Civic, Emergency & Landmarks
   fire_station:   { id: 'fire_station',   name: '消防总署', cost: 1500, upkeep: 48, unlockPop: 150, unlockLevel: 2, icon: '🚒', desc: '派出消防车扑灭火灾；无消防覆盖的街区极易起火烧毁！' },
@@ -614,8 +618,28 @@ export class CitySimulation {
     this.hasAirport = false;
     this.hasAmusementPark = false;
     this.hasStadium = false;
+    this.hasZoo = false;
+    this.hasBotanicalGarden = false;
+    this.hasMuseum = false;
+    this.hasTvTower = false;
+    this.tourists = 0;
+    this.tourismIncome = 0;
     this.stadiumTimer = 0;
     this.matchDayBoostTimer = 0;
+
+    // Dynamic 3D Weather System (clear / cloudy / rain / storm / snow / fog)
+    this.weather = {
+      state: 'clear',
+      mode: 'auto', // 'auto' or forced weather state
+      intensity: 0,
+      timer: 42,
+      tempC: 22,
+      lightningFlash: 0
+    };
+
+    // Custom Color-Coded Bus Routes (Cities: Skylines Transit Line Manager!)
+    this.busLines = [];
+    this._nextBusLineId = 1;
 
     this.chirpTimer = 0;
     this.latestChirp = {
@@ -1964,6 +1988,10 @@ export class CitySimulation {
       case 'landmark': return { pop: 0, jobs: 480, power: 48, water: 40 };
       case 'airport': return { pop: 0, jobs: 140, power: 36, water: 24 };
       case 'seaport': return { pop: 0, jobs: 95, power: 22, water: 14 };
+      case 'zoo': return { pop: 0, jobs: 64, power: 16, water: 18 };
+      case 'botanical_garden': return { pop: 0, jobs: 44, power: 14, water: 16 };
+      case 'museum': return { pop: 0, jobs: 52, power: 18, water: 10 };
+      case 'tv_tower': return { pop: 0, jobs: 120, power: 38, water: 18 };
       case 'stadium': return { pop: 0, jobs: 75, power: 28, water: 20 };
       case 'amusement_park': return { pop: 0, jobs: 48, power: 18, water: 12 };
       case 'hsr_station': return { pop: 0, jobs: 80, power: 26, water: 18 };
@@ -2081,6 +2109,290 @@ export class CitySimulation {
     return false;
   }
 
+  // Returns the 5 rotated runway clearance tiles behind an airport at (ax, az, rot)
+  getAirportRunwayTiles(ax, az, rot = 0) {
+    const r = ((rot || 0) % 4 + 4) % 4;
+    const rc = Math.round(Math.cos(r * Math.PI * 0.5));
+    const rs = Math.round(Math.sin(r * Math.PI * 0.5));
+    const out = [];
+    for (let lx = -2; lx <= 2; lx++) {
+      out.push({ x: ax + lx * rc + (-1) * rs, z: az - lx * rs + (-1) * rc });
+    }
+    return out;
+  }
+
+  // Prevents pylons, roads, buildings, rails, or zones from EVER clipping onto an active airport runway!
+  isBlockedByAirportRunway(x, z, ignoreAx = -1, ignoreAz = -1) {
+    for (let dz = -2; dz <= 2; dz++) {
+      for (let dx = -2; dx <= 2; dx++) {
+        const ax = x + dx, az = z + dz;
+        if (!inBounds(ax, az)) continue;
+        if (ax === ignoreAx && az === ignoreAz) continue;
+        const at = this.grid[idx(ax, az)];
+        if (!at || !at.building || at.building.type !== 'airport') continue;
+        const strip = this.getAirportRunwayTiles(ax, az, at.building.rot || 0);
+        for (let k = 0; k < strip.length; k++) {
+          if (strip[k].x === x && strip[k].z === z) return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  previewAirportFootprint(x, z, manualRot = 0) {
+    const acc = this.findRoadAccess(x, z);
+    const bRot = ((acc ? acc.rot : 0) + (manualRot || 0)) & 3;
+    const runway = this.getAirportRunwayTiles(x, z, bRot);
+    const allTiles = [{ x, z }, ...runway];
+    let ok = inBounds(x, z) && !this.isWaterTile(x, z);
+    let reason = '';
+    if (ok) {
+      const t0 = this.getTile(x, z);
+      const { slope } = this.getTileMinMaxElev(x, z);
+      if (!t0 || slope > 0.65 || t0.roadGround > 0 || t0.roadElevated > 0 || t0.rail > 0 || t0.dam || t0.pylon || (t0.building && !BUILDING_NAMES[t0.building.type])) {
+        ok = false;
+        reason = '航站楼位置受阻或坡度过陡';
+      }
+    } else {
+      reason = '航站楼必须位于陆地上';
+    }
+    if (ok) {
+      for (const rt of runway) {
+        if (!inBounds(rt.x, rt.z)) { ok = false; reason = '后方5格跑道超出地图边界（请点击旋转）'; break; }
+        const cell = this.getTile(rt.x, rt.z);
+        if (!cell || this.isWaterTile(rt.x, rt.z) || cell.dam || cell.pylon || cell.roadGround > 0 || cell.roadElevated > 0 || cell.rail > 0 || (cell.building && !BUILDING_NAMES[cell.building.type])) {
+          ok = false;
+          reason = '后方5格跑道净空区存在铁塔/建筑/道路/水域（请旋转方向或选平坦空地）';
+          break;
+        }
+      }
+    }
+    return { valid: ok, reason, rot: bRot, tiles: allTiles, runwayTiles: runway };
+  }
+
+  // ==================== Dynamic 3D Weather Engine ====================
+  getWeatherInfo() {
+    const w = this.weather || { state: 'clear', mode: 'auto', intensity: 0, tempC: 22 };
+    const meta = {
+      clear:  { id: 'clear',  icon: '☀️', label: '晴朗', solarMult: 1.15, roadMult: 1.00, tourMult: 1.15, heatMult: 1.00, happyMod: 2 },
+      cloudy: { id: 'cloudy', icon: '⛅', label: '多云', solarMult: 0.88, roadMult: 1.00, tourMult: 1.00, heatMult: 1.00, happyMod: 0 },
+      rain:   { id: 'rain',   icon: '🌧️', label: '阵雨', solarMult: 0.65, roadMult: 0.88, tourMult: 0.90, heatMult: 1.02, happyMod: -1 },
+      storm:  { id: 'storm',  icon: '⛈️', label: '雷暴', solarMult: 0.50, roadMult: 0.82, tourMult: 0.78, heatMult: 1.05, happyMod: -3 },
+      snow:   { id: 'snow',   icon: '❄️', label: '降雪', solarMult: 0.75, roadMult: 0.85, tourMult: 1.08, heatMult: 1.12, happyMod: 1 },
+      fog:    { id: 'fog',    icon: '🌫️', label: '晨雾', solarMult: 0.82, roadMult: 0.92, tourMult: 0.95, heatMult: 1.02, happyMod: 0 }
+    };
+    const info = meta[w.state] || meta.clear;
+    return { ...info, mode: w.mode || 'auto', intensity: w.intensity || 0, tempC: Math.round(w.tempC ?? 22) };
+  }
+
+  setWeatherMode(mode = 'auto') {
+    const valid = ['auto', 'clear', 'cloudy', 'rain', 'storm', 'snow', 'fog'];
+    const m = valid.includes(mode) ? mode : 'auto';
+    if (!this.weather) this.weather = { state: 'clear', mode: 'auto', intensity: 0, timer: 42, tempC: 22, lightningFlash: 0 };
+    this.weather.mode = m;
+    if (m !== 'auto') {
+      this.weather.state = m;
+      this.weather.intensity = (m === 'storm') ? 1.0 : ((m === 'rain' || m === 'snow' || m === 'fog') ? 0.78 : (m === 'cloudy' ? 0.45 : 0));
+      this.weather.tempC = m === 'snow' ? -2 : (m === 'storm' ? 16 : (m === 'rain' ? 18 : (m === 'fog' ? 14 : (m === 'cloudy' ? 20 : 24))));
+    } else {
+      this.weather.timer = 18;
+    }
+    this.recomputeNetworksAndFields();
+    return this.getWeatherInfo();
+  }
+
+  stepWeather(simDt) {
+    if (!this.weather) return;
+    const w = this.weather;
+    if (w.lightningFlash > 0) {
+      w.lightningFlash = Math.max(0, w.lightningFlash - simDt * 3.8);
+    }
+
+    if (w.mode === 'auto') {
+      w.timer -= simDt;
+      if (w.timer <= 0) {
+        w.timer = 38 + Math.random() * 34;
+        const isWinter = this.month === 12 || this.month === 1 || this.month === 2;
+        const r = Math.random();
+        let next = 'clear';
+        if (isWinter) {
+          if (r < 0.36) next = 'clear';
+          else if (r < 0.56) next = 'cloudy';
+          else if (r < 0.84) next = 'snow';
+          else next = 'fog';
+        } else {
+          if (r < 0.44) next = 'clear';
+          else if (r < 0.64) next = 'cloudy';
+          else if (r < 0.80) next = 'rain';
+          else if (r < 0.90) next = 'storm';
+          else next = 'fog';
+        }
+        w.state = next;
+      }
+    }
+
+    const targetInt = (w.state === 'storm') ? 1.0
+      : (w.state === 'rain' || w.state === 'snow' || w.state === 'fog') ? 0.80
+      : (w.state === 'cloudy' ? 0.45 : 0.0);
+    w.intensity += (targetInt - (w.intensity || 0)) * Math.min(1, simDt * 0.85);
+
+    const targetTemp = w.state === 'snow' ? -2 : (w.state === 'storm' ? 16 : (w.state === 'rain' ? 18 : (w.state === 'fog' ? 14 : (w.state === 'cloudy' ? 20 : 24))));
+    w.tempC = (w.tempC ?? 22) + (targetTemp - (w.tempC ?? 22)) * Math.min(1, simDt * 0.25);
+
+    // Storm occasional lightning flash
+    if (w.state === 'storm' && w.lightningFlash <= 0 && Math.random() < simDt * 0.14) {
+      w.lightningFlash = 1.0;
+    }
+
+    // Rain / Storm natural gameplay impact: accelerate firefighting + gentle upstream reservoir rainfall recharge!
+    if ((w.state === 'rain' || w.state === 'storm') && simDt > 0) {
+      const fireDamp = (w.state === 'storm' ? 0.14 : 0.07) * simDt;
+      const rainFill = (w.state === 'storm' ? 0.00055 : 0.00028) * simDt;
+      for (let i = 0; i < this.grid.length; i++) {
+        const t = this.grid[i];
+        if (t.building && t.building.fire > 0) {
+          t.building.fire = Math.max(0, t.building.fire - fireDamp);
+        }
+        if (t.waterSpring > 0 && this.waterDepth[i] < 1.95) {
+          this.waterDepth[i] = Math.min(2.2, this.waterDepth[i] + rainFill * 25);
+        }
+      }
+    }
+  }
+
+  // ==================== Custom Colored Bus Route Manager ====================
+  createBusLine(name = '', colorHex = null, stops = [], busCount = 2, fare = 2) {
+    const palette = ['#0ea5e9', '#10b981', '#f97316', '#a855f7', '#ef4444', '#eab308'];
+    const id = this._nextBusLineId++;
+    const col = colorHex || palette[(id - 1) % palette.length];
+    const cleanStops = [];
+    for (const s of (stops || [])) {
+      if (!s || !inBounds(s.x, s.z)) continue;
+      const t = this.grid[idx(s.x, s.z)];
+      if (t && t.busStop && t.roadGround > 0) {
+        if (!cleanStops.some((e) => e.x === s.x && e.z === s.z)) {
+          cleanStops.push({ x: s.x, z: s.z });
+        }
+      }
+    }
+    const line = {
+      id,
+      name: name || `${id}路 公交专线`,
+      colorHex: col,
+      stops: cleanStops,
+      busCount: Math.max(1, Math.min(6, busCount | 0 || 2)),
+      fare: Math.max(0, Math.min(5, Number(fare) || 2)),
+      active: true,
+      dailyRiders: 0
+    };
+    this.busLines.push(line);
+    this.infraDirty = true;
+    return line;
+  }
+
+  deleteBusLine(lineId) {
+    const prevLen = this.busLines.length;
+    this.busLines = this.busLines.filter((l) => l.id !== lineId);
+    if (this.busLines.length !== prevLen) {
+      this.infraDirty = true;
+      return true;
+    }
+    return false;
+  }
+
+  addStopToBusLine(lineId, x, z) {
+    const line = this.busLines.find((l) => l.id === lineId);
+    if (!line || !inBounds(x, z)) return { ok: false, reason: '无效线路或坐标' };
+    const t = this.grid[idx(x, z)];
+    if (!t || !t.busStop || t.roadGround <= 0) return { ok: false, reason: '请点击已建成的【🚏 智能公交站】！' };
+    if (line.stops.some((s) => s.x === x && s.z === z)) return { ok: false, reason: '该站点已在当前线路中' };
+    line.stops.push({ x, z });
+    this.infraDirty = true;
+    return { ok: true, line };
+  }
+
+  removeStopFromBusLine(lineId, stopIdx) {
+    const line = this.busLines.find((l) => l.id === lineId);
+    if (!line || stopIdx < 0 || stopIdx >= line.stops.length) return false;
+    line.stops.splice(stopIdx, 1);
+    this.infraDirty = true;
+    return true;
+  }
+
+  setBusLineConfig(lineId, patch = {}) {
+    const line = this.busLines.find((l) => l.id === lineId);
+    if (!line) return false;
+    if (patch.name !== undefined) line.name = String(patch.name).slice(0, 24) || line.name;
+    if (patch.colorHex !== undefined) line.colorHex = String(patch.colorHex);
+    if (patch.busCount !== undefined) line.busCount = Math.max(1, Math.min(6, Number(patch.busCount) | 0));
+    if (patch.fare !== undefined) line.fare = Math.max(0, Math.min(5, Number(patch.fare)));
+    if (patch.active !== undefined) line.active = Boolean(patch.active);
+    this.infraDirty = true;
+    return true;
+  }
+
+  _pruneDeletedBusStops() {
+    if (!Array.isArray(this.busLines) || this.busLines.length === 0) return;
+    for (const line of this.busLines) {
+      line.stops = (line.stops || []).filter((s) => {
+        if (!inBounds(s.x, s.z)) return false;
+        const t = this.grid[idx(s.x, s.z)];
+        return Boolean(t && t.busStop && t.roadGround > 0);
+      });
+    }
+  }
+
+  // One-tap intelligent circular bus loop planner (clusters & orders all active bus stops into 1-2 scenic routes!)
+  autoPlanBusLines() {
+    const stops = [];
+    for (let i = 0; i < this.grid.length; i++) {
+      const t = this.grid[i];
+      if (t.busStop && t.roadGround >= 1 && t.roadGround !== 4) {
+        stops.push({ x: t.x, z: t.z });
+      }
+    }
+    if (stops.length < 2) {
+      return { ok: false, reason: '至少需要建设 2 座【🚏 智能公交站】才能自动规划环线！' };
+    }
+
+    // Order stops into a smooth circular tour via nearest-neighbor heuristic
+    const orderTour = (pts) => {
+      if (pts.length <= 2) return pts.slice();
+      const rem = pts.slice();
+      rem.sort((a, b) => (a.x + a.z) - (b.x + b.z));
+      const tour = [rem.shift()];
+      while (rem.length > 0) {
+        const cur = tour[tour.length - 1];
+        let bestIdx = 0, bestD = 1e9;
+        for (let k = 0; k < rem.length; k++) {
+          const d = Math.hypot(rem[k].x - cur.x, rem[k].z - cur.z);
+          if (d < bestD) { bestD = d; bestIdx = k; }
+        }
+        tour.push(rem.splice(bestIdx, 1)[0]);
+      }
+      return tour;
+    };
+
+    this.busLines = [];
+    this._nextBusLineId = 1;
+
+    if (stops.length >= 6) {
+      // Split into 2 complementary loops: North/CBD Civic Express + South/Waterfront Tourism Loop
+      const sortedZ = stops.slice().sort((a, b) => a.z - b.z);
+      const mid = Math.ceil(sortedZ.length / 2);
+      const northStops = orderTour(sortedZ.slice(0, mid));
+      const southStops = orderTour(sortedZ.slice(mid - 1)); // share 1 transfer hub stop!
+      this.createBusLine('1路 中心城CBD环线', '#0ea5e9', northStops, 3, 2);
+      this.createBusLine('2路 滨海文旅专线', '#10b981', southStops, 2, 2);
+    } else {
+      const ordered = orderTour(stops);
+      this.createBusLine('1路 全城公交环线', '#0ea5e9', ordered, Math.min(4, Math.max(2, stops.length - 1)), 2);
+    }
+
+    this.infraDirty = true;
+    return { ok: true, count: this.busLines.length };
+  }
+
   _inferOneWayDirs(tiles, opts = null) {
     const dirFromDelta = (dx, dz) => {
       if (Math.abs(dx) >= Math.abs(dz)) return dx >= 0 ? 3 : 2;
@@ -2134,16 +2446,18 @@ export class CitySimulation {
       const wet = this.isWaterTile(pos.x, pos.z);
       const { slope } = this.getTileMinMaxElev(pos.x, pos.z);
 
+      const onRunway = this.isBlockedByAirportRunway(pos.x, pos.z);
+
       if (toolId === 'road_1' || toolId === 'road_2') {
         const target = toolId === 'road_1' ? 1 : 2;
-        if (t.roadGround === 3 || t.dam) continue;
+        if (onRunway || t.roadGround === 3 || t.dam) continue;
         if (slope > 0.72 && !wet) continue;
         if (t.building && !BUILDING_NAMES[t.building.type]) continue;
         if (t.roadGround === target && (typeof t.roadDir !== 'number' || t.roadDir < 0) && (!wet || t.roadBridge)) continue;
         cost += wet ? CATALOG[toolId].bridgeCost : CATALOG[toolId].cost;
         validTiles.push(pos);
       } else if (toolId === 'road_oneway') {
-        if (t.roadGround === 3 || t.dam) continue;
+        if (onRunway || t.roadGround === 3 || t.dam) continue;
         if (slope > 0.72 && !wet) continue;
         if (t.building && !BUILDING_NAMES[t.building.type]) continue;
         const targetDir = oneWayDirs[k];
@@ -2155,12 +2469,12 @@ export class CitySimulation {
         cost += CATALOG.bus_stop.cost;
         validTiles.push(pos);
       } else if (toolId === 'road_elev') {
-        if (t.roadElevated === 1 || t.dam) continue;
+        if (onRunway || t.roadElevated === 1 || t.dam) continue;
         if (t.building && !BUILDING_NAMES[t.building.type]) continue;
         cost += CATALOG.road_elev.cost;
         validTiles.push(pos);
       } else if (toolId === 'road_ramp') {
-        if (t.ramp || t.dam || wet || t.roadGround === 3 || t.rail > 0 || (t.building && !BUILDING_NAMES[t.building.type])) continue;
+        if (onRunway || t.ramp || t.dam || wet || t.roadGround === 3 || t.rail > 0 || (t.building && !BUILDING_NAMES[t.building.type])) continue;
         cost += CATALOG.road_ramp.cost;
         validTiles.push(pos);
       } else if (toolId === 'road_tunnel') {
@@ -2172,7 +2486,7 @@ export class CitySimulation {
         cost += CATALOG.metro_line.cost;
         validTiles.push(pos);
       } else if (toolId === 'rail_track') {
-        if (t.rail >= 1 || t.dam) continue;
+        if (onRunway || t.rail >= 1 || t.dam) continue;
         if (t.building && t.building.type !== 'hsr_station') continue;
         cost += wet ? CATALOG.rail_track.bridgeCost : CATALOG.rail_track.cost;
         validTiles.push(pos);
@@ -2181,17 +2495,17 @@ export class CitySimulation {
         cost += CATALOG.water_pipe.cost;
         validTiles.push(pos);
       } else if (toolId === 'hydro_dam') {
-        if (t.roadGround === 3 || t.rail === 2) continue;
+        if (onRunway || t.roadGround === 3 || t.rail === 2) continue;
         cost += CATALOG.hydro_dam.cost;
         validTiles.push(pos);
       } else if (toolId === 'power_pylon') {
-        if (wet || t.roadGround > 0 || t.roadElevated > 0 || t.rail > 0 || t.building || t.pylon || t.dam) continue;
+        if (onRunway || wet || t.roadGround > 0 || t.roadElevated > 0 || t.rail > 0 || t.building || t.pylon || t.dam) continue;
         cost += CATALOG.power_pylon.cost;
         validTiles.push(pos);
       } else if (toolId.startsWith('zone_')) {
         const zType = toolId.slice(5);
-        // Prevent zoning under elevated viaducts, ramps, mid-slip ramp flanks, or rails so buildings NEVER clip into bridges!
-        if (wet || slope > 0.62 || t.roadGround > 0 || t.roadElevated > 0 || t.ramp || t.rail > 0 || t.dam || t.pylon) continue;
+        // Prevent zoning under elevated viaducts, ramps, mid-slip ramp flanks, rails, or airport runways!
+        if (onRunway || wet || slope > 0.62 || t.roadGround > 0 || t.roadElevated > 0 || t.ramp || t.rail > 0 || t.dam || t.pylon) continue;
         if (this._isBlockedByMidSlipFlank(pos.x, pos.z)) continue;
         if (t.building && !BUILDING_NAMES[t.building.type]) continue;
         if (t.zone === zType && (!t.building || !t.building.abandoned)) continue;
@@ -2212,8 +2526,11 @@ export class CitySimulation {
         }
       } else if (CATALOG[toolId]) {
         const hasFixedBuilding = Boolean(t.building && !BUILDING_NAMES[t.building.type]);
-        if (this._isBlockedByMidSlipFlank(pos.x, pos.z)) continue;
-        if (toolId === 'water_pump' || toolId === 'sewage_out') {
+        if (onRunway || this._isBlockedByMidSlipFlank(pos.x, pos.z)) continue;
+        if (toolId === 'airport') {
+          const apPrev = this.previewAirportFootprint(pos.x, pos.z, opts?.rot || 0);
+          if (!apPrev.valid) continue;
+        } else if (toolId === 'water_pump' || toolId === 'sewage_out') {
           const nearW = this.hasNearbyWater(pos.x, pos.z, 2);
           if (!nearW.found || hasFixedBuilding || t.roadGround > 0 || t.roadElevated > 0 || t.rail > 0 || t.dam) continue;
         } else if (toolId === 'nuclear_plant' || toolId === 'seaport') {
@@ -2255,6 +2572,11 @@ export class CitySimulation {
         this.emitToast('☢️ 核裂变发电站必须建在河岸或海湾陆地上（2格内有冷却水）！');
       } else if (!free && toolId === 'seaport') {
         this.emitToast('🚢 深水集装箱海港必须建在海湾或深水河岸陆地上（2格内有水域）！');
+      } else if (!free && toolId === 'airport') {
+        const apPrev = tiles && tiles[0] ? this.previewAirportFootprint(tiles[0].x, tiles[0].z, opts?.rot || 0) : null;
+        this.emitToast(`✈️ ${apPrev?.reason || '国际机场后方需预留 5 格净空平坦跑道（点击旋转方向）！'}`);
+      } else if (!free && tiles && tiles.some((p) => this.isBlockedByAirportRunway(p.x, p.z))) {
+        this.emitToast('✈️ 该地块位于国际机场 5 格跑道净空区内，严禁修建铁塔、道路或建筑！');
       } else if (!free && toolId === 'bus_stop') {
         this.emitToast('🚏 智能公交站必须建在普通地面街道或主干道上（不可建在隧道/大坝/匝道上）！');
       }
@@ -2561,16 +2883,23 @@ export class CitySimulation {
         const manualRot = (opts && typeof opts.rot === 'number') ? opts.rot : 0;
         const bRot = ((acc ? acc.rot : 0) + manualRot) & 3;
         if (toolId === 'airport') {
-          // Clear trees across the rotated 3.8-unit runway & taxiway corridor so foliage never clips the tarmac!
+          // Clear trees/pylons/zones across the rotated 5-tile runway corridor & gently grade so tarmac never clips!
+          const strip = this.getAirportRunwayTiles(pos.x, pos.z, bRot);
+          for (const rt of strip) {
+            if (!inBounds(rt.x, rt.z)) continue;
+            const cell = this.grid[idx(rt.x, rt.z)];
+            if (cell) {
+              cell.trees = 0;
+              cell.pylon = false;
+              cell.zone = null;
+            }
+            gradeFlat(rt.x, rt.z, 0.72);
+          }
           const rc = Math.round(Math.cos(bRot * Math.PI * 0.5));
           const rs = Math.round(Math.sin(bRot * Math.PI * 0.5));
-          for (let lx = -2; lx <= 2; lx++) {
-            for (const lz of [-1, 0]) {
-              const rx = pos.x + lx * rc + lz * rs;
-              const rz = pos.z - lx * rs + lz * rc;
-              const rt = this.getTile(rx, rz);
-              if (rt) rt.trees = 0;
-            }
+          for (const lx of [-1, 1]) {
+            const at = this.getTile(pos.x + lx * rc, pos.z - lx * rs);
+            if (at) at.trees = 0;
           }
         }
         t.building = {
@@ -2593,6 +2922,7 @@ export class CitySimulation {
     }
 
     if (toolId === 'bulldoze') {
+      this._pruneDeletedBusStops();
       const dirs4 = [[1, 0], [-1, 0], [0, 1], [0, -1]];
       for (const pos of validTiles) {
         for (const [dx, dz] of [[0, 0], ...dirs4]) {
@@ -3084,6 +3414,28 @@ export class CitySimulation {
             landmarkBonus += 0.12;
             this.addRadialField(x, z, 14, 34, 0, 30 * svcMult, 0, 0, 0);
           }
+        } else if (b.type === 'zoo') {
+          if (operational && t.powered) {
+            landmarkBonus += 0.14;
+            this.addRadialField(x, z, 13, 30, 0, 32 * svcMult, 0, 15, 0);
+            this.addNoiseField(x, z, 4, -14);
+          }
+        } else if (b.type === 'botanical_garden') {
+          if (operational && t.powered) {
+            landmarkBonus += 0.13;
+            this.addRadialField(x, z, 12, 34, -22, 30 * svcMult, 0, 10, 0);
+            this.addNoiseField(x, z, 5, -30);
+          }
+        } else if (b.type === 'museum') {
+          if (operational && t.powered) {
+            landmarkBonus += 0.11;
+            this.addRadialField(x, z, 12, 28, 0, 26 * svcMult, 0, 28, 0);
+          }
+        } else if (b.type === 'tv_tower') {
+          if (operational && t.powered) {
+            landmarkBonus += 0.20;
+            this.addRadialField(x, z, 16, 42, 0, 34 * svcMult, 0, 0, 0);
+          }
         } else if (b.type === 'stadium') {
           if (operational && t.powered) {
             landmarkBonus += 0.14;
@@ -3206,6 +3558,13 @@ export class CitySimulation {
     let hasAirport = false;
     let hasAmusementPark = false;
     let hasStadium = false;
+    let hasZoo = false;
+    let hasBotanicalGarden = false;
+    let hasMuseum = false;
+    let hasTvTower = false;
+    let touristBase = 0;
+    const weatherInfo = this.getWeatherInfo();
+    const heatMult = weatherInfo.heatMult || 1.0;
 
     for (let i = 0; i < N; i++) {
       const t = this.grid[i];
@@ -3218,7 +3577,7 @@ export class CitySimulation {
         continue;
       }
       const st = this.getBuildingStats(b);
-      totalPDemand += st.power * energyDemMult;
+      totalPDemand += st.power * energyDemMult * heatMult;
       totalWDemand += st.water * energyDemMult;
 
       const active = t.powered && t.watered && !b.flooded && !(b.fire > 0.3);
@@ -3226,10 +3585,16 @@ export class CitySimulation {
       jobs += active ? st.jobs : Math.round(st.jobs * 0.25);
 
       if (!b.underConstruction && t.powered && !b.flooded && !(b.fire > 0.3)) {
-        if (b.type === 'seaport' && this.hasNearbyWater(t.x, t.z, 2).found) hasSeaport = true;
-        else if (b.type === 'airport') hasAirport = true;
-        else if (b.type === 'amusement_park') hasAmusementPark = true;
-        else if (b.type === 'stadium') hasStadium = true;
+        if (b.type === 'seaport' && this.hasNearbyWater(t.x, t.z, 2).found) { hasSeaport = true; touristBase += 95; }
+        else if (b.type === 'airport') { hasAirport = true; touristBase += 260; }
+        else if (b.type === 'hsr_station') { touristBase += 140; }
+        else if (b.type === 'amusement_park') { hasAmusementPark = true; touristBase += 210; }
+        else if (b.type === 'stadium') { hasStadium = true; touristBase += 180; }
+        else if (b.type === 'zoo') { hasZoo = true; touristBase += 280; }
+        else if (b.type === 'botanical_garden') { hasBotanicalGarden = true; touristBase += 220; }
+        else if (b.type === 'museum') { hasMuseum = true; touristBase += 190; }
+        else if (b.type === 'tv_tower') { hasTvTower = true; touristBase += 420; }
+        else if (b.type === 'landmark') { touristBase += 240; }
       }
     }
 
@@ -3237,6 +3602,12 @@ export class CitySimulation {
     this.hasAirport = hasAirport;
     this.hasAmusementPark = hasAmusementPark;
     this.hasStadium = hasStadium;
+    this.hasZoo = hasZoo;
+    this.hasBotanicalGarden = hasBotanicalGarden;
+    this.hasMuseum = hasMuseum;
+    this.hasTvTower = hasTvTower;
+    const gatewayMult = 1.0 + (hasAirport ? 0.35 : 0) + (hasSeaport ? 0.15 : 0);
+    this.tourists = Math.round(touristBase * gatewayMult * (weatherInfo.tourMult || 1.0));
 
     this.powerDemand = Math.ceil(totalPDemand);
     this.waterDemand = Math.ceil(totalWDemand);
@@ -3258,6 +3629,11 @@ export class CitySimulation {
     const wonderHappyBoost =
       (hasAmusementPark ? 4 : 0) +
       (hasStadium ? 3 : 0) +
+      (hasZoo ? 4 : 0) +
+      (hasBotanicalGarden ? 4 : 0) +
+      (hasMuseum ? 2 : 0) +
+      (hasTvTower ? 3 : 0) +
+      (weatherInfo.happyMod || 0) +
       (this.matchDayBoostTimer > 0 ? 8 : 0) +
       (this.tempHappinessBoost || 0);
 
@@ -3532,6 +3908,10 @@ export class CitySimulation {
     const radialTools = {
       park: 7,
       metro_station: 9,
+      zoo: 13,
+      botanical_garden: 12,
+      museum: 12,
+      tv_tower: 16,
       amusement_park: 14,
       stadium: 15
     };
@@ -3709,6 +4089,9 @@ export class CitySimulation {
     } else if (this.timeMode === 'day') this.dayProgress = 0.42;
     else if (this.timeMode === 'sunset') this.dayProgress = 0.755;
     else if (this.timeMode === 'night') this.dayProgress = 0.02;
+
+    // Dynamic 3D Weather progression & gameplay effects (rain reservoir recharge, fire damping, lightning)
+    this.stepWeather(simDt);
 
     // Calendar advances smoothly (1 calendar day every 4.5s at 1x)
     this.dateAccum += simDt;
@@ -4249,7 +4632,16 @@ export class CitySimulation {
       else if (b.type === 'seaport' && this.hasNearbyWater(t.x, t.z, 2).found) grossTax += 65;
       else if (b.type === 'stadium') grossTax += 55;
       else if (b.type === 'amusement_park') grossTax += 48;
+      else if (b.type === 'zoo') grossTax += 64;
+      else if (b.type === 'botanical_garden') grossTax += 52;
+      else if (b.type === 'museum') grossTax += 48;
+      else if (b.type === 'tv_tower') grossTax += 110;
     }
+
+    // Live City Tourism Ticket & Hospitality Revenue (scaled by weather & attractions!)
+    const tvBonus = this.hasTvTower ? 1.10 : 1.0;
+    this.tourismIncome = Math.round((this.tourists || 0) * 0.16 * tvBonus);
+    grossTax += this.tourismIncome;
 
     // ==================== Live Public Transit Ridership & P&L Telemetry ====================
     const freeTransitMult = this.policies.freeTransit ? 1.35 : 1.0;
@@ -5185,7 +5577,8 @@ export class CitySimulation {
         }
       }
     }
-    for (const py of [[12, 18], [13, 22], [14, 26], [15, 30]]) {
+    // Route HV transmission line cleanly along West foothills (x=11..12), 100% clear of the International Airport runway!
+    for (const py of [[11, 18], [11, 22], [11, 26], [12, 30]]) {
       this.applyTool('power_pylon', [{ x: py[0], z: py[1] }], true);
     }
 
@@ -5480,6 +5873,32 @@ export class CitySimulation {
       this.recomputeNetworksAndFields();
     }
 
+    // Place Iconic Tourism Attractions in Metropolis Showcase: Oriental TV Tower, Wildlife Zoo, Botanical Garden & Art Museum!
+    for (const spot of [{ x: 24, z: 34 }, { x: 25, z: 33 }, { x: 20, z: 34 }]) {
+      if (this.applyTool('tv_tower', [spot], true).ok) {
+        this.applyTool('water_pipe', [{ x: spot.x, z: spot.z }], true);
+        break;
+      }
+    }
+    for (const spot of [{ x: 35, z: 34 }, { x: 35, z: 33 }, { x: 35, z: 36 }, { x: 29, z: 31 }]) {
+      if (this.applyTool('zoo', [spot], true).ok) {
+        this.applyTool('water_pipe', this.computeLineOrLPath(32, 34, spot.x, spot.z, false), true);
+        break;
+      }
+    }
+    for (const spot of [{ x: 25, z: 31 }, { x: 26, z: 31 }, { x: 30, z: 31 }, { x: 14, z: 33 }]) {
+      if (this.applyTool('botanical_garden', [spot], true).ok) {
+        this.applyTool('water_pipe', this.computeLineOrLPath(22, 32, spot.x, spot.z, false), true);
+        break;
+      }
+    }
+    for (const spot of [{ x: 19, z: 33 }, { x: 25, z: 37 }, { x: 28, z: 34 }]) {
+      if (this.applyTool('museum', [spot], true).ok) {
+        this.applyTool('water_pipe', [{ x: spot.x, z: spot.z }], true);
+        break;
+      }
+    }
+
     // Final facility audit pass: ensure every civic/utility/transit hub has outside road & HV power!
     for (let z = 0; z < GRID_SIZE; z++) {
       for (let x = 0; x < GRID_SIZE; x++) {
@@ -5490,13 +5909,14 @@ export class CitySimulation {
       }
     }
 
-    // Place 6 EV Bus Stops along showcase avenues so live EV buses shuttle between stops immediately!
+    // Place 6 EV Bus Stops along showcase avenues & auto-plan 2 colored live Bus Routes!
     for (const bs of [
       { x: 15, z: 38 }, { x: 22, z: 38 }, { x: 32, z: 38 },
       { x: 15, z: 44 }, { x: 29, z: 44 }, { x: 22, z: 32 }
     ]) {
       this.applyTool('bus_stop', [bs], true);
     }
+    this.autoPlanBusLines();
 
     this.milestoneIdx = MILESTONES.length - 1;
     this.recomputeNetworksAndFields();
@@ -5529,6 +5949,10 @@ export class CitySimulation {
       day: this.day,
       dayProgress: this.dayProgress,
       timeMode: this.timeMode,
+      weather: this.weather ? { state: this.weather.state, mode: this.weather.mode, tempC: Math.round(this.weather.tempC ?? 22) } : undefined,
+      busLines: Array.isArray(this.busLines) ? this.busLines.map((l) => ({
+        id: l.id, name: l.name, colorHex: l.colorHex, stops: l.stops, busCount: l.busCount, fare: l.fare, active: l.active
+      })) : [],
       milestoneIdx: this.milestoneIdx,
       maxPopReached: this.maxPopReached,
       mayorLevel: this.mayorLevel,
@@ -5573,7 +5997,7 @@ export class CitySimulation {
   }
 
   fromJSON(data) {
-    if (!data || (data.v !== 3 && data.v !== 4) || !Array.isArray(data.tiles) || data.tiles.length !== GRID_SIZE * GRID_SIZE) {
+    if (!data || (data.v !== 3 && data.v !== 4 && data.v !== 5) || !Array.isArray(data.tiles) || data.tiles.length !== GRID_SIZE * GRID_SIZE) {
       return false;
     }
     this._suppressPromotions = true;
@@ -5602,6 +6026,20 @@ export class CitySimulation {
     this.day = data.day || 1;
     this.dayProgress = typeof data.dayProgress === 'number' ? data.dayProgress : 0.36;
     this.timeMode = data.timeMode || 'cycle';
+    this.weather = data.weather
+      ? { state: data.weather.state || 'clear', mode: data.weather.mode || 'auto', intensity: 0, timer: 42, tempC: data.weather.tempC ?? 22, lightningFlash: 0 }
+      : { state: 'clear', mode: 'auto', intensity: 0, timer: 42, tempC: 22, lightningFlash: 0 };
+    this.busLines = Array.isArray(data.busLines) ? data.busLines.map((l) => ({
+      id: l.id || 1,
+      name: l.name || '1路 公交专线',
+      colorHex: l.colorHex || '#0ea5e9',
+      stops: Array.isArray(l.stops) ? l.stops.map((s) => ({ x: s.x, z: s.z })) : [],
+      busCount: Math.max(1, Math.min(6, l.busCount || 2)),
+      fare: Math.max(0, Math.min(5, l.fare ?? 2)),
+      active: l.active !== false,
+      dailyRiders: 0
+    })) : [];
+    this._nextBusLineId = this.busLines.reduce((m, l) => Math.max(m, (l.id || 0) + 1), 1);
     this.milestoneIdx = data.milestoneIdx || 0;
     this.maxPopReached = data.maxPopReached || 0;
     this.gridlockTimeouts = 0;

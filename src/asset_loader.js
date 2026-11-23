@@ -211,6 +211,111 @@ export class AssetManager {
     return this.textures;
   }
 
+  async loadGLBModels(THREE, { onProgress = null } = {}) {
+    if (!THREE || !THREE.GLTFLoader || !this.isExternalSupported) {
+      if (onProgress) onProgress(1, '内置模型已就绪');
+      return this.glbs;
+    }
+    const manifest = await this.loadManifest();
+    if (!manifest || !Array.isArray(manifest.models) || manifest.models.length === 0) {
+      if (onProgress) onProgress(1, '模型就绪');
+      return this.glbs;
+    }
+
+    const loader = new THREE.GLTFLoader();
+    const list = manifest.models;
+    const total = list.length;
+    let done = 0;
+    let cursor = 0;
+
+    // Normalize any loaded GLB into a clean ground-seated Group (minY = 0, centered XZ)
+    // and bake any SkinnedMesh into a static rest-pose Mesh so multi-instance cloning never distorts!
+    const normalizeProto = (rawScene) => {
+      rawScene.updateMatrixWorld(true);
+      const wrap = new THREE.Group();
+      const meshes = [];
+      rawScene.traverse((n) => {
+        if (!n.isMesh || !n.geometry) return;
+        meshes.push(n);
+      });
+
+      const invRoot = new THREE.Matrix4().copy(rawScene.matrixWorld).invert();
+      for (const n of meshes) {
+        const geo = n.geometry.clone();
+        const relMat = new THREE.Matrix4().multiplyMatrices(invRoot, n.matrixWorld);
+        geo.applyMatrix4(relMat);
+        if (!geo.attributes.normal) geo.computeVertexNormals();
+        const matSrc = n.material;
+        const fixMat = (mt) => {
+          if (!mt) return mt;
+          if (mt.map) {
+            mt.map.colorSpace = THREE.SRGBColorSpace;
+            mt.map.anisotropy = 4;
+          }
+          if (mt.roughness !== undefined && mt.roughness > 0.92) mt.roughness = 0.72;
+          if (mt.metalness !== undefined && mt.metalness > 0.85) mt.metalness = 0.35;
+          return mt;
+        };
+        const mat = Array.isArray(matSrc) ? matSrc.map(fixMat) : fixMat(matSrc);
+        const m = new THREE.Mesh(geo, mat);
+        m.castShadow = true;
+        m.receiveShadow = true;
+        wrap.add(m);
+      }
+
+      wrap.updateMatrixWorld(true);
+      const box = new THREE.Box3().setFromObject(wrap);
+      const size = new THREE.Vector3();
+      const center = new THREE.Vector3();
+      if (isFinite(box.min.y) && isFinite(box.max.y)) {
+        box.getSize(size);
+        box.getCenter(center);
+        for (const ch of wrap.children) {
+          ch.position.x -= center.x;
+          ch.position.y -= box.min.y;
+          ch.position.z -= center.z;
+        }
+      }
+      wrap.userData.origSize = { x: size.x || 1, y: size.y || 1, z: size.z || 1 };
+      return wrap;
+    };
+
+    const runWorker = async () => {
+      while (cursor < total) {
+        const entry = list[cursor++];
+        if (this.glbs[entry.key]) {
+          done++;
+          if (onProgress) onProgress(done / total, `加载 3D 资产 (${done}/${total})`);
+          continue;
+        }
+        await new Promise((resolve) => {
+          loader.load(
+            this.baseUrl + entry.url,
+            (gltf) => {
+              try {
+                this.glbs[entry.key] = normalizeProto(gltf.scene);
+              } catch {}
+              done++;
+              if (onProgress) onProgress(done / total, `加载 3D 精品模型 (${done}/${total})`);
+              resolve();
+            },
+            undefined,
+            () => {
+              done++;
+              if (onProgress) onProgress(done / total, `加载模型 (${done}/${total})`);
+              resolve();
+            }
+          );
+        });
+      }
+    };
+
+    const workers = [];
+    for (let i = 0; i < 4; i++) workers.push(runWorker());
+    await Promise.all(workers);
+    return this.glbs;
+  }
+
   getCacheName() {
     const ver = (this.manifest && this.manifest.version) || 'v7.0';
     return `mini-skylines-${ver}`;

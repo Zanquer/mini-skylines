@@ -333,7 +333,25 @@ if (glbStart >= 0) {
   for (const [k, b64] of Object.entries(glbMap)) {
     fs.writeFileSync(path.join(MODEL_OUT, `${k}.glb`), Buffer.from(b64, 'base64'));
   }
-  console.log(`Extracted ${Object.keys(glbMap).length} binary GLBs to www/assets/models/`);
+  console.log(`Extracted ${Object.keys(glbMap).length} embedded GLBs to www/assets/models/`);
+}
+
+// Copy self-contained CC0 3D GLB pack (Quaternius Zoo Animals + Kenney Vehicles/Villas/Watercraft)
+const cc0ModelDir = path.join(ASSETS_SRC, 'models_cc0');
+const cc0ModelEntries = [];
+if (fs.existsSync(cc0ModelDir)) {
+  for (const name of fs.readdirSync(cc0ModelDir).sort()) {
+    if (!name.endsWith('.glb')) continue;
+    const srcP = path.join(cc0ModelDir, name);
+    const dstP = path.join(MODEL_OUT, name);
+    fs.copyFileSync(srcP, dstP);
+    cc0ModelEntries.push({
+      key: name.slice(0, -4),
+      url: `assets/models/${name}`,
+      bytes: fs.statSync(dstP).size
+    });
+  }
+  console.log(`Copied ${cc0ModelEntries.length} self-contained CC0 GLB models to www/assets/models/`);
 }
 
 // Build deterministic manifest.json of all external assets
@@ -361,7 +379,7 @@ const versionHash = hashObj.digest('hex').slice(0, 10);
 const totalBytes = assetFiles.reduce((s, f) => s + f.bytes, 0);
 
 const manifest = {
-  version: `v7.5-${versionHash}`,
+  version: `v8.0-${versionHash}`,
   generatedAt: new Date().toISOString(),
   totalBytes,
   fileCount: assetFiles.length,
@@ -371,6 +389,7 @@ const manifest = {
     normal: `assets/textures/${m.key}_norm.jpg`,
     roughness: `assets/textures/${m.key}_rough.jpg`
   })),
+  models: cc0ModelEntries,
   smoke: 'assets/textures/smoke.png',
   files: assetFiles
 };

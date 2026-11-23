@@ -827,6 +827,14 @@ export function buildHighResTerrainMesh(THREE, sim, overlayMode, detailTex, shar
             ob = 0.24 - cv * 0.12;
             oWeight = 0.86;
           }
+        } else if (activeOverlay === 'transit') {
+          if (tile.busStop) {
+            or = 0.10; og = 0.88; ob = 0.96; oWeight = 0.88;
+          } else if (tile.building && (tile.building.type === 'metro_station' || tile.building.type === 'hsr_station' || tile.building.type === 'airport' || tile.building.type === 'seaport')) {
+            or = 0.88; og = 0.34; ob = 0.98; oWeight = 0.88;
+          } else if (tile.roadGround > 0) {
+            or = 0.34; og = 0.42; ob = 0.54; oWeight = 0.78;
+          }
         } else if (activeOverlay === 'fire' || activeOverlay === 'fireSafety' || activeOverlay === 'fire_safety') {
           const fv = clamp01(tile.fireSafety * fireScale);
           or = 0.88 - fv * 0.64;
@@ -3106,7 +3114,8 @@ export function buildContinuousRoadAndViaductGroup(THREE, sim, overlayMode, mats
         if (!groundCableSpanMask[i]) {
           const cx = x0 + 0.5;
           const cz = z0 + 0.5;
-          const bedY = cellElev[i] - 0.18;
+          // Anchor underwater bridge piers deep into ocean/riverbed so piers NEVER float over deep basins!
+          const bedY = Math.min(cellElev[i] - 0.36, -1.25);
           const topY = avgDeckY - 0.07;
 
           // Subtle twin longitudinal arched haunch ribs under 1-2 tile bridges
@@ -3838,7 +3847,7 @@ export function buildContinuousRoadAndViaductGroup(THREE, sim, overlayMode, mats
         const cx = x - HALF_GRID + 0.5;
         const cz = z - HALF_GRID + 0.5;
         const soffitY = avgRailY - slabDown;
-        const groundY = cellElev[i] - 0.16;
+        const groundY = waterDepth[i] > 0.06 ? Math.min(cellElev[i] - 0.36, -1.25) : (cellElev[i] - 0.22);
 
         if ((t.roadGround >= 1 && t.roadGround <= 3) || t.ramp) {
           const spanAlongX = (hasN || hasS) && !(hasW && hasE && !hasN && !hasS);

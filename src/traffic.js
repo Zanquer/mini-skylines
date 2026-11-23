@@ -29,6 +29,7 @@ export class TrafficManager {
     this.trains = [];      // HSR multi-car bullet trains & underground metro trains!
     this.aircraft = [];    // 3D Wide-body Airliners approaching/landing/climbing at airports!
     this.ships = [];       // 3D Cargo Container Ships sailing SE Sea Bay <-> Seaport!
+    this.leisureBoats = []; // 3D Coastal CC0 Sailboats & Fishing Boats cruising the bay!
     this.busStops = [];    // Active roadside EV bus stop tiles collected during refreshRoadGraph!
     this.pedestrians = []; // Lightweight sidewalk pedestrians (<= 240, pure data, zero Three.js dependency)
     this._pedRoadPool = [];
@@ -38,10 +39,12 @@ export class TrafficManager {
     this.fireTimer = 0;
     this.aircraftTimer = 0;
     this.shipTimer = 2.0;
+    this._boatSpawnTimer = 1.0;
     this.signalClock = 0;
     this.modalTimer = 0;
     this._nextVehId = 1;
     this._nextShipId = 1;
+    this._nextBoatId = 1;
     this._nextPedId = 1;
 
     const N = GRID_SIZE * GRID_SIZE;
@@ -81,12 +84,14 @@ export class TrafficManager {
     this.trains.length = 0;
     this.aircraft.length = 0;
     this.ships.length = 0;
+    this.leisureBoats.length = 0;
     this.busStops.length = 0;
     this.pedestrians.length = 0;
     this._pedRoadPool.length = 0;
     this._pedSpawnTimer = 0;
     this.aircraftTimer = 0;
     this.shipTimer = 2.0;
+    this._boatSpawnTimer = 1.0;
     this.modalTimer = 0;
     this.tileOccupancy.fill(0);
     this.elevOccupancy.fill(0);
@@ -1562,8 +1567,65 @@ export class TrafficManager {
       ? this.sim.getTrafficPeriodInfo()
       : { id: 'normal', mult: 1.0, commuteBias: 'balanced' };
 
-    // 0. Priority EV City Bus Fleet Spawner between road-connected Bus Stops!
-    if (this.busStops.length >= 2) {
+    // 0. Priority Custom Colored Bus Route Fleet Spawner (falls back to ad-hoc bus stops if no lines configured!)
+    const activeBusLines = Array.isArray(this.sim.busLines)
+      ? this.sim.busLines.filter((l) => l && l.active !== false && Array.isArray(l.stops) && l.stops.length >= 2)
+      : [];
+    if (activeBusLines.length > 0) {
+      for (let li = 0; li < activeBusLines.length; li++) {
+        const line = activeBusLines[li];
+        const lineCount = this.vehicles.reduce((acc, v) => acc + (v.kind === 'bus' && v.busLineId === line.id ? 1 : 0), 0);
+        const targetForLine = Math.max(1, Math.min(6, line.busCount || 2));
+        if (lineCount >= targetForLine) continue;
+
+        const startIdx = lineCount % line.stops.length;
+        const nextIdx = (startIdx + 1) % line.stops.length;
+        const stopA = line.stops[startIdx];
+        const stopB = line.stops[nextIdx];
+        const busPath = this.findRoadPath(stopA.x, stopA.z, stopB.x, stopB.z, false, 0, false);
+        if (busPath && busPath.length >= 2) {
+          const w0 = tileToWorld(busPath[0].x, busPath[0].z);
+          const maxSpeed = 1.72;
+          const bv = {
+            id: this._nextVehId++,
+            variantIdx: 0,
+            kind: 'bus',
+            busLineId: line.id,
+            busLineColor: line.colorHex || '#0ea5e9',
+            busStopIdx: nextIdx,
+            busDwell: 0,
+            tripType: 'transit',
+            tripLabel: `🚌 ${line.name}`,
+            fromName: `${line.name} · 第${startIdx + 1}站`,
+            toName: `${line.name} · 第${nextIdx + 1}站`,
+            originTile: { x: stopA.x, z: stopA.z },
+            destTile: { x: stopB.x, z: stopB.z },
+            color: [0.10, 0.72, 0.88],
+            length: 0.42,
+            width: 0.15,
+            height: 0.15,
+            path: busPath,
+            seg: 0,
+            t: 0,
+            speed: maxSpeed * 0.65,
+            maxSpeed,
+            stuckTimer: 0,
+            laneSlot: 0,
+            laneChangeCooldown: 0,
+            wx: w0.wx,
+            wy: this.getRoadNodeY(busPath[0].x, busPath[0].z, busPath[0].layer),
+            wz: w0.wz,
+            dirX: 0,
+            dirZ: -1,
+            inTunnel: false
+          };
+          this.syncVehicleTransform(bv, 0);
+          this.vehicles.push(bv);
+          this.refreshActiveModalCounts();
+          return;
+        }
+      }
+    } else if (this.busStops.length >= 2) {
       const activeBuses = this.vehicles.filter((v) => v.kind === 'bus').length;
       const targetBuses = Math.min(12, Math.max(2, Math.ceil(this.busStops.length * (freeTransit ? 1.5 : 1.0))));
       if (activeBuses < targetBuses && (activeBuses < 2 || Math.random() < (freeTransit ? 0.42 : 0.28))) {
@@ -2036,6 +2098,7 @@ export class TrafficManager {
     // Snapshot ground tile occupancy so junction yield/roundabout/right-on-red see exact live density
     this.rebuildTileOccupancy();
     let gridlockTiles = null;
+    const weatherRoadMult = (typeof this.sim.getWeatherInfo === 'function' ? this.sim.getWeatherInfo().roadMult : 1.0) || 1.0;
 
     // Update road vehicles with per-frame road validation, junction modes, 2-lane parallel flow & 12s anti-gridlock
     for (let i = this.vehicles.length - 1; i >= 0; i--) {
@@ -2043,6 +2106,15 @@ export class TrafficManager {
       let cur = v.path && v.path[v.seg];
       if (!cur || !this.isValidRoadStep(cur, null)) {
         this.vehicles.splice(i, 1);
+        continue;
+      }
+
+      // Custom Bus Route stop boarding dwell (never triggers gridlock timeout!)
+      if (v.busDwell > 0) {
+        v.busDwell = Math.max(0, v.busDwell - effDt);
+        v.speed = 0;
+        v.stuckTimer = 0;
+        this.syncVehicleTransform(v, effDt);
         continue;
       }
 
@@ -2100,7 +2172,7 @@ export class TrafficManager {
       const allowOvertake = isMultiLane && !curTile.ramp && !nxtTile.ramp;
 
       const roadBoost = isElevated ? 1.55 : (onRampSeg ? 1.32 : (nxtTile.roadGround >= 2 ? 1.25 : (isOneWaySeg ? 1.12 : 1.0)));
-      let targetSpeed = v.maxSpeed * roadBoost;
+      let targetSpeed = v.maxSpeed * roadBoost * weatherRoadMult;
 
       // Ground Intersection Control: 'signal' | 'yield' | 'roundabout' (never halts mid-ramp!)
       if (!isElevated && !nxt.onRamp) {
@@ -2243,6 +2315,35 @@ export class TrafficManager {
             dtTile.building.garbage = Math.max(0, dtTile.building.garbage - 0.4);
           }
         }
+        // Custom Colored Bus Route continuous stop-to-stop looping!
+        if (v.kind === 'bus' && v.busLineId) {
+          const line = Array.isArray(this.sim.busLines) ? this.sim.busLines.find((l) => l.id === v.busLineId) : null;
+          if (line && line.active !== false && Array.isArray(line.stops) && line.stops.length >= 2) {
+            const curStopIdx = ((v.busStopIdx || 0) % line.stops.length + line.stops.length) % line.stops.length;
+            const nextStopIdx = (curStopIdx + 1) % line.stops.length;
+            const stA = line.stops[curStopIdx];
+            const stB = line.stops[nextStopIdx];
+            const nextPath = this.findRoadPath(stA.x, stA.z, stB.x, stB.z, false, 0, false);
+            if (nextPath && nextPath.length >= 2) {
+              line.dailyRiders = (line.dailyRiders || 0) + 12;
+              v.path = nextPath;
+              v.seg = 0;
+              v.t = 0;
+              v.busStopIdx = nextStopIdx;
+              v.busDwell = 1.45;
+              v.stuckTimer = 0;
+              v.speed = 0;
+              v.busLineColor = line.colorHex || '#0ea5e9';
+              v.tripLabel = `🚌 ${line.name}`;
+              v.fromName = `${line.name} · 第${curStopIdx + 1}站`;
+              v.toName = `${line.name} · 第${nextStopIdx + 1}站`;
+              v.originTile = { x: stA.x, z: stA.z };
+              v.destTile = { x: stB.x, z: stB.z };
+              this.syncVehicleTransform(v, effDt);
+              continue;
+            }
+          }
+        }
         this.sim.onTripComplete?.(v);
         this.sim.onTripCompleted?.(v);
         this.vehicles.splice(i, 1);
@@ -2327,9 +2428,10 @@ export class TrafficManager {
       t.congestion = t.congestion * 0.90 + raw * 0.10;
     }
 
-    // Update 3D Airliners, Cargo Container Ships & Sidewalk Pedestrians
+    // Update 3D Airliners, Cargo Container Ships, Coastal Leisure Boats & Sidewalk Pedestrians
     this.updateAircraft(effDt);
     this.updateShips(effDt);
+    this.updateLeisureBoats(effDt);
     this.updatePedestrians(effDt);
   }
 
@@ -3114,6 +3216,105 @@ export class TrafficManager {
       const s1 = this.sim.getTileElev(c1.x, c1.z) + this.sim.waterDepth[idx(c1.x, c1.z)];
       ship.wy = s0 + (s1 - s0) * ship.t + Math.sin(this.signalClock * 1.8 + ship.bobPhase) * 0.012;
       ship.roll = Math.sin(this.signalClock * 1.3 + ship.bobPhase) * 0.022;
+    }
+  }
+
+  // Scenic CC0 Coastal Sailboats & Fishing Boats gently cruising deep open bay water (strictly yielding to cargo ships!)
+  updateLeisureBoats(effDt) {
+    const isSafeBoatWater = (wx, wz) => {
+      const tile = worldToTile(wx, wz);
+      if (!inBounds(tile.x, tile.z)) return false;
+      const ti = idx(tile.x, tile.z);
+      const t = this.sim.grid[ti];
+      if (!t || t.dam || t.roadGround > 0 || t.roadElevated > 0 || t.rail > 0 || t.building) return false;
+      return this.sim.waterDepth[ti] > 0.28;
+    };
+
+    this._boatSpawnTimer -= effDt;
+    if (this.leisureBoats.length < 3 && this._boatSpawnTimer <= 0) {
+      this._boatSpawnTimer = 2.6;
+      // Search deep coastal bay tiles (SE sea bay) for open circular cruise centers
+      const cands = [
+        { tx: 46, tz: 49, r: 2.1, v: 0 },
+        { tx: 49, tz: 45, r: 1.9, v: 1 },
+        { tx: 43, tz: 50, r: 1.7, v: 0 },
+        { tx: 50, tz: 50, r: 1.8, v: 1 }
+      ];
+      for (let k = 0; k < cands.length && this.leisureBoats.length < 3; k++) {
+        const c = cands[(this._nextBoatId + k) % cands.length];
+        if (!inBounds(c.tx, c.tz)) continue;
+        const center = tileToWorld(c.tx, c.tz);
+        if (this.leisureBoats.some((b) => Math.hypot(b.cx - center.wx, b.cz - center.wz) < 3.0)) continue;
+        // Verify all 8 compass points on the loop stay in deep open water
+        let loopClean = true;
+        for (let a = 0; a < 8; a++) {
+          const ang = (a / 8) * Math.PI * 2;
+          if (!isSafeBoatWater(center.wx + Math.cos(ang) * c.r, center.wz + Math.sin(ang) * c.r)) {
+            loopClean = false;
+            break;
+          }
+        }
+        if (!loopClean) continue;
+        const startAng = Math.random() * Math.PI * 2;
+        const wx = center.wx + Math.cos(startAng) * c.r;
+        const wz = center.wz + Math.sin(startAng) * c.r;
+        const t = worldToTile(wx, wz);
+        const surf = this.sim.getTileElev(t.x, t.z) + this.sim.waterDepth[idx(t.x, t.z)];
+        this.leisureBoats.push({
+          id: this._nextBoatId++,
+          variant: c.v,
+          cx: center.wx,
+          cz: center.wz,
+          radius: c.r,
+          angle: startAng,
+          angSpeed: (0.24 + Math.random() * 0.12) * (k % 2 === 0 ? 1 : -1),
+          bobPhase: Math.random() * Math.PI * 2,
+          wx,
+          wy: surf,
+          wz,
+          yaw: startAng + Math.PI * 0.5,
+          roll: 0
+        });
+        break;
+      }
+    }
+
+    for (let i = this.leisureBoats.length - 1; i >= 0; i--) {
+      const b = this.leisureBoats[i];
+      // Yield politely if any large container ship is nearby (< 2.4m)
+      let yieldToShip = false;
+      for (let j = 0; j < this.ships.length; j++) {
+        const s = this.ships[j];
+        if (Math.hypot(s.wx - b.wx, s.wz - b.wz) < 2.4) {
+          yieldToShip = true;
+          break;
+        }
+      }
+      if (!yieldToShip) {
+        const nextAng = b.angle + b.angSpeed * effDt;
+        const nextWx = b.cx + Math.cos(nextAng) * b.radius;
+        const nextWz = b.cz + Math.sin(nextAng) * b.radius;
+        if (!isSafeBoatWater(nextWx, nextWz)) {
+          this.leisureBoats.splice(i, 1);
+          continue;
+        }
+        const vx = nextWx - b.wx;
+        const vz = nextWz - b.wz;
+        b.angle = nextAng;
+        b.wx = nextWx;
+        b.wz = nextWz;
+        if (Math.hypot(vx, vz) > 0.0005) {
+          b.yaw = lerpAngle(b.yaw, Math.atan2(vx, vz), Math.min(1, effDt * 4.5));
+        }
+      }
+      const tile = worldToTile(b.wx, b.wz);
+      if (!inBounds(tile.x, tile.z) || this.sim.waterDepth[idx(tile.x, tile.z)] <= 0.15) {
+        this.leisureBoats.splice(i, 1);
+        continue;
+      }
+      const surf = this.sim.getTileElev(tile.x, tile.z) + this.sim.waterDepth[idx(tile.x, tile.z)];
+      b.wy = surf + Math.sin(this.signalClock * 2.1 + b.bobPhase) * 0.014;
+      b.roll = Math.sin(this.signalClock * 1.7 + b.bobPhase) * 0.045;
     }
   }
 }

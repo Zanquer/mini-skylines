@@ -203,6 +203,8 @@ export class CityRenderer3D {
 
     this.overlayMode = 'none';
     this.lastOverlayMode = 'none';
+    this.activeBusLineHighlight = null;
+    this._busRouteMats = new Map();
     this.previewTiles = [];
     this.previewColor = [0.22, 0.85, 1.0];
     this.servicePreviewTiles = [];
@@ -268,12 +270,16 @@ export class CityRenderer3D {
     this.shipPool = [];
     this._shipActiveMap = new Map();
     this._shipSparePool = new Map();
+    this.leisureBoatPool = [];
+    this._boatActiveMap = new Map();
+    this._boatSparePool = new Map();
 
     this.smokePool = [];
     this.firePool = [];
     this.sprayPool = [];
     this.glowPool = [];
     this.previewMeshPool = [];
+    this.previewRimPool = [];
     this.scaffoldPool = [];
     this.meteorPool = [];
     this.damWarnPool = [];
@@ -287,7 +293,8 @@ export class CityRenderer3D {
       ferrisWheels: [],
       radarDishes: [],
       smokeSources: [],
-      beacons: []
+      beacons: [],
+      zooAnimals: []
     };
 
     this.waterMesh = null;
@@ -334,7 +341,11 @@ export class CityRenderer3D {
       goldGlow: new THREE.MeshBasicMaterial({ color: 0xfbbf24 }),
       cyanGlow: new THREE.MeshBasicMaterial({ color: 0x38bdf8 }),
       meteorGlow: new THREE.MeshBasicMaterial({ color: 0xff7b1c }),
-      previewMat: new THREE.MeshBasicMaterial({ color: 0x38d9ff, transparent: true, opacity: 0.62 }),
+      previewMat: new THREE.MeshBasicMaterial({ color: 0x38d9ff, transparent: true, opacity: 0.68, depthWrite: false }),
+      previewWaterMat: new THREE.MeshBasicMaterial({ color: 0xfbbf24, transparent: true, opacity: 0.86, depthWrite: false }),
+      previewRimMat: new THREE.MeshBasicMaterial({ color: 0xffffff, wireframe: true, transparent: true, opacity: 0.94, depthWrite: false }),
+      weatherRainMat: new THREE.MeshBasicMaterial({ color: 0xc8e4ff, transparent: true, opacity: 0.44, depthWrite: false }),
+      weatherSnowMat: new THREE.MeshBasicMaterial({ color: 0xf8fafc, transparent: true, opacity: 0.84, depthWrite: false }),
       servicePreviewMat: new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.46, depthWrite: false }),
       pedBodyMat: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.70, metalness: 0.04 }),
       pedHeadMat: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.74 }),
@@ -399,6 +410,9 @@ export class CityRenderer3D {
       lampBulb: this._makeLampBulbGeo(),
       signalPole: this._makeSignalPoleGeo(),
       signalLens: new THREE.SphereGeometry(0.026, 6, 5),
+      pylonTower: this._makePylonTowerGeo(),
+      weatherRainDrop: new THREE.BoxGeometry(0.014, 0.42, 0.014),
+      weatherSnowFlake: new THREE.BoxGeometry(0.055, 0.055, 0.055),
       pedTorso: this._makePedTorsoGeo(),
       pedHead: this._makePedHeadGeo(),
       pedHair: this._makePedHairGeo(),
@@ -561,11 +575,99 @@ export class CityRenderer3D {
     return mergeGeometriesSimple([post, arm, box]);
   }
 
+  // Authentic High-Voltage Steel Lattice Transmission Tower (4 tapered legs + horizontal rings + X-bracing + double tapered cross-arms + insulators!)
+  _makePylonTowerGeo() {
+    const parts = [];
+    const addStrut = (ax, ay, az, bx, by, bz, thickness = 0.018) => {
+      const dx = bx - ax, dy = by - ay, dz = bz - az;
+      const len = Math.hypot(dx, dy, dz);
+      if (len < 1e-4) return;
+      const g = new THREE.BoxGeometry(thickness, len, thickness);
+      const q = new THREE.Quaternion().setFromUnitVectors(
+        new THREE.Vector3(0, 1, 0),
+        new THREE.Vector3(dx / len, dy / len, dz / len)
+      );
+      g.applyMatrix4(new THREE.Matrix4().compose(
+        new THREE.Vector3((ax + bx) * 0.5, (ay + by) * 0.5, (az + bz) * 0.5),
+        q,
+        new THREE.Vector3(1, 1, 1)
+      ));
+      parts.push(g);
+    };
+
+    const levels = [
+      { y: 0.00, r: 0.17 },
+      { y: 0.34, r: 0.125 },
+      { y: 0.68, r: 0.088 },
+      { y: 0.96, r: 0.064 },
+      { y: 1.24, r: 0.044 }
+    ];
+    const corners = [[-1, -1], [1, -1], [1, 1], [-1, 1]];
+
+    // 4 Concrete Footing Pads at base corners
+    for (const [cx, cz] of corners) {
+      const pad = new THREE.BoxGeometry(0.052, 0.05, 0.052);
+      pad.translate(cx * 0.17, 0.025, cz * 0.17);
+      parts.push(pad);
+    }
+
+    // Main tapered legs + perimeter frames + X-diagonals across all 4 tiers
+    for (let lv = 0; lv < levels.length - 1; lv++) {
+      const a = levels[lv], b = levels[lv + 1];
+      for (let c = 0; c < 4; c++) {
+        const [x0, z0] = corners[c];
+        const [x1, z1] = corners[(c + 1) & 3];
+        // Vertical tapered leg
+        addStrut(x0 * a.r, a.y, z0 * a.r, x0 * b.r, b.y, z0 * b.r, 0.022);
+        // Horizontal perimeter bar at top of tier
+        addStrut(x0 * b.r, b.y, z0 * b.r, x1 * b.r, b.y, z1 * b.r, 0.015);
+        // X-bracing diagonals on each side face
+        addStrut(x0 * a.r, a.y, z0 * a.r, x1 * b.r, b.y, z1 * b.r, 0.012);
+        addStrut(x1 * a.r, a.y, z1 * a.r, x0 * b.r, b.y, z0 * b.r, 0.012);
+      }
+    }
+
+    // Two tapered double-sided steel cross-arms (lower @ y=0.96, upper @ y=1.18) with ceramic insulator drops
+    const armSpecs = [
+      { y: 0.96, span: 0.34, r: 0.064 },
+      { y: 1.18, span: 0.25, r: 0.048 }
+    ];
+    for (const arm of armSpecs) {
+      const mainBeam = new THREE.BoxGeometry(arm.span * 2, 0.024, 0.036);
+      mainBeam.translate(0, arm.y, 0);
+      parts.push(mainBeam);
+      // Angled truss stay braces supporting cross-arm tips
+      addStrut(-arm.span, arm.y, 0, -arm.r, arm.y + 0.09, 0, 0.014);
+      addStrut(arm.span, arm.y, 0, arm.r, arm.y + 0.09, 0, 0.014);
+      // Ceramic hanging insulators at both arm tips
+      for (const sx of [-arm.span + 0.02, arm.span - 0.02]) {
+        const ins = new THREE.CylinderGeometry(0.014, 0.018, 0.075, 6);
+        ins.translate(sx, arm.y - 0.045, 0);
+        parts.push(ins);
+      }
+    }
+
+    // Top lightning arrestor pyramid peak
+    const peak = new THREE.ConeGeometry(0.048, 0.18, 4);
+    peak.rotateY(Math.PI * 0.25);
+    peak.translate(0, 1.33, 0);
+    parts.push(peak);
+
+    return mergeGeometriesSimple(parts);
+  }
+
   _initPersistentOverlayMeshes() {
     this.selectedTileMesh = new THREE.Mesh(this.geos.unitBox, this.mats.cyanGlow);
-    this.selectedTileMesh.scale.set(0.98, 0.04, 0.98);
+    this.selectedTileMesh.scale.set(0.98, 0.045, 0.98);
+    this.selectedTileMesh.renderOrder = 28;
     this.selectedTileMesh.visible = false;
     this.uiOverlayGroup.add(this.selectedTileMesh);
+
+    this.selectedTileRim = new THREE.Mesh(this.geos.unitBox, this.mats.previewRimMat);
+    this.selectedTileRim.scale.set(1.01, 0.08, 1.01);
+    this.selectedTileRim.renderOrder = 29;
+    this.selectedTileRim.visible = false;
+    this.uiOverlayGroup.add(this.selectedTileRim);
 
     this.selectedVehicleHalo = new THREE.Mesh(this.geos.cylTower, this.mats.goldGlow);
     this.selectedVehicleHalo.visible = false;
@@ -586,8 +688,38 @@ export class CityRenderer3D {
     for (let i = 0; i < this._poolCaps.spray; i++) this._acquirePoolSprite(this.sprayPool, i, { map: this.smokeTex });
     for (let i = 0; i < this._poolCaps.damWarn; i++) this._acquirePoolMesh(this.damWarnPool, i, this.geos.waterSphere, this.mats.redCross);
     for (let i = 0; i < this._poolCaps.preview; i++) this._acquirePoolMesh(this.previewMeshPool, i, this.geos.unitBox, this.mats.previewMat);
+    for (let i = 0; i < this._poolCaps.preview; i++) this._acquirePoolMesh(this.previewRimPool, i, this.geos.unitBox, this.mats.previewRimMat);
     for (let i = 0; i < this._poolCaps.scaffold; i++) this._acquirePoolMesh(this.scaffoldPool, i, this.geos.unitBox, this.mats.goldGlow);
     for (let i = 0; i < this._poolCaps.meteor; i++) this._acquirePoolMesh(this.meteorPool, i, this.geos.waterSphere, this.mats.meteorGlow);
+
+    // Zero-Leak 1-Draw-Call Instanced 3D Weather Precipitation (Rain Streaks & Snowflakes)
+    this._rainCap = 420;
+    this._rainSeeds = new Float32Array(this._rainCap * 4);
+    for (let i = 0; i < this._rainCap; i++) {
+      this._rainSeeds[i * 4 + 0] = (hash2D(i, 11, 701) - 0.5) * 30;
+      this._rainSeeds[i * 4 + 1] = hash2D(i, 23, 702) * 16;
+      this._rainSeeds[i * 4 + 2] = (hash2D(i, 37, 703) - 0.5) * 30;
+      this._rainSeeds[i * 4 + 3] = 11.5 + hash2D(i, 53, 704) * 5.5;
+    }
+    this.weatherRainInst = new THREE.InstancedMesh(this.geos.weatherRainDrop, this.mats.weatherRainMat, this._rainCap);
+    this.weatherRainInst.visible = false;
+    this.weatherRainInst.frustumCulled = false;
+    this.weatherRainInst.renderOrder = 18;
+    this.uiOverlayGroup.add(this.weatherRainInst);
+
+    this._snowCap = 360;
+    this._snowSeeds = new Float32Array(this._snowCap * 4);
+    for (let i = 0; i < this._snowCap; i++) {
+      this._snowSeeds[i * 4 + 0] = (hash2D(i, 19, 801) - 0.5) * 30;
+      this._snowSeeds[i * 4 + 1] = hash2D(i, 29, 802) * 14;
+      this._snowSeeds[i * 4 + 2] = (hash2D(i, 41, 803) - 0.5) * 30;
+      this._snowSeeds[i * 4 + 3] = 1.65 + hash2D(i, 61, 804) * 1.15;
+    }
+    this.weatherSnowInst = new THREE.InstancedMesh(this.geos.weatherSnowFlake, this.mats.weatherSnowMat, this._snowCap);
+    this.weatherSnowInst.visible = false;
+    this.weatherSnowInst.frustumCulled = false;
+    this.weatherSnowInst.renderOrder = 18;
+    this.uiOverlayGroup.add(this.weatherSnowInst);
 
     // 1-Draw-Call Instanced Pre-Build Road-Connected Service Coverage Preview (up to 320 tiles, ZERO per-frame allocs!)
     this._servicePreviewCap = 320;
@@ -790,6 +922,42 @@ export class CityRenderer3D {
         );
       } catch {}
     });
+  }
+
+  applyExternalGLBModels(glbMap) {
+    if (!glbMap || typeof glbMap !== 'object') return;
+    let added = 0;
+    for (const [key, root] of Object.entries(glbMap)) {
+      if (!root) continue;
+      this.glbProtos[key] = root;
+      added++;
+    }
+    if (added > 0) {
+      this._clearVehiclePool();
+      this._clearLeisureBoatPool();
+      this.sim.buildingDirty = true;
+    }
+  }
+
+  _clearLeisureBoatPool() {
+    for (const obj of this.leisureBoatPool) this.vehicleGroup.remove(obj);
+    this.leisureBoatPool.length = 0;
+    for (const entry of this._boatActiveMap.values()) this.vehicleGroup.remove(entry.obj);
+    this._boatActiveMap.clear();
+    for (const bucket of this._boatSparePool.values()) {
+      for (const obj of bucket) this.vehicleGroup.remove(obj);
+    }
+    this._boatSparePool.clear();
+  }
+
+  _getBusRouteMat(colorHex) {
+    const key = String(colorHex || '#0ea5e9').toLowerCase();
+    let mat = this._busRouteMats.get(key);
+    if (!mat) {
+      mat = new THREE.MeshBasicMaterial({ color: key });
+      this._busRouteMats.set(key, mat);
+    }
+    return mat;
   }
 
   _clearVehiclePool() {
@@ -1050,16 +1218,14 @@ export class CityRenderer3D {
           }
         }
 
-        // High-Voltage Steel Pylon
+        // High-Voltage Steel Lattice Transmission Tower
         if (t.pylon) {
           pylonPts.push(new THREE.Vector3(wx, avgH + 1.18, wz));
-          const tower = new THREE.Mesh(this.geos.taperSpire, this.mats.steelLattice);
-          tower.scale.set(0.36, 1.22, 0.36);
-          tower.position.set(wx, avgH + 0.61, wz);
+          const tower = new THREE.Mesh(this.geos.pylonTower, this.mats.steelLattice);
+          tower.position.set(wx, avgH, wz);
           tower.castShadow = this.qualityMode !== 'eco';
+          tower.receiveShadow = true;
           this.infraGroup.add(tower);
-          this._addBoxTo(this.infraGroup, wx, avgH + 0.96, wz, 0.58, 0.04, 0.05, this.mats.steelLattice);
-          this._addBoxTo(this.infraGroup, wx, avgH + 1.15, wz, 0.42, 0.04, 0.05, this.mats.steelLattice);
         }
       }
     }
@@ -1076,6 +1242,64 @@ export class CityRenderer3D {
           const m = new THREE.Mesh(tubeGeo, this.overlayMode === 'power' ? this.mats.powerGlow : this.mats.cable);
           m.userData.ownGeo = true;
           this.infraGroup.add(m);
+        }
+      }
+    }
+
+    // Glowing Color-Coded 3D Bus Route Ribbons & Stop Pins (visible in 'transit' overlay or Bus Line Editor!)
+    if (!isUnder && (this.overlayMode === 'transit' || this.activeBusLineHighlight != null) && Array.isArray(this.sim.busLines)) {
+      for (let li = 0; li < this.sim.busLines.length; li++) {
+        const line = this.sim.busLines[li];
+        if (!line || line.active === false || !Array.isArray(line.stops) || line.stops.length === 0) continue;
+        const isHi = this.activeBusLineHighlight === line.id;
+        const routeMat = this._getBusRouteMat(line.colorHex);
+        const yOff = (isHi ? 0.21 : 0.14) + (li % 4) * 0.025;
+        const rad = isHi ? 0.056 : 0.036;
+
+        // Glowing cylindrical stop pins + halo rings along every assigned bus stop
+        for (let si = 0; si < line.stops.length; si++) {
+          const st = line.stops[si];
+          if (!inBounds(st.x, st.z)) continue;
+          const { wx, wz } = tileToWorld(st.x, st.z);
+          const sy = this.sim.infraHeights?.roadCornerY
+            ? this._sampleInfraHeight(this.sim.infraHeights.roadCornerY, wx, wz)
+            : Math.max(this.sim.getTileElev(st.x, st.z), this.sim.getTileElev(st.x, st.z) + this.sim.waterDepth[idx(st.x, st.z)]);
+          const pin = new THREE.Mesh(this.geos.cylTower, routeMat);
+          pin.scale.set(isHi ? 0.36 : 0.26, isHi ? 0.62 : 0.44, isHi ? 0.36 : 0.26);
+          pin.position.set(wx, sy + (isHi ? 0.31 : 0.22), wz);
+          this.infraGroup.add(pin);
+          const halo = new THREE.Mesh(this.geos.cylTower, routeMat);
+          halo.scale.set(isHi ? 0.92 : 0.72, 0.035, isHi ? 0.92 : 0.72);
+          halo.position.set(wx, sy + yOff * 0.7, wz);
+          this.infraGroup.add(halo);
+        }
+
+        // Smooth 3D road-following tube linking consecutive stops in loop order
+        if (line.stops.length >= 2 && this.traffic && typeof this.traffic.findRoadPath === 'function') {
+          const legs = line.stops.length === 2 ? 1 : line.stops.length;
+          for (let k = 0; k < legs; k++) {
+            const stA = line.stops[k];
+            const stB = line.stops[(k + 1) % line.stops.length];
+            const rPath = this.traffic.findRoadPath(stA.x, stA.z, stB.x, stB.z, false, 0, false);
+            if (!rPath || rPath.length < 2) continue;
+            const pts = [];
+            for (let p = 0; p < rPath.length; p++) {
+              const nd = rPath[p];
+              const w = tileToWorld(nd.x, nd.z);
+              const baseY = (nd.layer === 1 && this.sim.infraHeights?.elevCornerY)
+                ? this._sampleInfraHeight(this.sim.infraHeights.elevCornerY, w.wx, w.wz)
+                : (this.sim.infraHeights?.roadCornerY
+                  ? this._sampleInfraHeight(this.sim.infraHeights.roadCornerY, w.wx, w.wz)
+                  : Math.max(this.sim.getTileElev(nd.x, nd.z), this.sim.getTileElev(nd.x, nd.z) + this.sim.waterDepth[idx(nd.x, nd.z)]));
+              pts.push(new THREE.Vector3(w.wx, baseY + yOff, w.wz));
+            }
+            const curve = new THREE.CatmullRomCurve3(pts, false, 'catmullrom', 0.25);
+            const segs = Math.min(84, Math.max(8, pts.length * 3));
+            const tubeGeo = new THREE.TubeGeometry(curve, segs, rad, 6, false);
+            const tubeMesh = new THREE.Mesh(tubeGeo, routeMat);
+            tubeMesh.userData.ownGeo = true;
+            this.infraGroup.add(tubeMesh);
+          }
         }
       }
     }
@@ -1281,6 +1505,7 @@ export class CityRenderer3D {
     this.animHooks.radarDishes.length = 0;
     this.animHooks.smokeSources.length = 0;
     this.animHooks.beacons.length = 0;
+    this.animHooks.zooAnimals.length = 0;
 
     const isUnder = this.overlayMode === 'underground';
 
@@ -1557,10 +1782,10 @@ export class CityRenderer3D {
   }
 
   // True-Proportion Modern 3D Vehicles (Sedan, SUV, Taxi, Bus, Container Truck, Fire Engine, Garbage Truck)
-  _createVehicleObject(kind, variantIdx) {
+  _createVehicleObject(kind, variantIdx, lineColorHex = null) {
     if (this.archLib && typeof this.archLib.createRealisticVehicleObject === 'function') {
       try {
-        const obj = this.archLib.createRealisticVehicleObject(kind, variantIdx);
+        const obj = this.archLib.createRealisticVehicleObject(kind, variantIdx, lineColorHex);
         if (obj) {
           obj.rotation.order = 'YXZ';
           return obj;
@@ -1732,6 +1957,18 @@ export class CityRenderer3D {
     }
     for (const radar of this.animHooks.radarDishes) radar.rotation.y += dt * 2.2;
     for (const bc of this.animHooks.beacons) bc.visible = night > 0.22 ? beaconBlink : false;
+    // Gently stroll animated Zoo wildlife animals around their enclosures!
+    if (Array.isArray(this.animHooks.zooAnimals)) {
+      for (let i = 0; i < this.animHooks.zooAnimals.length; i++) {
+        const a = this.animHooks.zooAnimals[i];
+        const ang = this.clock * (a.speed || 0.45) + (a.phase || 0);
+        const nx = (a.cx || 0) + Math.cos(ang) * (a.radius || 0.08);
+        const nz = (a.cz || 0) + Math.sin(ang) * (a.radius || 0.08);
+        const bob = Math.abs(Math.sin(ang * 4.5)) * 0.008;
+        a.obj.position.set(nx, (a.baseY || 0) + bob, nz);
+        a.obj.rotation.y = Math.atan2(-Math.sin(ang), Math.cos(ang));
+      }
+    }
 
     // Streetlamp dusk/night emissive glow & live traffic signals
     if (this.mats.lampEmissive) {
@@ -1771,7 +2008,8 @@ export class CityRenderer3D {
       const varIdx = typeof v.variantIdx === 'number'
         ? (v.variantIdx & 15)
         : (typeof v.id === 'number' ? (v.id % 12) : 0);
-      const poolKey = `${v.kind}:${varIdx}`;
+      const busCol = v.kind === 'bus' ? (v.busLineColor || '') : '';
+      const poolKey = `${v.kind}:${varIdx}:${busCol}`;
       let entry = this._vehActiveMap.get(v);
       if (entry && entry.key !== poolKey) {
         entry.obj.visible = false;
@@ -1788,7 +2026,7 @@ export class CityRenderer3D {
         const bucket = this._vehSparePool.get(poolKey);
         let obj = bucket && bucket.length > 0 ? bucket.pop() : null;
         if (!obj) {
-          obj = this._createVehicleObject(v.kind, varIdx);
+          obj = this._createVehicleObject(v.kind, varIdx, busCol || null);
           this.vehicleGroup.add(obj);
         }
         entry = { key: poolKey, kind: v.kind, variantIdx: varIdx, obj };
@@ -1938,6 +2176,44 @@ export class CityRenderer3D {
       sh.position.set(s.wx, s.wy, s.wz);
       sh.rotation.set(-(s.pitch || 0), s.yaw || 0, s.roll || 0);
       this.shipPool.push(sh);
+    }
+
+    // Scenic CC0 Coastal Sailboats & Fishing Boats (identity-bound pooling, ZERO leaks!)
+    const boats = isUnder ? [] : (this.traffic.leisureBoats || []);
+    const activeBoatSet = new Set(boats);
+    for (const [bObj, entry] of this._boatActiveMap.entries()) {
+      if (!activeBoatSet.has(bObj)) {
+        entry.obj.visible = false;
+        let bucket = this._boatSparePool.get(entry.key);
+        if (!bucket) { bucket = []; this._boatSparePool.set(entry.key, bucket); }
+        bucket.push(entry.obj);
+        this._boatActiveMap.delete(bObj);
+      }
+    }
+    this.leisureBoatPool.length = 0;
+    for (let i = 0; i < boats.length; i++) {
+      const b = boats[i];
+      const bVar = (b.variant || 0) & 1;
+      let entry = this._boatActiveMap.get(b);
+      if (!entry) {
+        const bucket = this._boatSparePool.get(bVar);
+        let boatMesh = bucket && bucket.length > 0 ? bucket.pop() : null;
+        if (!boatMesh && this.archLib && typeof this.archLib.createLeisureBoatObject === 'function') {
+          boatMesh = this.archLib.createLeisureBoatObject(bVar);
+          this.vehicleGroup.add(boatMesh);
+        }
+        if (boatMesh) {
+          entry = { key: bVar, obj: boatMesh };
+          this._boatActiveMap.set(b, entry);
+        }
+      }
+      if (entry) {
+        const bm = entry.obj;
+        bm.visible = true;
+        bm.position.set(b.wx, b.wy, b.wz);
+        bm.rotation.set(0, b.yaw || 0, b.roll || 0);
+        this.leisureBoatPool.push(bm);
+      }
     }
 
     // Articulated 3D Sidewalk Citizens (7 InstancedMeshes total, <= 240 citizens, per-citizen colors & animated stride -> ZERO flicker!)
@@ -2185,29 +2461,54 @@ export class CityRenderer3D {
     }
     this._hidePoolFrom(this.meteorPool, meteorCount);
 
-    // Build / Drag Preview Tiles (single reusable previewMat mutated in place; X-ray visible through mountains when underground!)
+    // Build / Drag Preview Tiles (crystal-clear over ocean & bridges with luminous gold contrast + white wireframe rim!)
     let prevCount = 0;
+    let rimCount = 0;
     if (this.previewTiles.length > 0) {
       this.mats.previewMat.color.setRGB(this.previewColor[0], this.previewColor[1], this.previewColor[2]);
       if (this.mats.previewMat.depthTest !== !isUnder) {
         this.mats.previewMat.depthTest = !isUnder;
-        this.mats.previewMat.depthWrite = !isUnder;
         this.mats.previewMat.needsUpdate = true;
       }
+      const isCyanPreview = this.previewColor[2] > 0.65 && this.previewColor[0] < 0.55;
       for (const pos of this.previewTiles) {
         if (!inBounds(pos.x, pos.z)) continue;
         const { wx, wz } = tileToWorld(pos.x, pos.z);
-        const py = isUnder
-          ? this.sim.getTileElev(pos.x, pos.z) + 0.34
-          : Math.max(this.sim.getTileElev(pos.x, pos.z), this.sim.getTileElev(pos.x, pos.z) + this.sim.waterDepth[idx(pos.x, pos.z)]) + 0.06;
+        const ti = idx(pos.x, pos.z);
+        const elev = this.sim.getTileElev(pos.x, pos.z);
+        const wd = this.sim.waterDepth[ti] || 0;
+        const overWater = !isUnder && wd > 0.05;
+        const t = this.sim.grid[ti];
+        let py;
+        if (isUnder) {
+          py = elev + 0.34;
+        } else if (overWater) {
+          const waterSurf = Math.max(elev, elev + wd);
+          const roadDeck = (t && t.roadGround > 0 && this.sim.infraHeights?.roadCornerY)
+            ? this._sampleInfraHeight(this.sim.infraHeights.roadCornerY, wx, wz)
+            : (waterSurf + 0.22);
+          py = Math.max(waterSurf + 0.24, roadDeck + 0.08);
+        } else {
+          py = elev + 0.07;
+        }
         const hl = this._acquirePoolMesh(this.previewMeshPool, prevCount++, this.geos.unitBox, this.mats.previewMat);
-        hl.scale.set(0.92, isUnder ? 0.14 : 0.06, 0.92);
+        hl.material = (overWater && isCyanPreview) ? this.mats.previewWaterMat : this.mats.previewMat;
+        hl.scale.set(0.92, isUnder ? 0.14 : (overWater ? 0.08 : 0.06), 0.92);
         hl.position.set(wx, py, wz);
-        hl.renderOrder = isUnder ? 25 : 4;
+        hl.renderOrder = isUnder ? 25 : (overWater ? 32 : 12);
         hl.visible = true;
+
+        if (overWater || this.previewTiles.length <= 25) {
+          const rim = this._acquirePoolMesh(this.previewRimPool, rimCount++, this.geos.unitBox, this.mats.previewRimMat);
+          rim.scale.set(0.96, overWater ? 0.11 : 0.08, 0.96);
+          rim.position.set(wx, py + 0.015, wz);
+          rim.renderOrder = overWater ? 33 : 13;
+          rim.visible = true;
+        }
       }
     }
     this._hidePoolFrom(this.previewMeshPool, prevCount);
+    this._hidePoolFrom(this.previewRimPool, rimCount);
 
     // Pre-Build Green Road-Connected Service Coverage Overlay (1 InstancedMesh, ZERO allocs!)
     const svcList = Array.isArray(this.servicePreviewTiles) ? this.servicePreviewTiles : [];
@@ -2235,15 +2536,31 @@ export class CityRenderer3D {
       this.servicePreviewInst.visible = false;
     }
 
-    // Selected Tile Highlight
+    // Selected Tile Highlight (floats cleanly ABOVE ocean water & bridge decks -> NEVER hidden underwater!)
     if (this.selectedTile && inBounds(this.selectedTile.x, this.selectedTile.z)) {
-      const { wx, wz } = tileToWorld(this.selectedTile.x, this.selectedTile.z);
-      const sy = this.sim.getTileElev(this.selectedTile.x, this.selectedTile.z) + 0.08;
+      const sx = this.selectedTile.x, sz = this.selectedTile.z;
+      const { wx, wz } = tileToWorld(sx, sz);
+      const ti = idx(sx, sz);
+      const elev = this.sim.getTileElev(sx, sz);
+      const wd = this.sim.waterDepth[ti] || 0;
+      const t = this.sim.grid[ti];
+      const waterSurf = Math.max(elev, elev + wd);
+      let sy = waterSurf + (wd > 0.05 ? 0.16 : 0.08);
+      if (t && t.roadGround > 0 && this.sim.infraHeights?.roadCornerY) {
+        sy = Math.max(sy, this._sampleInfraHeight(this.sim.infraHeights.roadCornerY, wx, wz) + 0.07);
+      }
+      this.selectedTileMesh.material = wd > 0.05 ? this.mats.previewWaterMat : this.mats.cyanGlow;
       this.selectedTileMesh.position.set(wx, sy, wz);
       this.selectedTileMesh.visible = true;
+      this.selectedTileRim.position.set(wx, sy + 0.015, wz);
+      this.selectedTileRim.visible = true;
     } else {
       this.selectedTileMesh.visible = false;
+      this.selectedTileRim.visible = false;
     }
+
+    // Zero-Leak 3D Weather Precipitation (Rain Streaks & Snowflakes)
+    this._syncWeatherParticles(dt, isUnder);
 
     // Selected Vehicle Golden Halo
     if (!isUnder && this.selectedVehicle && this.traffic.vehicles.includes(this.selectedVehicle) && !this.selectedVehicle.inTunnel) {
@@ -2254,6 +2571,67 @@ export class CityRenderer3D {
       this.selectedVehicleHalo.visible = true;
     } else {
       this.selectedVehicleHalo.visible = false;
+    }
+  }
+
+  _syncWeatherParticles(dt, isUnder) {
+    const w = this.sim.weather || { state: 'clear', intensity: 0 };
+    const st = w.state || 'clear';
+    const inten = Math.max(0, Math.min(1, w.intensity || 0));
+    const tx = this.camTarget[0], ty = this.camTarget[1], tz = this.camTarget[2];
+
+    const showRain = !isUnder && (st === 'rain' || st === 'storm') && inten > 0.06 && this.qualityMode !== 'eco';
+    if (showRain && this.weatherRainInst) {
+      const activeCount = Math.max(60, Math.min(this._rainCap, Math.floor(this._rainCap * (st === 'storm' ? 1.0 : 0.65 * inten))));
+      const windLean = st === 'storm' ? 0.22 : 0.09;
+      this._tmpEuler.set(windLean * 0.6, 0, windLean);
+      this._tmpQuat.setFromEuler(this._tmpEuler);
+      this._tmpScale.set(1, st === 'storm' ? 1.25 : 0.95, 1);
+      const tClk = this.clock;
+      for (let i = 0; i < activeCount; i++) {
+        const ox = this._rainSeeds[i * 4 + 0];
+        const y0 = this._rainSeeds[i * 4 + 1];
+        const oz = this._rainSeeds[i * 4 + 2];
+        const spd = this._rainSeeds[i * 4 + 3] * (st === 'storm' ? 1.35 : 1.0);
+        const h = 16.0 - ((y0 + tClk * spd) % 16.0);
+        const driftX = (16.0 - h) * windLean;
+        this._tmpPos.set(tx + ox + driftX, ty + h - 0.5, tz + oz);
+        this._tmpMat4.compose(this._tmpPos, this._tmpQuat, this._tmpScale);
+        this.weatherRainInst.setMatrixAt(i, this._tmpMat4);
+      }
+      this.mats.weatherRainMat.opacity = (st === 'storm' ? 0.56 : 0.40) * inten;
+      this.weatherRainInst.count = activeCount;
+      this.weatherRainInst.instanceMatrix.needsUpdate = true;
+      this.weatherRainInst.visible = true;
+    } else if (this.weatherRainInst) {
+      this.weatherRainInst.visible = false;
+    }
+
+    const showSnow = !isUnder && st === 'snow' && inten > 0.06 && this.qualityMode !== 'eco';
+    if (showSnow && this.weatherSnowInst) {
+      const activeCount = Math.max(50, Math.min(this._snowCap, Math.floor(this._snowCap * inten)));
+      this._tmpScale.set(1, 1, 1);
+      const tClk = this.clock;
+      for (let i = 0; i < activeCount; i++) {
+        const ox = this._snowSeeds[i * 4 + 0];
+        const y0 = this._snowSeeds[i * 4 + 1];
+        const oz = this._snowSeeds[i * 4 + 2];
+        const spd = this._snowSeeds[i * 4 + 3];
+        const h = 14.0 - ((y0 + tClk * spd) % 14.0);
+        const swayX = Math.sin(tClk * 1.4 + i) * 0.55;
+        const swayZ = Math.cos(tClk * 1.1 + i * 0.7) * 0.45;
+        this._tmpEuler.set(tClk + i, tClk * 0.7 + i, 0);
+        this._tmpQuat.setFromEuler(this._tmpEuler);
+        this._tmpPos.set(tx + ox + swayX, ty + h - 0.3, tz + oz + swayZ);
+        this._tmpMat4.compose(this._tmpPos, this._tmpQuat, this._tmpScale);
+        this.weatherSnowInst.setMatrixAt(i, this._tmpMat4);
+      }
+      this.mats.weatherSnowMat.opacity = 0.84 * inten;
+      this.weatherSnowInst.count = activeCount;
+      this.weatherSnowInst.instanceMatrix.needsUpdate = true;
+      this.weatherSnowInst.visible = true;
+    } else if (this.weatherSnowInst) {
+      this.weatherSnowInst.visible = false;
     }
   }
 
@@ -2269,12 +2647,17 @@ export class CityRenderer3D {
     const lz = sunElev >= -0.05 ? 22 : -20;
 
     const sunDir = new THREE.Vector3(lx, ly, lz).normalize();
+    const w = this.sim.weather || { state: 'clear', intensity: 0, lightningFlash: 0 };
+    const wState = w.state || 'clear';
+    const wInt = Math.max(0, Math.min(1, w.intensity || 0));
+    const flash = Math.max(0, Math.min(1, w.lightningFlash || 0));
 
     if (this.overlayMode === 'underground') {
       if (this.skyDome) this.skyDome.mesh.visible = false;
       this.skyColor.setRGB(0.04, 0.07, 0.12);
       this.scene.background = this.skyColor;
       this.fog.color.copy(this.skyColor);
+      this.fog.density = 0.0072;
       this.sunLight.intensity = 0.7;
       this.hemiLight.intensity = 0.55;
       if (this.scene.environment) this.scene.environmentIntensity = 0.15;
@@ -2283,7 +2666,7 @@ export class CityRenderer3D {
 
     if (this.skyDome) {
       this.skyDome.mesh.visible = true;
-      this.skyDome.update(p, night, sunDir);
+      this.skyDome.update(p, night, sunDir, wState, wInt);
     }
 
     const daySky = new THREE.Color(0x74b6f2);
@@ -2291,7 +2674,44 @@ export class CityRenderer3D {
     const nightSky = new THREE.Color(0x091124);
 
     this.skyColor.copy(daySky).lerp(nightSky, night).lerp(sunsetSky, sunset * 0.65);
+
+    // Atmospheric weather tinting & dynamic fog density
+    let targetFog = 0.0072;
+    let sunWeatherMult = 1.0;
+    if (wState === 'cloudy') {
+      this._tmpColor.setHex(night > 0.5 ? 0x161f30 : 0x94a8bd);
+      this.skyColor.lerp(this._tmpColor, 0.42 * wInt);
+      targetFog = 0.0072 + 0.0024 * wInt;
+      sunWeatherMult = 1.0 - 0.24 * wInt;
+    } else if (wState === 'rain') {
+      this._tmpColor.setHex(night > 0.5 ? 0x111a29 : 0x6f8296);
+      this.skyColor.lerp(this._tmpColor, 0.64 * wInt);
+      targetFog = 0.0072 + 0.0064 * wInt;
+      sunWeatherMult = 1.0 - 0.42 * wInt;
+    } else if (wState === 'storm') {
+      this._tmpColor.setHex(night > 0.5 ? 0x0b111c : 0x4b5c6e);
+      this.skyColor.lerp(this._tmpColor, 0.78 * wInt);
+      targetFog = 0.0072 + 0.0095 * wInt;
+      sunWeatherMult = 1.0 - 0.58 * wInt;
+    } else if (wState === 'snow') {
+      this._tmpColor.setHex(night > 0.5 ? 0x1b2638 : 0xc8d9ea);
+      this.skyColor.lerp(this._tmpColor, 0.56 * wInt);
+      targetFog = 0.0072 + 0.0056 * wInt;
+      sunWeatherMult = 1.0 - 0.22 * wInt;
+    } else if (wState === 'fog') {
+      this._tmpColor.setHex(night > 0.5 ? 0x1c2533 : 0xd6e0ea);
+      this.skyColor.lerp(this._tmpColor, 0.72 * wInt);
+      targetFog = 0.0072 + 0.0168 * wInt;
+      sunWeatherMult = 1.0 - 0.30 * wInt;
+    }
+
+    if (flash > 0.02) {
+      this._tmpColor.setHex(0xe8f3ff);
+      this.skyColor.lerp(this._tmpColor, flash * 0.48);
+    }
+
     this.fog.color.copy(this.skyColor);
+    this.fog.density = targetFog;
 
     // Quantize shadow camera target to 0.5m world grid steps to stop directional shadow-texel swimming on building facades!
     const snapX = Math.round(this.camTarget[0] * 2) * 0.5;
@@ -2304,9 +2724,18 @@ export class CityRenderer3D {
     const sunsetSun = new THREE.Color(0xff8c4a);
     const moonCol = new THREE.Color(0x4a6fa5);
     this.sunLight.color.copy(daySun).lerp(moonCol, night).lerp(sunsetSun, sunset * 0.75);
-    this.sunLight.intensity = 1.92 * (1 - night * 0.72);
-    this.hemiLight.intensity = (this.hemiBase || 0.88) * (1 - night * 0.62);
-    if (this.scene.environment) this.scene.environmentIntensity = 0.68 * (1 - night * 0.78);
+    this.sunLight.intensity = 1.92 * (1 - night * 0.72) * sunWeatherMult + flash * 1.45;
+    this.hemiLight.intensity = (this.hemiBase || 0.88) * (1 - night * 0.62) * (0.78 + 0.22 * sunWeatherMult) + flash * 0.55;
+    if (this.scene.environment) this.scene.environmentIntensity = 0.68 * (1 - night * 0.78) * (0.7 + 0.3 * sunWeatherMult);
+
+    // Rain / Storm glossy wet-asphalt reflection effect (zero material allocations!)
+    const wetness = (wState === 'rain' || wState === 'storm') ? wInt : 0;
+    for (const rMat of [this.mats.road2, this.mats.road4, this.mats.roadHub]) {
+      if (!rMat) continue;
+      const dryR = rMat.roughnessMap ? 1.0 : 0.83;
+      const wetR = rMat.roughnessMap ? 0.38 : 0.26;
+      rMat.roughness = dryR + (wetR - dryR) * wetness;
+    }
 
     this.archLib.setNightFactor(night);
 

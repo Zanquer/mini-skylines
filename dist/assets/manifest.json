@@ -1,8 +1,8 @@
 {
-  "version": "v7.5-dc58e4cc25-b40c0b2b",
-  "generatedAt": "2026-11-22T16:47:14.723Z",
-  "totalBytes": 5498531,
-  "fileCount": 58,
+  "version": "v8.0-e93bc80e66-54a34f6b",
+  "generatedAt": "2026-11-23T08:09:09.862Z",
+  "totalBytes": 11401627,
+  "fileCount": 78,
   "textures": [
     {
       "key": "facade_office_glass",
@@ -89,6 +89,108 @@
       "roughness": "assets/textures/dam_concrete_rough.jpg"
     }
   ],
+  "models": [
+    {
+      "key": "cc0_ambulance",
+      "url": "assets/models/cc0_ambulance.glb",
+      "bytes": 245804
+    },
+    {
+      "key": "cc0_firetruck",
+      "url": "assets/models/cc0_firetruck.glb",
+      "bytes": 244684
+    },
+    {
+      "key": "cc0_fishingboat",
+      "url": "assets/models/cc0_fishingboat.glb",
+      "bytes": 31788
+    },
+    {
+      "key": "cc0_garbage",
+      "url": "assets/models/cc0_garbage.glb",
+      "bytes": 280428
+    },
+    {
+      "key": "cc0_police",
+      "url": "assets/models/cc0_police.glb",
+      "bytes": 207584
+    },
+    {
+      "key": "cc0_sailboat",
+      "url": "assets/models/cc0_sailboat.glb",
+      "bytes": 44080
+    },
+    {
+      "key": "cc0_sedan",
+      "url": "assets/models/cc0_sedan.glb",
+      "bytes": 184504
+    },
+    {
+      "key": "cc0_sports",
+      "url": "assets/models/cc0_sports.glb",
+      "bytes": 189920
+    },
+    {
+      "key": "cc0_suv",
+      "url": "assets/models/cc0_suv.glb",
+      "bytes": 188200
+    },
+    {
+      "key": "cc0_taxi",
+      "url": "assets/models/cc0_taxi.glb",
+      "bytes": 187896
+    },
+    {
+      "key": "cc0_truck",
+      "url": "assets/models/cc0_truck.glb",
+      "bytes": 252504
+    },
+    {
+      "key": "cc0_villa_a",
+      "url": "assets/models/cc0_villa_a.glb",
+      "bytes": 110408
+    },
+    {
+      "key": "cc0_villa_b",
+      "url": "assets/models/cc0_villa_b.glb",
+      "bytes": 158540
+    },
+    {
+      "key": "cc0_villa_c",
+      "url": "assets/models/cc0_villa_c.glb",
+      "bytes": 159184
+    },
+    {
+      "key": "cc0_villa_d",
+      "url": "assets/models/cc0_villa_d.glb",
+      "bytes": 150356
+    },
+    {
+      "key": "zoo_alpaca",
+      "url": "assets/models/zoo_alpaca.glb",
+      "bytes": 647464
+    },
+    {
+      "key": "zoo_deer",
+      "url": "assets/models/zoo_deer.glb",
+      "bytes": 662108
+    },
+    {
+      "key": "zoo_fox",
+      "url": "assets/models/zoo_fox.glb",
+      "bytes": 590112
+    },
+    {
+      "key": "zoo_horse",
+      "url": "assets/models/zoo_horse.glb",
+      "bytes": 682356
+    },
+    {
+      "key": "zoo_stag",
+      "url": "assets/models/zoo_stag.glb",
+      "bytes": 685176
+    }
+  ],
   "smoke": "assets/textures/smoke.png",
   "files": [
     {
@@ -128,6 +230,66 @@
       "bytes": 106908
     },
     {
+      "path": "assets/models/cc0_ambulance.glb",
+      "bytes": 245804
+    },
+    {
+      "path": "assets/models/cc0_firetruck.glb",
+      "bytes": 244684
+    },
+    {
+      "path": "assets/models/cc0_fishingboat.glb",
+      "bytes": 31788
+    },
+    {
+      "path": "assets/models/cc0_garbage.glb",
+      "bytes": 280428
+    },
+    {
+      "path": "assets/models/cc0_police.glb",
+      "bytes": 207584
+    },
+    {
+      "path": "assets/models/cc0_sailboat.glb",
+      "bytes": 44080
+    },
+    {
+      "path": "assets/models/cc0_sedan.glb",
+      "bytes": 184504
+    },
+    {
+      "path": "assets/models/cc0_sports.glb",
+      "bytes": 189920
+    },
+    {
+      "path": "assets/models/cc0_suv.glb",
+      "bytes": 188200
+    },
+    {
+      "path": "assets/models/cc0_taxi.glb",
+      "bytes": 187896
+    },
+    {
+      "path": "assets/models/cc0_truck.glb",
+      "bytes": 252504
+    },
+    {
+      "path": "assets/models/cc0_villa_a.glb",
+      "bytes": 110408
+    },
+    {
+      "path": "assets/models/cc0_villa_b.glb",
+      "bytes": 158540
+    },
+    {
+      "path": "assets/models/cc0_villa_c.glb",
+      "bytes": 159184
+    },
+    {
+      "path": "assets/models/cc0_villa_d.glb",
+      "bytes": 150356
+    },
+    {
       "path": "assets/models/park_fountain.glb",
       "bytes": 27520
     },
@@ -138,6 +300,26 @@
     {
       "path": "assets/models/trees_tall.glb",
       "bytes": 60460
+    },
+    {
+      "path": "assets/models/zoo_alpaca.glb",
+      "bytes": 647464
+    },
+    {
+      "path": "assets/models/zoo_deer.glb",
+      "bytes": 662108
+    },
+    {
+      "path": "assets/models/zoo_fox.glb",
+      "bytes": 590112
+    },
+    {
+      "path": "assets/models/zoo_horse.glb",
+      "bytes": 682356
+    },
+    {
+      "path": "assets/models/zoo_stag.glb",
+      "bytes": 685176
     },
     {
       "path": "assets/textures/dam_concrete.jpg",

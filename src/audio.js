@@ -15,6 +15,8 @@ export class SoundFX {
     this._windGain = null;
     this._waterGain = null;
     this._cityGain = null;
+    this._rainGain = null;
+    this._thunderAccum = 8.0;
 
     // Procedural BGM scheduler
     this._bgmAccum = 0;
@@ -67,6 +69,7 @@ export class SoundFX {
       this._rampParam(this._windGain.gain, 0.0001, now, 0.15);
       this._rampParam(this._waterGain.gain, 0.0001, now, 0.15);
       this._rampParam(this._cityGain.gain, 0.0001, now, 0.15);
+      if (this._rainGain) this._rampParam(this._rainGain.gain, 0.0001, now, 0.15);
     }
   }
 
@@ -176,11 +179,13 @@ export class SoundFX {
       const wind = makeLayer('bandpass', 420, 0.7);
       const water = makeLayer('bandpass', 920, 0.9);
       const city = makeLayer('lowpass', 240, 0.8);
+      const rain = makeLayer('bandpass', 1850, 0.55);
 
       this._windFilter = wind.flt;
       this._windGain = wind.g;
       this._waterGain = water.g;
       this._cityGain = city.g;
+      this._rainGain = rain.g;
       this._ambientReady = true;
     } catch {}
   }
@@ -211,15 +216,28 @@ export class SoundFX {
         this._rampParam(this._windGain.gain, windTarget, now, 0.25);
         this._rampParam(this._waterGain.gain, Math.max(0.0001, waterTarget), now, 0.22);
         this._rampParam(this._cityGain.gain, cityTarget, now, 0.28);
+        const rainLevel = Math.max(0, Math.min(1, state.rainIntensity || 0));
+        if (this._rainGain) {
+          this._rampParam(this._rainGain.gain, Math.max(0.0001, rainLevel * 0.072), now, 0.35);
+        }
         if (this._windFilter) {
-          this._rampParam(this._windFilter.frequency, 340 + Math.sin(now * 0.35) * 90 + elev * 80, now, 0.4);
+          this._rampParam(this._windFilter.frequency, 340 + Math.sin(now * 0.35) * 90 + elev * 80 + rainLevel * 140, now, 0.4);
         }
 
-        // Occasional gentle daytime bird chirp near green areas
+        // Distant atmospheric thunder rumbles during thunderstorms
+        if (state.weatherState === 'storm' && !state.disasterActive) {
+          this._thunderAccum -= dt;
+          if (this._thunderAccum <= 0) {
+            this._thunderAccum = 9.0 + Math.random() * 14.0;
+            this._playThunder();
+          }
+        }
+
+        // Occasional gentle daytime bird chirp near green areas (silent during rain/storm/snow)
         this._chirpAccum -= dt;
         if (this._chirpAccum <= 0) {
           this._chirpAccum = 6.5 + Math.random() * 9.0;
-          if (night < 0.35 && camDist < 28 && !state.disasterActive) {
+          if (night < 0.35 && camDist < 28 && rainLevel < 0.2 && state.weatherState !== 'snow' && !state.disasterActive) {
             this._playBirdChirp();
           }
         }
@@ -227,6 +245,7 @@ export class SoundFX {
         this._rampParam(this._windGain.gain, 0.0001, now, 0.15);
         this._rampParam(this._waterGain.gain, 0.0001, now, 0.15);
         this._rampParam(this._cityGain.gain, 0.0001, now, 0.15);
+        if (this._rainGain) this._rampParam(this._rainGain.gain, 0.0001, now, 0.15);
       }
     }
 
@@ -245,6 +264,12 @@ export class SoundFX {
     const base = 2100 + Math.random() * 750;
     this.tone(base, base * 1.24, 0.065, 'sine', 0.011, 0);
     this.tone(base * 1.18, base * 0.96, 0.07, 'sine', 0.009, 0.085);
+  }
+
+  _playThunder() {
+    if (!this.ctx || !this._masterGain) return;
+    this.tone(76, 34, 1.45, 'triangle', 0.042, 0);
+    this.tone(54, 28, 1.85, 'sine', 0.038, 0.18);
   }
 
   _playNextBgmBeat(night) {

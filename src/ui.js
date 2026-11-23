@@ -9,7 +9,7 @@ const TOOL_GROUPS = {
   zones:    ['zone_RL', 'zone_RH', 'zone_CL', 'zone_CH', 'zone_I', 'zone_O', 'dezone'],
   water:    ['water_pipe', 'water_pump', 'sewage_out', 'water_treat', 'waste_plant'],
   power:    ['hydro_dam', 'power_pylon', 'power_wind', 'power_plant', 'solar_plant', 'nuclear_plant'],
-  civic:    ['fire_station', 'police_station', 'hospital', 'school', 'park', 'amusement_park', 'stadium', 'landmark'],
+  civic:    ['fire_station', 'police_station', 'hospital', 'school', 'park', 'zoo', 'botanical_garden', 'museum', 'amusement_park', 'stadium', 'tv_tower', 'landmark'],
   bulldoze: ['bulldoze', 'bulldoze_under']
 };
 
@@ -26,6 +26,7 @@ export class GameUI {
     this.activeTool = 'pan';
     this.openCategory = null;
     this.autoOverlayActive = false;
+    this.editingBusLineId = null;
 
     this.pointers = new Map();
     this.multiTouchGesture = false;
@@ -147,6 +148,28 @@ export class GameUI {
       this.refreshHUD();
     });
 
+    const btnWeather = document.getElementById('btn-weather');
+    if (btnWeather) {
+      btnWeather.addEventListener('click', () => {
+        this.sfx.tap();
+        const wModes = ['auto', 'clear', 'cloudy', 'rain', 'storm', 'snow', 'fog'];
+        const curM = this.sim.weather?.mode || 'auto';
+        const nxtM = wModes[(wModes.indexOf(curM) + 1) % wModes.length];
+        const info = typeof this.sim.setWeatherMode === 'function' ? this.sim.setWeatherMode(nxtM) : null;
+        const wLabels = {
+          auto: '🔄 自动四季天气演算',
+          clear: '☀️ 晴空万里（光伏+15% · 旅游+15%）',
+          cloudy: '⛅ 多云微风',
+          rain: '🌧️ 绵绵阵雨（自然灭火 · 水库蓄水 · 湿滑路面）',
+          storm: '⛈️ 狂风暴雨（雷电闪耀 · 强力灭火 · 减速通行）',
+          snow: '❄️ 瑞雪纷飞（银装素裹 · 冬季采暖电耗+12%）',
+          fog: '🌫️ 城市晨雾（朦胧雾景 · 慢行护航）'
+        };
+        this.showToast(`天气：${wLabels[nxtM] || info?.label || nxtM}`);
+        this.refreshHUD();
+      });
+    }
+
     const btnIssues = document.getElementById('btn-issues');
     if (btnIssues) {
       btnIssues.addEventListener('click', () => {
@@ -231,7 +254,7 @@ export class GameUI {
         overlayPicker.classList.toggle('open');
       } else {
         this.autoOverlayActive = false;
-        const modes = ['none', 'underground', 'power', 'landValue', 'traffic', 'pollution', 'education', 'noise'];
+        const modes = ['none', 'underground', 'power', 'landValue', 'traffic', 'transit', 'pollution', 'education', 'noise'];
         const next = modes[(modes.indexOf(this.renderer.overlayMode) + 1) % modes.length];
         this.renderer.overlayMode = next;
         this.updateOverlayLegend();
@@ -302,6 +325,15 @@ export class GameUI {
     }
 
     document.getElementById('cancel-drag-btn').addEventListener('click', () => {
+      if (this.editingBusLineId !== null) {
+        this.editingBusLineId = null;
+        this.renderer.activeBusLineHighlight = null;
+        this.sim.infraDirty = true;
+        this.updateToolHint();
+        this.showToast('✅ 已完成公交线路地图选站');
+        this.openBusLinesModal();
+        return;
+      }
       this.dragCancelled = true;
       this.dragBuildStart = null;
       this.renderer.previewTiles = [];
@@ -365,6 +397,21 @@ export class GameUI {
       });
       sub.appendChild(btn);
     });
+    if (categoryKey === 'rail') {
+      const busMgrBtn = document.createElement('button');
+      busMgrBtn.className = 'sub-item';
+      busMgrBtn.style.borderColor = 'rgba(56, 189, 248, 0.72)';
+      busMgrBtn.innerHTML = `
+        <span class="sub-icon">🚌</span>
+        <span class="sub-title">公交线路</span>
+        <span class="sub-cost" style="color:#38bdf8;">${(this.sim.busLines || []).length}条线</span>
+      `;
+      busMgrBtn.addEventListener('click', () => {
+        this.sfx.tap();
+        this.openBusLinesModal();
+      });
+      sub.appendChild(busMgrBtn);
+    }
     sub.classList.add('open');
     this.selectTool(defaultToolId, categoryKey, true);
   }
@@ -540,11 +587,24 @@ export class GameUI {
     const cancelBtn = document.getElementById('cancel-drag-btn');
 
     if (this.activeTool === 'pan') {
+      if (this.editingBusLineId !== null) {
+        const line = (this.sim.busLines || []).find((l) => l.id === this.editingBusLineId);
+        if (line) {
+          hint.classList.add('visible');
+          txt.textContent = `🚌 正在编辑【${line.name}】(${line.stops.length}站)：点击地图上的【🚏 智能公交站】依次加入环线！`;
+          cancelBtn.textContent = '✅ 完成选站';
+          cancelBtn.style.display = 'inline-block';
+          return;
+        }
+        this.editingBusLineId = null;
+      }
       hint.classList.remove('visible');
+      cancelBtn.textContent = '✖ 取消';
       cancelBtn.style.display = 'none';
       return;
     }
 
+    cancelBtn.textContent = '✖ 取消';
     hint.classList.add('visible');
     if (extraText) {
       txt.textContent = extraText;
@@ -585,6 +645,7 @@ export class GameUI {
         power: `<strong>⚡ 高压电网覆盖视图</strong><br>蓝色地块 = 已通电区域 | 远距离电厂/大坝请架设【高压输电铁塔】接力`,
         landValue: `<strong>💎 地价热力视图</strong><br>翠绿 = 高地价核心区（可长出 48~64 层摩天大楼）`,
         traffic: `<strong>🚦 交通拥堵热力视图</strong><br>红橙色道路 = 严重堵车（会导致商店缺货！建议架二层高架、设单行道或修公交/地铁）`,
+        transit: `<strong>🚌 城市公交线路网视图</strong><br>彩色立体光带 = 已开通的自定义公交专线 | 青色圆点 = 🚏智能公交站 | 紫色 = 地铁/高铁/机场枢纽`,
         pollution: `<strong>☣️ 空气与水体污染视图</strong><br>紫红色 = 重工业/污水高污染区（远离居民区与抽水站，可用【环保减排法】大幅降低）`,
         education: `<strong>🎓 教育与市政覆盖视图</strong><br>金青色 = 高学历与高市政覆盖区（驱动高新写字楼与清洁科技工业增产！）`,
         noise: `<strong>🔊 城市交通与工业噪音视图</strong><br>品红/橙色 = 噪音扰民区（点击住宅街道开启【🚫 禁行重型货车】或种树建公园降噪！）`
@@ -659,6 +720,26 @@ export class GameUI {
           : `⚠️ ${prev.reason || '当前位置无法放置立体立交（请选平坦开阔地）'}`;
       }
       if (okBtn) okBtn.disabled = !prev.valid;
+    } else if (p.toolId === 'airport' && typeof this.sim.previewAirportFootprint === 'function') {
+      const est = this.sim.estimateAction('airport', [{ x: p.x, z: p.z }], { rot: p.rot || 0 });
+      const apPrev = this.sim.previewAirportFootprint(p.x, p.z, p.rot || 0);
+      const valid = !est.lockedLevel && apPrev.valid && est.validTiles.length > 0 && (this.sim.difficulty === 'sandbox' || est.cost <= this.sim.money);
+      this.renderer.previewTiles = apPrev.tiles || [{ x: p.x, z: p.z }];
+      this.renderer.previewColor = valid ? [0.22, 0.92, 0.62] : [0.95, 0.28, 0.28];
+      this.renderer.servicePreviewTiles = [];
+      if (infoEl) {
+        if (est.lockedLevel) {
+          infoEl.textContent = `🔒 需升至 Lv.${est.lockedLevel} 解锁【${item.name}】`;
+        } else if (!apPrev.valid) {
+          infoEl.textContent = `⚠️ ${apPrev.reason || '跑道净空区受阻（按🔄旋转跑道朝向）'}`;
+        } else if (this.sim.difficulty !== 'sandbox' && est.cost > this.sim.money) {
+          infoEl.textContent = `💰 资金不足：需要 ¥${est.cost.toLocaleString()}`;
+        } else {
+          const costStr = this.sim.difficulty === 'sandbox' ? '免费' : `¥${est.cost.toLocaleString()}`;
+          infoEl.textContent = `✈️ 国际民航机场（航站楼 + 后方5格跑道净空区）· ${costStr} · 点🔄可旋转方向`;
+        }
+      }
+      if (okBtn) okBtn.disabled = !valid;
     } else {
       const est = this.sim.estimateAction(p.toolId, [{ x: p.x, z: p.z }]);
       const valid = !est.lockedLevel && est.validTiles.length > 0 && (this.sim.difficulty === 'sandbox' || est.cost <= this.sim.money);
@@ -866,6 +947,11 @@ export class GameUI {
               this.renderer.previewTiles = prev.tiles || [{ x: hit.tx, z: hit.tz }];
               this.renderer.previewColor = prev.valid ? [0.22, 0.92, 0.62] : [0.95, 0.28, 0.28];
               this.renderer.servicePreviewTiles = [];
+            } else if (this.activeTool === 'airport' && typeof this.sim.previewAirportFootprint === 'function') {
+              const apPrev = this.sim.previewAirportFootprint(hit.tx, hit.tz, 0);
+              this.renderer.previewTiles = apPrev.tiles || [{ x: hit.tx, z: hit.tz }];
+              this.renderer.previewColor = apPrev.valid ? [0.22, 0.92, 0.62] : [0.95, 0.28, 0.28];
+              this.renderer.servicePreviewTiles = [];
             } else {
               this.renderer.previewTiles = [{ x: hit.tx, z: hit.tz }];
               if (this._isConfirmTool(this.activeTool) && typeof this.sim.previewServiceCoverage === 'function') {
@@ -959,6 +1045,19 @@ export class GameUI {
         if (moved < 9) {
           const hit = this.renderer.screenToGround(e.clientX, e.clientY);
           if (hit && hit.valid) {
+            if (this.editingBusLineId !== null) {
+              const res = this.sim.addStopToBusLine(this.editingBusLineId, hit.tx, hit.tz);
+              if (res && res.ok) {
+                this.sfx.buildCivic();
+                this.updateToolHint();
+                this.refreshHUD();
+                this.showToast(`🚏 已将 (${hit.tx},${hit.tz}) 加入【${res.line.name}】（当前共 ${res.line.stops.length} 站）`);
+              } else {
+                this.sfx.error();
+                this.showToast(`⚠️ ${res?.reason || '请点击道路上已建成的【🚏 智能公交站】'}`);
+              }
+              return;
+            }
             const tappedTile = this.sim.getTile(hit.tx, hit.tz);
             const fallbackW = tileToWorld(hit.tx, hit.tz);
             const wx = typeof hit.wx === 'number' ? hit.wx : fallbackW.wx;
@@ -1007,6 +1106,11 @@ export class GameUI {
       if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
       this.keys.add(e.key.toLowerCase());
       if (e.key === 'Escape') {
+        if (this.editingBusLineId !== null) {
+          this.editingBusLineId = null;
+          this.renderer.activeBusLineHighlight = null;
+          this.sim.infraDirty = true;
+        }
         this.clearPendingPlace();
         this.selectTool('pan');
         this.closeModal();
@@ -1314,6 +1418,9 @@ export class GameUI {
           if (isOneWay) {
             htmlAct += `<button class="btn-primary" id="btn-flip-oneway" style="flex:1;font-size:11.5px;padding:6px 8px;">🔁 反转单行方向</button>`;
           }
+          if (t.busStop) {
+            htmlAct += `<button class="btn-primary" id="btn-open-bus-lines" style="flex:1;font-size:11.5px;padding:6px 8px;">🚌 公交线路管理</button>`;
+          }
           htmlAct += `<button class="${t.banTrucks ? 'btn-primary' : 'btn-secondary'}" id="btn-toggle-truck-ban" style="flex:1;font-size:11.5px;padding:6px 8px;">${t.banTrucks ? '✅ 解除重卡禁行' : '🚫 禁行重型货车(降噪)'}</button>`;
           htmlAct += `</div>`;
         }
@@ -1339,6 +1446,13 @@ export class GameUI {
               this.inspectTile(x, z);
               this.showToast(`🔁 已反转 ${r.count || 1} 格单行道通行方向`);
             }
+          });
+        }
+        const busLineBtn = document.getElementById('btn-open-bus-lines');
+        if (busLineBtn) {
+          busLineBtn.addEventListener('click', () => {
+            this.sfx.tap();
+            this.openBusLinesModal();
           });
         }
         const banBtn = document.getElementById('btn-toggle-truck-ban');
@@ -1495,6 +1609,14 @@ export class GameUI {
       const pInfo = this.sim.getTrafficPeriodInfo();
       periodEl.textContent = `${pInfo.icon} ${pInfo.label}`;
       periodEl.className = 'traffic-period-chip' + (pInfo.mult >= 1.8 ? ' rush' : (pInfo.mult <= 0.5 ? ' night' : ''));
+    }
+
+    // Live Dynamic Weather HUD button
+    const weatherBtn = document.getElementById('btn-weather');
+    if (weatherBtn && typeof this.sim.getWeatherInfo === 'function') {
+      const wi = this.sim.getWeatherInfo();
+      weatherBtn.textContent = `${wi.icon} ${wi.tempC}°C${wi.mode !== 'auto' ? '·定' : ''}`;
+      weatherBtn.title = `当前天气：${wi.label} (${wi.tempC}°C) · ${wi.mode === 'auto' ? '自动四季演算' : '已锁定天气'}（点击切换）`;
     }
 
     // Dynamic Mayor Civic Decision Event Pill
@@ -1850,6 +1972,7 @@ export class GameUI {
         <div class="insp-grid" style="font-size:12px;">
           <div>税收总收入：<strong style="color:#4ade80">+¥${this.sim.lastTaxIncome}</strong></div>
           <div>基建与部门维护：<strong style="color:#f87171">-¥${this.sim.lastUpkeep}</strong></div>
+          <div>旅游景点门票：<strong style="color:#38bdf8">+¥${this.sim.tourismIncome || 0}</strong> <span style="color:#94a3b8;font-size:10.5px;">(${(this.sim.tourists || 0).toLocaleString()}名游客)</span></div>
           <div>银行贷款还本付息：<strong style="color:#fbbf24">-¥${this.sim.lastLoanPay}</strong></div>
           <div>净现金流：<strong>${this.sim.netIncome >= 0 ? '+' : ''}¥${this.sim.netIncome}</strong></div>
           <div>失业率 / 受教育率：<strong>${this.sim.unemploymentPct}% / <span style="color:#38bdf8">${Math.round(this.sim.educatedRate || 0)}%</span></strong></div>
@@ -1868,7 +1991,10 @@ export class GameUI {
         ];
         return `
           <div class="modal-section">
-            <h4>🚌 公共交通客流与票务盈亏表（总减堵 -${ts.totalCarsSaved || 0} 车）</h4>
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px;flex-wrap:wrap;">
+              <h4 style="margin:0;">🚌 公共交通客流与票务盈亏表（总减堵 -${ts.totalCarsSaved || 0} 车）</h4>
+              <button class="btn-primary" id="btn-budget-bus-lines" style="font-size:11.5px;padding:5px 10px;">🚌 管理公交线路 (${(this.sim.busLines || []).length}条)</button>
+            </div>
             <table class="transit-table">
               <thead><tr><th>线路</th><th>站点</th><th>日客流</th><th>票收</th><th>维护</th><th>净利</th></tr></thead>
               <tbody>
@@ -1976,6 +2102,13 @@ export class GameUI {
 
     // Render 24-month history trend chart + metric tabs
     this._drawFinanceHistoryChart('netIncome');
+    const budgetBusBtn = document.getElementById('btn-budget-bus-lines');
+    if (budgetBusBtn) {
+      budgetBusBtn.addEventListener('click', () => {
+        this.sfx.tap();
+        this.openBusLinesModal();
+      });
+    }
     body.querySelectorAll('[data-chart-metric]').forEach((tab) => {
       tab.addEventListener('click', () => {
         this.sfx.tap();
@@ -2042,6 +2175,180 @@ export class GameUI {
     bindPol('pol-edu', 'freeHigherEd');
     bindPol('pol-energy', 'energySubsidy');
     bindPol('pol-biz', 'bizTaxBreak', 'techBoost');
+
+    document.getElementById('modal-backdrop').classList.add('open');
+  }
+
+  openBusLinesModal() {
+    const body = document.getElementById('modal-body');
+    document.getElementById('modal-title').textContent = '🚌 城市公交线路规划与调度中心';
+    const lines = Array.isArray(this.sim.busLines) ? this.sim.busLines : [];
+    const totalStops = (this.traffic?.busStops || []).length;
+    const palette = ['#0ea5e9', '#10b981', '#f97316', '#a855f7', '#ef4444', '#eab308'];
+
+    body.innerHTML = `
+      <div class="modal-section" style="padding-bottom:8px;">
+        <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between;margin-bottom:10px;">
+          <div style="font-size:12px;color:#cbd5e1;">
+            🚏 全城已建公交站：<strong>${totalStops} 座</strong> · 已开线路：<strong>${lines.length} 条</strong>
+          </div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;">
+            <button class="btn-primary" id="btn-bus-autoplan" style="font-size:12px;padding:6px 10px;">✨ 一键智能规划环线</button>
+            <button class="btn-secondary" id="btn-bus-new" style="font-size:12px;padding:6px 10px;">➕ 新建线路</button>
+            <button class="btn-secondary" id="btn-bus-overlay" style="font-size:12px;padding:6px 10px;">🗺️ 3D线路网</button>
+          </div>
+        </div>
+
+        <div class="issue-list-wrap">
+          ${lines.length === 0 ? `
+            <div style="text-align:center;padding:22px 12px;color:#94a3b8;border:1px dashed rgba(148,163,184,0.35);border-radius:10px;font-size:12.5px;">
+              暂未规划自定义公交线路。<br>
+              请先在道路旁建 ≥ 2 座【🚏 智能公交站】，然后点击上方 <strong>✨ 一键智能规划环线</strong> 或 <strong>➕ 新建线路</strong>！
+            </div>
+          ` : lines.map((ln) => `
+            <div class="issue-item-card" style="flex-direction:column;align-items:stretch;gap:8px;">
+              <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;">
+                <div style="display:flex;align-items:center;gap:8px;">
+                  <span style="display:inline-block;width:13px;height:13px;border-radius:50%;background:${ln.colorHex};box-shadow:0 0 8px ${ln.colorHex};"></span>
+                  <strong style="color:#f8fafc;font-size:13px;">${ln.name}</strong>
+                  <span class="badge ${ln.active !== false ? 'ok' : 'warn'}" style="font-size:10px;">${ln.active !== false ? '运营中' : '已停运'}</span>
+                  <span style="font-size:11px;color:#7dd3fc;">载客 ${ln.dailyRiders || 0} 人次</span>
+                </div>
+                <div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap;">
+                  <button class="btn-secondary" data-bus-color="${ln.id}" title="切换涂装与3D光带颜色" style="font-size:11px;padding:4px 7px;">🎨 换色</button>
+                  <button class="btn-secondary" data-bus-dec="${ln.id}" style="font-size:11px;padding:4px 7px;">-</button>
+                  <span style="font-size:11.5px;color:#e2e8f0;min-width:44px;text-align:center;">🚌 ${ln.busCount || 2}辆</span>
+                  <button class="btn-secondary" data-bus-inc="${ln.id}" style="font-size:11px;padding:4px 7px;">+</button>
+                  <button class="btn-primary" data-bus-pick="${ln.id}" style="font-size:11px;padding:4px 8px;">📍 地图选站</button>
+                  <button class="btn-danger" data-bus-del="${ln.id}" style="font-size:11px;padding:4px 7px;">🗑️</button>
+                </div>
+              </div>
+              <div style="display:flex;flex-wrap:wrap;gap:5px;align-items:center;font-size:11px;color:#cbd5e1;">
+                <span style="color:#94a3b8;">途经站点 (${(ln.stops || []).length})：</span>
+                ${(ln.stops || []).length === 0
+                  ? `<span style="color:#fbbf24;">请点右侧【📍 地图选站】添加至少2座公交站</span>`
+                  : ln.stops.map((st, sIdx) => `
+                    <span class="badge info" style="display:inline-flex;align-items:center;gap:4px;font-size:10.5px;">
+                      #${sIdx + 1} (${st.x},${st.z})
+                      <span data-bus-rmstop="${ln.id}:${sIdx}" style="cursor:pointer;color:#fca5a5;font-weight:700;" title="移除此站">×</span>
+                    </span>
+                  `).join('➔')}
+              </div>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    `;
+
+    const autoBtn = document.getElementById('btn-bus-autoplan');
+    if (autoBtn) {
+      autoBtn.addEventListener('click', () => {
+        const res = this.sim.autoPlanBusLines();
+        if (res && res.ok) {
+          this.sfx.milestone();
+          this.renderer.overlayMode = 'transit';
+          this.updateOverlayLegend();
+          this.showToast(`✨ 已智能规划 ${res.lines.length} 条彩色公交环线！`);
+          this.openBusLinesModal();
+        } else {
+          this.sfx.error();
+          this.showToast(`⚠️ ${res?.reason || '至少需要建设 2 座智能公交站'}`);
+        }
+      });
+    }
+
+    const newBtn = document.getElementById('btn-bus-new');
+    if (newBtn) {
+      newBtn.addEventListener('click', () => {
+        this.sfx.tap();
+        const ln = this.sim.createBusLine();
+        this.showToast(`➕ 已新建【${ln.name}】，请点击【📍 地图选站】添加途经公交站`);
+        this.openBusLinesModal();
+      });
+    }
+
+    const ovBtn = document.getElementById('btn-bus-overlay');
+    if (ovBtn) {
+      ovBtn.addEventListener('click', () => {
+        this.sfx.tap();
+        this.renderer.overlayMode = 'transit';
+        this.sim.infraDirty = true;
+        this.updateOverlayLegend();
+        this.closeModal();
+        this.showToast('🚌 已切换至 3D 城市公交线路网视图');
+      });
+    }
+
+    body.querySelectorAll('[data-bus-color]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        this.sfx.tap();
+        const id = Number(btn.dataset.busColor);
+        const ln = (this.sim.busLines || []).find((l) => l.id === id);
+        if (!ln) return;
+        const nextCol = palette[(palette.indexOf(ln.colorHex) + 1) % palette.length];
+        this.sim.setBusLineConfig(id, { colorHex: nextCol });
+        this.openBusLinesModal();
+      });
+    });
+
+    body.querySelectorAll('[data-bus-inc]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        this.sfx.tap();
+        const id = Number(btn.dataset.busInc);
+        const ln = (this.sim.busLines || []).find((l) => l.id === id);
+        if (ln) this.sim.setBusLineConfig(id, { busCount: Math.min(6, (ln.busCount || 2) + 1) });
+        this.openBusLinesModal();
+      });
+    });
+
+    body.querySelectorAll('[data-bus-dec]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        this.sfx.tap();
+        const id = Number(btn.dataset.busDec);
+        const ln = (this.sim.busLines || []).find((l) => l.id === id);
+        if (ln) this.sim.setBusLineConfig(id, { busCount: Math.max(1, (ln.busCount || 2) - 1) });
+        this.openBusLinesModal();
+      });
+    });
+
+    body.querySelectorAll('[data-bus-pick]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        this.sfx.tap();
+        const id = Number(btn.dataset.busPick);
+        this.selectTool('pan', null);
+        this.autoOverlayActive = false;
+        this.editingBusLineId = id;
+        this.renderer.activeBusLineHighlight = id;
+        this.renderer.overlayMode = 'transit';
+        this.sim.infraDirty = true;
+        this.updateOverlayLegend();
+        this.updateToolHint();
+        this.closeModal();
+        this.showToast('📍 请在 3D 地图上依次点击【🚏 智能公交站】加入该线路，完成后点顶部【✅ 完成选站】', 3600);
+      });
+    });
+
+    body.querySelectorAll('[data-bus-del]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        this.sfx.tap();
+        const id = Number(btn.dataset.busDel);
+        if (this.editingBusLineId === id) {
+          this.editingBusLineId = null;
+          this.renderer.activeBusLineHighlight = null;
+        }
+        this.sim.deleteBusLine(id);
+        this.openBusLinesModal();
+      });
+    });
+
+    body.querySelectorAll('[data-bus-rmstop]').forEach((el) => {
+      el.addEventListener('click', () => {
+        this.sfx.tap();
+        const [lid, sidx] = el.dataset.busRmstop.split(':').map(Number);
+        this.sim.removeStopFromBusLine(lid, sidx);
+        this.openBusLinesModal();
+      });
+    });
 
     document.getElementById('modal-backdrop').classList.add('open');
   }
