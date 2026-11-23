@@ -43,6 +43,7 @@ export class TrafficManager {
     this.signalClock = 0;
     this.modalTimer = 0;
     this._nextVehId = 1;
+    this._nextTrainId = 1;
     this._nextShipId = 1;
     this._nextBoatId = 1;
     this._nextPedId = 1;
@@ -1926,58 +1927,146 @@ export class TrafficManager {
     this.refreshActiveModalCounts();
   }
 
+  _sampleTrainPosOnPath(path, dist) {
+    if (!path || path.length < 2) return null;
+    const maxD = path.length - 1;
+    const d = Math.max(0, Math.min(maxD - 1e-4, dist));
+    const seg = Math.floor(d);
+    const f = d - seg;
+    const p0 = path[seg];
+    const p1 = path[Math.min(maxD, seg + 1)];
+    const w0 = tileToWorld(p0.x, p0.z);
+    const w1 = tileToWorld(p1.x, p1.z);
+    const dx = w1.wx - w0.wx;
+    const dz = w1.wz - w0.wz;
+    const len = Math.hypot(dx, dz) || 1;
+    return {
+      wx: w0.wx + dx * f,
+      wz: w0.wz + dz * f,
+      dirX: dx / len,
+      dirZ: dz / len
+    };
+  }
+
+  _hasTrainSpawnClearance(isMetro, tx, tz, minTiles = 4.2) {
+    const w = tileToWorld(tx, tz);
+    const minSq = minTiles * minTiles;
+    for (let i = 0; i < this.trains.length; i++) {
+      const tr = this.trains[i];
+      if (Boolean(tr.isMetro) !== Boolean(isMetro)) continue;
+      const spacing = isMetro ? 0.56 : 0.72;
+      for (const offset of [0, (tr.cars - 1) * spacing * 0.5, (tr.cars - 1) * spacing]) {
+        const pt = this._sampleTrainPosOnPath(tr.path, tr.dist - offset);
+        if (!pt) continue;
+        const dx = pt.wx - w.wx;
+        const dz = pt.wz - w.wz;
+        if (dx * dx + dz * dz < minSq) return false;
+      }
+    }
+    return true;
+  }
+
+  _getTrainStations(isMetro) {
+    const out = [];
+    if (!isMetro && this.sim.getTile(8, GRID_SIZE - 1)?.rail > 0) {
+      out.push({ x: 8, z: GRID_SIZE - 1, isPortal: true });
+    }
+    const wantType = isMetro ? 'metro_station' : 'hsr_station';
+    for (let i = 0; i < this.sim.grid.length; i++) {
+      const t = this.sim.grid[i];
+      if (t.building?.type === wantType && t.powered && !t.building.abandoned && !t.building.underConstruction) {
+        out.push({ x: t.x, z: t.z, isPortal: false });
+      }
+    }
+    return out;
+  }
+
   trySpawnTrains() {
     const activeHSR = this.trains.filter((tr) => !tr.isMetro).length;
     const activeMetro = this.trains.filter((tr) => tr.isMetro).length;
 
-    // 1. High-Speed Bullet Train (Fuxing 5-car articulated consist!)
+    // 1. High-Speed Bullet Train (Fuxing 5-car articulated consist, strict spawn headway!)
     if (activeHSR < 3) {
-      const hsrNodes = [];
-      if (this.sim.getTile(8, GRID_SIZE - 1)?.rail > 0) hsrNodes.push({ x: 8, z: GRID_SIZE - 1 });
-      for (let i = 0; i < this.sim.grid.length; i++) {
-        const t = this.sim.grid[i];
-        if (t.building?.type === 'hsr_station' && t.powered) {
-          hsrNodes.push({ x: t.x, z: t.z });
-        }
-      }
+      const hsrNodes = this._getTrainStations(false);
       if (hsrNodes.length >= 2) {
-        const a = hsrNodes[(Math.random() * hsrNodes.length) | 0];
-        const b = hsrNodes[(Math.random() * hsrNodes.length) | 0];
-        const path = this.findTrackPath(a.x, a.z, b.x, b.z, false);
-        if (path && path.length >= 5) {
+        let bestPair = null;
+        for (let attempt = 0; attempt < 6; attempt++) {
+          const a = hsrNodes[(Math.random() * hsrNodes.length) | 0];
+          const b = hsrNodes[(Math.random() * hsrNodes.length) | 0];
+          if (a.x === b.x && a.z === b.z) continue;
+          if (!this._hasTrainSpawnClearance(false, a.x, a.z, 5.2)) continue;
+          const path = this.findTrackPath(a.x, a.z, b.x, b.z, false);
+          if (path && path.length >= 6) {
+            bestPair = { a, b, path };
+            break;
+          }
+        }
+        if (bestPair) {
+          const { a, b, path } = bestPair;
+          const startDist = a.isPortal ? 0 : Math.min(path.length - 1.5, 4 * 0.72 + 0.15);
+          const head = this._sampleTrainPosOnPath(path, startDist);
           this.trains.push({
+            id: this._nextTrainId++,
             isMetro: false,
             cars: 5,
+            carSpacing: 0.72,
             path,
-            dist: 0,
-            speed: 3.8, // Fast bullet train!
-            dwell: 0
+            dist: startDist,
+            speed: a.isPortal ? 3.5 : 0,
+            maxSpeed: 3.5,
+            dwell: a.isPortal ? 0 : 0.9,
+            atTerminus: false,
+            exitingPortal: false,
+            destIsPortal: Boolean(b.isPortal),
+            prevOrigin: { x: a.x, z: a.z },
+            wx: head ? head.wx : 0,
+            wz: head ? head.wz : 0,
+            dirX: head ? head.dirX : 0,
+            dirZ: head ? head.dirZ : 1
           });
         }
       }
     }
 
-    // 2. Underground Metro Train (4-car consist)
-    if (activeMetro < 4) {
-      const mStations = [];
-      for (let i = 0; i < this.sim.grid.length; i++) {
-        const t = this.sim.grid[i];
-        if (t.building?.type === 'metro_station' && t.powered) {
-          mStations.push({ x: t.x, z: t.z });
-        }
-      }
+    // 2. Underground Metro Train (4-car consist, continuous loop/turnaround, ZERO sudden vanishing!)
+    if (activeMetro < 3) {
+      const mStations = this._getTrainStations(true);
       if (mStations.length >= 2) {
-        const a = mStations[(Math.random() * mStations.length) | 0];
-        const b = mStations[(Math.random() * mStations.length) | 0];
-        const path = this.findTrackPath(a.x, a.z, b.x, b.z, true);
-        if (path && path.length >= 4) {
+        let bestPlan = null;
+        for (let attempt = 0; attempt < 8; attempt++) {
+          const a = mStations[(Math.random() * mStations.length) | 0];
+          const b = mStations[(Math.random() * mStations.length) | 0];
+          if (a.x === b.x && a.z === b.z) continue;
+          if (!this._hasTrainSpawnClearance(true, a.x, a.z, 4.8)) continue;
+          const path = this.findTrackPath(a.x, a.z, b.x, b.z, true);
+          if (path && path.length >= 5) {
+            if (!bestPlan || path.length > bestPlan.path.length) {
+              bestPlan = { a, b, path };
+            }
+          }
+        }
+        if (bestPlan) {
+          const { a, b, path } = bestPlan;
+          const startDist = Math.min(path.length - 1.4, 3 * 0.56 + 0.14);
+          const head = this._sampleTrainPosOnPath(path, startDist);
           this.trains.push({
+            id: this._nextTrainId++,
             isMetro: true,
             cars: 4,
+            carSpacing: 0.56,
             path,
-            dist: 0,
-            speed: 2.7,
-            dwell: 0
+            dist: startDist,
+            speed: 0,
+            maxSpeed: 2.35,
+            dwell: 0.85,
+            atTerminus: false,
+            exitingPortal: false,
+            destIsPortal: false,
+            prevOrigin: { x: a.x, z: a.z },
+            wx: head ? head.wx : 0,
+            wz: head ? head.wz : 0,
+            dirX: head ? head.dirX : 0,
+            dirZ: head ? head.dirZ : 1
           });
         }
       }
@@ -2439,24 +2528,129 @@ export class TrafficManager {
     this.rebuildTileOccupancy();
     this.refreshActiveModalCounts();
 
-    // Update HSR Bullet Trains & Metro Trains with full coach-span track validation
+    // Update HSR Bullet Trains & Metro Trains: full coach-span validation, block-signaling headway, smooth station dwell & continuous loop/turnaround (ZERO sudden vanishing!)
+    for (let i = 0; i < this.trains.length; i++) {
+      const tr = this.trains[i];
+      const head = this._sampleTrainPosOnPath(tr.path, tr.dist);
+      if (head) {
+        tr.wx = head.wx;
+        tr.wz = head.wz;
+        tr.dirX = head.dirX;
+        tr.dirZ = head.dirZ;
+      }
+    }
+
     for (let i = this.trains.length - 1; i >= 0; i--) {
       const tr = this.trains[i];
       if (!this.isValidTrainSpan(tr)) {
         this.trains.splice(i, 1);
         continue;
       }
+
+      const spacing = tr.carSpacing || (tr.isMetro ? 0.56 : 0.72);
+      const maxSpd = tr.maxSpeed || (tr.isMetro ? 2.35 : 3.5);
+      const maxPathDist = tr.path.length - 1;
+
       if (tr.dwell > 0) {
-        tr.dwell -= effDt;
+        tr.dwell = Math.max(0, tr.dwell - effDt);
+        tr.speed = 0;
+        if (tr.dwell <= 0 && tr.atTerminus) {
+          tr.atTerminus = false;
+          // Continuously dispatch onto next connected station around loop (or clean cab-swap reverse on shuttle line!)
+          const endNode = tr.path[tr.path.length - 1];
+          const stations = this._getTrainStations(tr.isMetro);
+          const others = stations.filter((s) => !(s.x === endNode.x && s.z === endNode.z));
+          // Prefer continuing forward to a station OTHER than prevOrigin so ring/loop metro lines circulate seamlessly!
+          const forwardCands = others.filter((s) => !(tr.prevOrigin && s.x === tr.prevOrigin.x && s.z === tr.prevOrigin.z));
+          const pool = forwardCands.length > 0 ? forwardCands : others;
+          let dispatched = false;
+          if (pool.length > 0) {
+            const pick = pool[(Math.random() * pool.length) | 0];
+            const nextLeg = this.findTrackPath(endNode.x, endNode.z, pick.x, pick.z, tr.isMetro);
+            if (nextLeg && nextLeg.length >= 4) {
+              // Check if nextLeg continues forward smoothly vs reverses along the exact incoming track
+              const prevBeforeEnd = tr.path[tr.path.length - 2];
+              const isReverse = prevBeforeEnd && nextLeg[1].x === prevBeforeEnd.x && nextLeg[1].z === prevBeforeEnd.z;
+              if (isReverse) {
+                // Smooth cab-swap turnaround: exact stationary consist footprint now faces opposite direction!
+                tr.path = nextLeg;
+                tr.dist = Math.min(nextLeg.length - 1.25, (tr.cars - 1) * spacing);
+              } else {
+                // Continuous forward continuation (keep trailing tail tiles behind station so ALL 4 cars glide seamlessly through the station!)
+                const keepTail = Math.min(tr.path.length - 1, Math.ceil((tr.cars - 1) * spacing) + 2);
+                const prefix = tr.path.slice(tr.path.length - 1 - keepTail, tr.path.length - 1);
+                tr.path = prefix.concat(nextLeg);
+                tr.dist = prefix.length;
+              }
+              tr.prevOrigin = { x: endNode.x, z: endNode.z };
+              tr.destIsPortal = Boolean(pick.isPortal);
+              dispatched = true;
+            }
+          }
+          if (!dispatched) {
+            // Fallback clean cab-swap reversal along existing intact track (NEVER abruptly vanishes at station!)
+            tr.path = tr.path.slice().reverse();
+            tr.dist = Math.min(tr.path.length - 1.25, (tr.cars - 1) * spacing);
+            tr.prevOrigin = { x: endNode.x, z: endNode.z };
+            tr.destIsPortal = false;
+          }
+          const h2 = this._sampleTrainPosOnPath(tr.path, tr.dist);
+          if (h2) { tr.wx = h2.wx; tr.wz = h2.wz; tr.dirX = h2.dirX; tr.dirZ = h2.dirZ; }
+        }
         continue;
       }
+
+      // Block-Signaling Anti-Tailgating & Anti-Collision on same layer (isMetro)
+      let targetSpeed = maxSpd;
+      const remToEnd = maxPathDist - tr.dist;
+      if (!tr.destIsPortal && remToEnd < 1.6) {
+        targetSpeed = Math.min(targetSpeed, Math.max(0.55, maxSpd * (remToEnd / 1.6)));
+      }
+      for (let j = 0; j < this.trains.length; j++) {
+        if (i === j) continue;
+        const o = this.trains[j];
+        if (Boolean(o.isMetro) !== Boolean(tr.isMetro)) continue;
+        const rx = (o.wx || 0) - (tr.wx || 0);
+        const rz = (o.wz || 0) - (tr.wz || 0);
+        const dist = Math.hypot(rx, rz);
+        const safeBlock = tr.isMetro ? 3.2 : 4.6;
+        if (dist < safeBlock + 1.4) {
+          const sameDir = (tr.dirX || 0) * (o.dirX || 0) + (tr.dirZ || 0) * (o.dirZ || 0);
+          const fwd = rx * (tr.dirX || 0) + rz * (tr.dirZ || 0);
+          const lat = Math.abs(-rx * (tr.dirZ || 0) + rz * (tr.dirX || 0));
+          // Follow block signal behind same-direction train; opposing trains pass smoothly on dual tracks!
+          if (sameDir > 0.35 && fwd > 0.1 && lat < 0.75) {
+            if (fwd < safeBlock) {
+              targetSpeed = 0;
+              break;
+            } else {
+              targetSpeed = Math.min(targetSpeed, Math.max(0.4, (o.speed || 0) * 0.85));
+            }
+          }
+        }
+      }
+
+      const trAccel = targetSpeed < (tr.speed || 0) ? 5.2 : 2.6;
+      tr.speed = (tr.speed || 0) + (targetSpeed - (tr.speed || 0)) * Math.min(1, effDt * trAccel);
+      if (tr.speed < 0.02 && targetSpeed === 0) tr.speed = 0;
+
       const prevSeg = Math.floor(tr.dist);
       tr.dist += tr.speed * effDt;
       const curSeg = Math.floor(tr.dist);
 
-      if (curSeg >= tr.path.length - 1) {
-        this.trains.splice(i, 1);
-        continue;
+      if (tr.destIsPortal) {
+        // HSR exiting off map edge: only remove AFTER the entire 5-car consist has smoothly passed off-edge!
+        const tailDist = tr.dist - (tr.cars - 1) * spacing;
+        if (tailDist >= maxPathDist) {
+          this.trains.splice(i, 1);
+          continue;
+        }
+      } else if (tr.dist >= maxPathDist) {
+        // Arrived at city Metro/HSR station -> dock cleanly & dwell before continuing loop/turnaround!
+        tr.dist = maxPathDist - 0.002;
+        tr.speed = 0;
+        tr.dwell = tr.isMetro ? 1.55 : 1.85;
+        tr.atTerminus = true;
       }
 
       if (!this.isValidTrainSpan(tr)) {
@@ -2464,14 +2658,18 @@ export class TrafficManager {
         continue;
       }
 
-      // Pause briefly if arriving at an intermediate station!
-      if (curSeg !== prevSeg && curSeg > 1 && curSeg < tr.path.length - 2) {
+      // Pause briefly if passing an intermediate station!
+      if (!tr.atTerminus && curSeg !== prevSeg && curSeg > 1 && curSeg < tr.path.length - 2) {
         const node = tr.path[curSeg];
         const bType = this.sim.getTile(node.x, node.z)?.building?.type;
         if ((!tr.isMetro && bType === 'hsr_station') || (tr.isMetro && bType === 'metro_station')) {
-          tr.dwell = 1.6;
+          tr.dwell = tr.isMetro ? 1.35 : 1.60;
+          tr.speed = 0;
         }
       }
+
+      const hNow = this._sampleTrainPosOnPath(tr.path, Math.min(maxPathDist - 1e-4, tr.dist));
+      if (hNow) { tr.wx = hNow.wx; tr.wz = hNow.wz; tr.dirX = hNow.dirX; tr.dirZ = hNow.dirZ; }
     }
 
     // Smoothly update ground & elevated congestion metrics (preserving 1.0 gridlock spike on timeout frame)
@@ -2956,13 +3154,14 @@ export class TrafficManager {
 
   findSeaOriginForBerth(bx, bz) {
     const wd = this.sim.waterDepth;
-    // Primary SE Sea Bay ocean edge (x=53, z=51)
-    const candidates = [{ x: 53, z: 51 }];
+    // Primary SE Sea Bay deep-water entry (x=53..54, z=51, keeping hull stern 100% inside inBounds!)
+    const candidates = [{ x: 53, z: 51 }, { x: 53, z: 52 }, { x: 54, z: 51 }];
     for (let r = 1; r <= 7; r++) {
       for (let dz = -r; dz <= r; dz++) {
         for (let dx = -r; dx <= r; dx++) {
           if (Math.abs(dx) !== r && Math.abs(dz) !== r) continue;
           const nx = 53 + dx, nz = 51 + dz;
+          if (nx >= GRID_SIZE - 1 || nz >= GRID_SIZE - 1) continue;
           if (inBounds(nx, nz) && wd[idx(nx, nz)] > 0.12) {
             candidates.push({ x: nx, z: nz });
           }
@@ -3040,7 +3239,7 @@ export class TrafficManager {
         dwell: 0,
         departGrace: 0,
         stuckTimer: 0,
-        scale: 0.2,
+        scale: 0.72,
         speed: 0.55,
         maxSpeed: 0.92 + Math.random() * 0.16,
         wx: p0.wx,
@@ -3328,13 +3527,13 @@ export class TrafficManager {
         continue;
       }
 
-      // Smooth horizon scale-in / scale-out ONLY at the outer sea edge so ships never abruptly pop in/out!
+      // Keep cargo ships full-size across the entire visible sea bay (gentle 0.72->1.0 horizon ease only at outermost 0.35 tiles!)
       const prog = ship.seg + ship.t;
       const rem = (wps.length - 1) - prog;
       if (ship.leg === 'inbound') {
-        ship.scale = Math.min(1.0, Math.max(0.15, prog / 0.85));
+        ship.scale = prog < 0.35 ? (0.72 + (prog / 0.35) * 0.28) : 1.0;
       } else {
-        ship.scale = Math.min(1.0, Math.max(0.15, rem / 0.85));
+        ship.scale = rem < 0.35 ? (0.72 + (rem / 0.35) * 0.28) : 1.0;
       }
 
       const s0 = this.sim.getTileElev(c0.x, c0.z) + this.sim.waterDepth[idx(c0.x, c0.z)];

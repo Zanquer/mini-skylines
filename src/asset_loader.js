@@ -288,7 +288,7 @@ export class AssetManager {
           if (onProgress) onProgress(done / total, `加载 3D 资产 (${done}/${total})`);
           continue;
         }
-        await new Promise((resolve) => {
+        const loadOne = (attempt = 0) => new Promise((resolve) => {
           loader.load(
             this.baseUrl + entry.url,
             (gltf) => {
@@ -301,17 +301,22 @@ export class AssetManager {
             },
             undefined,
             () => {
+              if (attempt < 1) {
+                setTimeout(() => loadOne(attempt + 1).then(resolve), 240);
+                return;
+              }
               done++;
               if (onProgress) onProgress(done / total, `加载模型 (${done}/${total})`);
               resolve();
             }
           );
         });
+        await loadOne(0);
       }
     };
 
     const workers = [];
-    for (let i = 0; i < 4; i++) workers.push(runWorker());
+    for (let i = 0; i < 2; i++) workers.push(runWorker());
     await Promise.all(workers);
     return this.glbs;
   }

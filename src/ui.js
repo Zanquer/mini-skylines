@@ -257,6 +257,8 @@ export class GameUI {
         const modes = ['none', 'underground', 'power', 'landValue', 'traffic', 'transit', 'pollution', 'education', 'noise'];
         const next = modes[(modes.indexOf(this.renderer.overlayMode) + 1) % modes.length];
         this.renderer.overlayMode = next;
+        this.sim.terrainDirty = true;
+        this.sim.infraDirty = true;
         this.updateOverlayLegend();
       }
     });
@@ -266,6 +268,8 @@ export class GameUI {
           this.sfx.tap();
           this.autoOverlayActive = false;
           this.renderer.overlayMode = btn.dataset.ov;
+          this.sim.terrainDirty = true;
+          this.sim.infraDirty = true;
           overlayPicker.classList.remove('open');
           this.updateOverlayLegend();
         });
@@ -348,7 +352,9 @@ export class GameUI {
         if (cat === 'pan') {
           this.selectTool('pan', null);
         } else if (TOOL_GROUPS[cat]) {
-          if (this.openCategory === cat) {
+          const subWrapEl = document.getElementById('sub-toolbar-wrap');
+          const subAlreadyVisible = Boolean(subWrapEl ? subWrapEl.classList.contains('open') : document.getElementById('sub-toolbar')?.classList.contains('open'));
+          if (this.openCategory === cat && subAlreadyVisible) {
             this.selectTool('pan', null);
           } else {
             const list = TOOL_GROUPS[cat];
@@ -423,7 +429,7 @@ export class GameUI {
         this.syncLayoutOffsets();
         this._updateSubScrollButtons();
       });
-      for (const id of ['top-hud', 'chirper-pill', 'sub-toolbar-wrap', 'bottom-dock']) {
+      for (const id of ['top-hud', 'chirper-pill', 'left-float-stack', 'side-controls', 'sub-toolbar-wrap', 'bottom-dock']) {
         const el = document.getElementById(id);
         if (el) this._layoutObserver.observe(el);
       }
@@ -441,8 +447,11 @@ export class GameUI {
     const clientW = subBar.clientWidth || 0;
     const scrollL = subBar.scrollLeft || 0;
     const overflows = isOpen && scrollW > clientW + 4;
-    btnL.classList.toggle('visible', overflows && scrollL > 4);
-    btnR.classList.toggle('visible', overflows && scrollL < scrollW - clientW - 4);
+    // Keep both chevrons mounted whenever toolbar overflows (no layout-width jitter!) and dim inactive end
+    btnL.classList.toggle('visible', overflows);
+    btnR.classList.toggle('visible', overflows);
+    btnL.classList.toggle('disabled', !overflows || scrollL <= 2);
+    btnR.classList.toggle('disabled', !overflows || scrollL >= scrollW - clientW - 2);
   }
 
   syncLayoutOffsets() {
@@ -450,6 +459,8 @@ export class GameUI {
     if (!rootStyle || typeof rootStyle.setProperty !== 'function') return;
     const topHud = document.getElementById('top-hud');
     const chirper = document.getElementById('chirper-pill');
+    const leftStack = document.getElementById('left-float-stack');
+    const sideCtrl = document.getElementById('side-controls');
     const subWrap = document.getElementById('sub-toolbar-wrap');
     const subBar = document.getElementById('sub-toolbar');
     const dock = document.getElementById('bottom-dock');
@@ -458,35 +469,53 @@ export class GameUI {
     const hudBottom = topRect && topRect.height > 10 ? Math.ceil(topRect.bottom) : 60;
     const chirperRect = chirper && typeof chirper.getBoundingClientRect === 'function' ? chirper.getBoundingClientRect() : null;
     const chirperH = chirperRect && chirperRect.height > 8 ? Math.ceil(chirperRect.height) : 30;
+    const leftRect = leftStack && typeof leftStack.getBoundingClientRect === 'function' ? leftStack.getBoundingClientRect() : null;
+    const leftH = leftRect && leftRect.height > 8 ? Math.ceil(leftRect.height) : 30;
 
     const vw = (typeof window !== 'undefined' && window.innerWidth) || 1280;
     const vh = (typeof window !== 'undefined' && window.innerHeight) || 720;
 
     const chirperTop = hudBottom + 8;
-    // On narrow screens (< 860px), stack left float below Chirper so they NEVER collide horizontally!
+    // On narrow screens (< 860px), stack left float below Chirper AND tool-hint strictly below left-float-stack!
     const leftStackTop = vw < 860 ? (chirperTop + chirperH + 8) : (hudBottom + 8);
-    const toolHintTop = chirperTop + chirperH + 8;
-    const toastTop = toolHintTop + 38;
+    const toolHintTop = vw < 860 ? (leftStackTop + leftH + 6) : (chirperTop + chirperH + 8);
+    const toastTop = toolHintTop + 36;
 
-    let bottomStackH = 74;
-    const subOpen = Boolean(subBar && subBar.classList.contains('open'));
-    const activeBottomEl = subOpen ? (subWrap || subBar) : dock;
-    if (activeBottomEl && typeof activeBottomEl.getBoundingClientRect === 'function') {
-      const br = activeBottomEl.getBoundingClientRect();
-      if (br && br.height > 10 && br.top > 0 && br.top < vh) {
-        bottomStackH = Math.max(70, Math.ceil(vh - br.top));
-      } else if (subOpen) {
-        bottomStackH = 148;
+    let dockOccupiedH = 74;
+    if (dock && typeof dock.getBoundingClientRect === 'function') {
+      const dr = dock.getBoundingClientRect();
+      if (dr && dr.height > 10 && dr.top > 0 && dr.top < vh) {
+        dockOccupiedH = Math.max(58, Math.ceil(vh - dr.top));
       }
-    } else if (subOpen) {
-      bottomStackH = 148;
     }
+    const subToolbarBottom = dockOccupiedH + 6;
+
+    let bottomStackH = dockOccupiedH;
+    const subOpen = Boolean(subBar && subBar.classList.contains('open'));
+    if (subOpen) {
+      const subEl = subWrap || subBar;
+      let subH = 70;
+      if (subEl && typeof subEl.getBoundingClientRect === 'function') {
+        const sr = subEl.getBoundingClientRect();
+        if (sr && sr.height > 10) subH = Math.ceil(sr.height);
+      }
+      bottomStackH = subToolbarBottom + subH;
+    }
+
+    // Clamp #side-controls strictly between chirper-pill bottom and bottom-dock top so '+' is NEVER occluded!
+    const sideRect = sideCtrl && typeof sideCtrl.getBoundingClientRect === 'function' ? sideCtrl.getBoundingClientRect() : null;
+    const sideH = sideRect && sideRect.height > 40 ? Math.ceil(sideRect.height) : (vw <= 640 ? 270 : 326);
+    const minSideTop = chirperTop + chirperH + 10;
+    const maxSideTop = Math.max(minSideTop, vh - bottomStackH - sideH - 10);
+    const sideControlsTop = Math.max(minSideTop, Math.min(maxSideTop, Math.round((vh - sideH) * 0.5)));
 
     rootStyle.setProperty('--hud-bottom', `${hudBottom}px`);
     rootStyle.setProperty('--chirper-top', `${chirperTop}px`);
     rootStyle.setProperty('--left-stack-top', `${leftStackTop}px`);
     rootStyle.setProperty('--tool-hint-top', `${toolHintTop}px`);
     rootStyle.setProperty('--toast-top', `${toastTop}px`);
+    rootStyle.setProperty('--side-controls-top', `${sideControlsTop}px`);
+    rootStyle.setProperty('--sub-toolbar-bottom', `${subToolbarBottom}px`);
     rootStyle.setProperty('--bottom-stack-h', `${bottomStackH}px`);
   }
 
@@ -948,7 +977,15 @@ export class GameUI {
     if (!this.dragBuildStart || !this.dragBuildEnd) return;
     const rawTiles = this._computePlannedTiles(this.dragBuildStart, this.dragBuildEnd);
     const est = this.sim.estimateAction(this.activeTool, rawTiles);
-    this.renderer.previewTiles = est.validTiles.length > 0 ? est.validTiles : rawTiles.slice(0, 1);
+    if (this.activeTool === 'shipping_lane' && est.validTiles.length > 0) {
+      // Keep drag preview ribbon continuous over already-marked shipping lane tiles (no visual 1-tile holes!)
+      this.renderer.previewTiles = rawTiles.filter((p) => {
+        const t = this.sim.getTile(p.x, p.z);
+        return t && !t.dam && (this.sim.waterDepth[idx(p.x, p.z)] || 0) > 0.14;
+      });
+    } else {
+      this.renderer.previewTiles = est.validTiles.length > 0 ? est.validTiles : rawTiles.slice(0, 1);
+    }
 
     if (est.lockedLevel) {
       this.renderer.previewColor = [0.95, 0.25, 0.25];
@@ -1187,7 +1224,9 @@ export class GameUI {
       if (this.activeTool === 'pan' && this.dragStartScreen && e.button === 0) {
         const moved = Math.hypot(e.clientX - this.dragStartScreen.x, e.clientY - this.dragStartScreen.y);
         if (moved < 9) {
-          const hit = this.renderer.screenToGround(e.clientX, e.clientY);
+          const hit = (typeof this.renderer.pickTileAtScreen === 'function')
+            ? this.renderer.pickTileAtScreen(e.clientX, e.clientY)
+            : this.renderer.screenToGround(e.clientX, e.clientY);
           if (hit && hit.valid) {
             if (this.editingBusLineId !== null) {
               const res = this.sim.addStopToBusLine(this.editingBusLineId, hit.tx, hit.tz);
@@ -1225,7 +1264,10 @@ export class GameUI {
           this.sfx.tap();
         } else {
           const tiles = this._computePlannedTiles(this.dragBuildStart, this.dragBuildEnd);
-          this.sim.applyTool(this.activeTool, tiles, false);
+          const applyRes = this.sim.applyTool(this.activeTool, tiles, false);
+          if (applyRes && applyRes.ok && (applyRes.skippedProtected || 0) > 0) {
+            this.showToast(`✅ 已建成 ${applyRes.count} 格（🛡️ 自动避让保护了 ${applyRes.skippedProtected} 格原有设施）`, 2600);
+          }
           this.refreshSubToolbarUnlocks();
           this.refreshHUD();
           this.renderer.previewTiles = [];
@@ -1715,9 +1757,13 @@ export class GameUI {
     if (this.sim.latestChirp) {
       const cu = document.getElementById('chirper-user');
       const ct = document.getElementById('chirper-text');
+      const cp = document.getElementById('chirper-pill');
       if (cu && ct) {
         cu.textContent = this.sim.latestChirp.user;
         ct.textContent = this.sim.latestChirp.text;
+      }
+      if (cp) {
+        cp.title = `${this.sim.latestChirp.user || ''} ${this.sim.latestChirp.text || ''}（点击切换下一条动态）`;
       }
     }
 
@@ -2997,9 +3043,8 @@ export class GameUI {
     const textSpan = document.createElement('span');
     textSpan.textContent = msg;
     const closeSpan = document.createElement('span');
-    closeSpan.textContent = '✖';
-    closeSpan.style.opacity = '0.78';
-    closeSpan.style.fontSize = '12px';
+    closeSpan.className = 'toast-close';
+    closeSpan.textContent = '×';
 
     el.appendChild(textSpan);
     el.appendChild(closeSpan);

@@ -42,6 +42,8 @@
   --left-stack-top: calc(var(--hud-bottom) + 8px);
   --tool-hint-top: calc(var(--hud-bottom) + 44px);
   --toast-top: calc(var(--hud-bottom) + 82px);
+  --side-controls-top: 50%;
+  --sub-toolbar-bottom: calc(76px + var(--safe-bottom));
   --bottom-stack-h: calc(74px + var(--safe-bottom));
 }
 
@@ -62,8 +64,10 @@ input, textarea {
 html, body {
   margin: 0;
   padding: 0;
+  inset: 0;
   width: 100%;
   height: 100%;
+  max-height: 100%;
   overflow: hidden;
   overscroll-behavior: none;
   position: fixed;
@@ -296,7 +300,7 @@ html, body {
   position: fixed;
   top: var(--chirper-top);
   right: calc(10px + var(--safe-right));
-  max-width: min(355px, calc(100vw - 24px));
+  max-width: min(440px, calc(100vw - 24px));
   background: linear-gradient(135deg, rgba(14, 27, 48, 0.88) 0%, rgba(9, 18, 34, 0.92) 100%);
   backdrop-filter: blur(14px) saturate(150%);
   -webkit-backdrop-filter: blur(14px) saturate(150%);
@@ -360,14 +364,20 @@ html, body {
 
 #chirper-pill .chirper-author,
 #chirper-pill .chirper-user,
-#chirper-pill .chirper-tag {
+#chirper-pill .chirper-tag,
+#chirper-pill .chirp-bird,
+#chirper-user {
   color: #7dd3fc;
   font-weight: 700;
   flex: 0 0 auto;
+  white-space: nowrap;
 }
 
 #chirper-pill .chirper-text,
-#chirper-pill .chirper-msg {
+#chirper-pill .chirper-msg,
+#chirper-text {
+  min-width: 0;
+  flex: 1 1 auto;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -400,11 +410,10 @@ html, body {
 #side-controls {
   position: fixed;
   right: calc(10px + var(--safe-right));
-  top: 50%;
-  transform: translateY(-50%);
+  top: var(--side-controls-top);
   display: flex;
   flex-direction: column;
-  gap: 7px;
+  gap: 6px;
   z-index: 18;
 }
 
@@ -442,7 +451,7 @@ html, body {
 /* ==================== Submenu / Category Drawer above Bottom Toolbar ==================== */
 #sub-toolbar-wrap {
   position: fixed;
-  bottom: calc(76px + var(--safe-bottom));
+  bottom: var(--sub-toolbar-bottom);
   left: 50%;
   transform: translateX(-50%);
   max-width: calc(100vw - 16px);
@@ -450,7 +459,6 @@ html, body {
   align-items: center;
   gap: 5px;
   z-index: 22;
-  animation: subDrawerIn 0.18s var(--ease-out-nordic);
 }
 
 #sub-toolbar-wrap.open {
@@ -472,14 +480,19 @@ html, body {
   align-items: center;
   justify-content: center;
   box-shadow: 0 6px 18px rgba(2, 6, 18, 0.55);
-  transition: all 0.15s ease;
+  transition: opacity 0.15s ease, background 0.15s ease, border-color 0.15s ease;
 }
 
 .sub-scroll-btn.visible {
   display: inline-flex;
 }
 
-.sub-scroll-btn:hover {
+.sub-scroll-btn.disabled {
+  opacity: 0.28;
+  cursor: default;
+}
+
+.sub-scroll-btn:not(.disabled):hover {
   background: linear-gradient(180deg, rgba(14, 165, 233, 0.42), rgba(37, 99, 235, 0.36));
   border-color: #7dd3fc;
   color: #ffffff;
@@ -487,6 +500,8 @@ html, body {
 
 #sub-toolbar {
   position: relative;
+  min-width: 0;
+  flex: 0 1 auto;
   max-width: calc(100vw - 84px);
   background: var(--bg-dock-grad);
   backdrop-filter: blur(18px) saturate(150%);
@@ -1639,22 +1654,58 @@ html, body {
 
 /* ==================== Mobile & Compact Viewport Adjustments ==================== */
 @media (max-width: 640px) {
-  .hud-card { padding: 5px 8px; gap: 6px; border-radius: 13px; }
-  .stat-pill { min-width: 44px; }
-  .stat-val { font-size: 12px; }
-  .city-name-row { font-size: 13px; }
-  .mayor-badge { min-width: 84px; padding: 3px 7px; }
+  #top-hud { top: calc(6px + var(--safe-top)); left: calc(6px + var(--safe-left)); right: calc(6px + var(--safe-right)); gap: 4px; }
+  .hud-card { flex-wrap: wrap; padding: 4px 7px; gap: 3px 6px; border-radius: 12px; width: 100%; }
+  .city-brand { flex-shrink: 0; white-space: nowrap; border-right: none; padding-right: 4px; }
+  .city-name-row { font-size: 12.5px; white-space: nowrap; }
+  .city-tier { font-size: 9px; white-space: nowrap; }
+  .mayor-badge { min-width: 0; flex-shrink: 0; padding: 2px 6px; gap: 2px; border-radius: 9px; }
+  .mayor-lv-pill { font-size: 10.5px; }
+  .mayor-lv-title { font-size: 9.5px; }
+  .mayor-xp-lbl { font-size: 8.5px; }
+  .stats-row { gap: 3px 7px; flex: 1 1 100%; }
+  .stat-pill { min-width: 40px; }
+  .stat-label { font-size: 9px; }
+  .stat-val { font-size: 11px; }
+  .rci-box { height: 24px; padding: 2px 5px; gap: 4px; }
+  .rci-track { width: 7px; height: 13px; }
+  .quick-actions { gap: 3px; width: 100%; justify-content: flex-start; }
+  .icon-btn { padding: 3px 6px; font-size: 10.5px; border-radius: 8px; }
   #chirper-pill {
-    right: calc(8px + var(--safe-right));
-    max-width: calc(100vw - 16px);
+    right: calc(6px + var(--safe-right));
+    left: calc(6px + var(--safe-left));
+    max-width: calc(100vw - 12px);
     font-size: 11px;
-    padding: 4px 10px 4px 7px;
+    padding: 4px 9px 4px 7px;
   }
-  #guide-card { width: min(268px, calc(100vw - 16px)); padding: 8px 10px; }
-  #tool-hint { font-size: 11px; }
-  .dock-btn { min-width: 48px; height: 48px; padding: 3px 6px; }
+  #left-float-stack { left: calc(6px + var(--safe-left)); max-width: calc(100vw - 56px); gap: 5px; }
+  #guide-card { width: min(252px, calc(100vw - 58px)); padding: 8px 10px; }
+  #side-controls { right: calc(6px + var(--safe-right)); gap: 5px; }
+  .side-btn { width: 34px; height: 34px; font-size: 14px; border-radius: 10px; }
+  #overlay-picker { right: calc(46px + var(--safe-right)); }
+  #tool-hint {
+    left: calc(6px + var(--safe-left));
+    right: auto;
+    transform: none;
+    font-size: 10.5px;
+    padding: 4px 10px;
+    max-width: calc(100vw - 54px);
+  }
+  #inspector-card { left: calc(6px + var(--safe-left)); width: min(280px, calc(100vw - 56px)); padding: 10px 12px; }
+  #bottom-dock {
+    padding: 4px 6px;
+    gap: 3px;
+    border-radius: 16px;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(56, 189, 248, 0.45) transparent;
+  }
+  .dock-btn { min-width: 44px; height: 46px; padding: 2px 4px; border-radius: 11px; }
+  .dock-btn .dock-icon { font-size: 17px; }
+  .dock-btn .dock-label { font-size: 9.5px; }
+  #sub-toolbar-wrap { max-width: calc(100vw - 10px); }
   .sub-scroll-btn { width: 24px; height: 46px; }
-  #sub-toolbar { max-width: calc(100vw - 68px); }
+  #sub-toolbar { max-width: calc(100vw - 68px); padding: 5px 8px; }
+  .sub-item { min-width: 70px; padding: 5px 7px; }
 }
 
 /* ==================== Flagship iOS PWA Boot Splash & Cache Manager ==================== */
@@ -2051,7 +2102,7 @@ html, body {
   <div id="boot-splash">
     <div class="boot-logo-ring">🏙️</div>
     <div class="boot-title">山河天际线 Pro 3D</div>
-    <div class="boot-subtitle">旗舰 PBR 离线立体都市模拟器 v8.1</div>
+    <div class="boot-subtitle">旗舰 PBR 离线立体都市模拟器 v8.2</div>
     <div class="boot-bar-track"><div class="boot-bar-fill" id="boot-bar-fill"></div></div>
     <div class="boot-status" id="boot-status">正在初始化三维引擎...</div>
   </div>
@@ -8722,7 +8773,7 @@ class AssetManager {
           if (onProgress) onProgress(done / total, `加载 3D 资产 (${done}/${total})`);
           continue;
         }
-        await new Promise((resolve) => {
+        const loadOne = (attempt = 0) => new Promise((resolve) => {
           loader.load(
             this.baseUrl + entry.url,
             (gltf) => {
@@ -8735,17 +8786,22 @@ class AssetManager {
             },
             undefined,
             () => {
+              if (attempt < 1) {
+                setTimeout(() => loadOne(attempt + 1).then(resolve), 240);
+                return;
+              }
               done++;
               if (onProgress) onProgress(done / total, `加载模型 (${done}/${total})`);
               resolve();
             }
           );
         });
+        await loadOne(0);
       }
     };
 
     const workers = [];
-    for (let i = 0; i < 4; i++) workers.push(runWorker());
+    for (let i = 0; i < 2; i++) workers.push(runWorker());
     await Promise.all(workers);
     return this.glbs;
   }
@@ -11260,9 +11316,16 @@ function buildHighResTerrainMesh(THREE, sim, overlayMode, detailTex, sharedMat =
 
         if (activeOverlay === 'power' || activeOverlay === 'electricity') {
           if (tile.powered || tile.pylon) {
-            or = 0.22; og = 0.86; ob = 0.52;
+            or = 0.12; og = 0.68; ob = 0.98;
+            oWeight = 0.85;
           } else if (tile.zone || tile.building) {
-            or = 0.86; og = 0.32; ob = 0.28;
+            or = 0.96; og = 0.28; ob = 0.22;
+            oWeight = 0.88;
+          } else {
+            or = lum * 0.42 + 0.08;
+            og = lum * 0.44 + 0.10;
+            ob = lum * 0.50 + 0.14;
+            oWeight = 0.78;
           }
         } else if (activeOverlay === 'water' || activeOverlay === 'pipes') {
           if (tile.pipeBroken) {
@@ -11371,8 +11434,21 @@ function buildHighResTerrainMesh(THREE, sim, overlayMode, detailTex, sharedMat =
     }
   }
 
-  // Pass 3: Adaptive diagonal quad triangulation (aligns splits with ridges & curved riverbanks)
-  const indices = new Uint16Array(SEG * SEG * 6);
+  // Pass 3: Adaptive diagonal quad triangulation + exact 4-side contour-hugging geological skirt (ZERO map-edge sky gaps!)
+  const SKIRT_Y = -2.25;
+  const skirtVertCount = STRIDE * 8; // 4 edges * (top + bottom)
+  const totalVerts = VCOUNT + skirtVertCount;
+  const fullPos = new Float32Array(totalVerts * 3);
+  const fullNorm = new Float32Array(totalVerts * 3);
+  const fullUV = new Float32Array(totalVerts * 2);
+  const fullCol = new Float32Array(totalVerts * 3);
+  fullPos.set(positions);
+  fullNorm.set(normals);
+  fullUV.set(uvs);
+  fullCol.set(colors);
+
+  const skirtTriCount = SEG * 4 * 2;
+  const indices = new Uint16Array(SEG * SEG * 6 + skirtTriCount * 3);
   let ptr = 0;
   for (let gz = 0; gz < SEG; gz++) {
     const row0 = gz * STRIDE;
@@ -11401,11 +11477,51 @@ function buildHighResTerrainMesh(THREE, sim, overlayMode, detailTex, sharedMat =
     }
   }
 
+  let svCursor = VCOUNT;
+  const rockTopR = toOutChannel(0.42), rockTopG = toOutChannel(0.46), rockTopB = toOutChannel(0.51);
+  const rockBotR = toOutChannel(0.24), rockBotG = toOutChannel(0.28), rockBotB = toOutChannel(0.34);
+  const emitSkirtEdge = (getGridIdx, nx, ny, nz, flipWinding) => {
+    const baseV = svCursor;
+    for (let k = 0; k < STRIDE; k++) {
+      const srcV = getGridIdx(k);
+      const sx = positions[srcV * 3];
+      const sy = positions[srcV * 3 + 1];
+      const sz = positions[srcV * 3 + 2];
+      const vTop = svCursor++;
+      const vBot = svCursor++;
+      fullPos[vTop * 3] = sx; fullPos[vTop * 3 + 1] = sy; fullPos[vTop * 3 + 2] = sz;
+      fullPos[vBot * 3] = sx; fullPos[vBot * 3 + 1] = SKIRT_Y; fullPos[vBot * 3 + 2] = sz;
+      fullNorm[vTop * 3] = nx; fullNorm[vTop * 3 + 1] = ny; fullNorm[vTop * 3 + 2] = nz;
+      fullNorm[vBot * 3] = nx; fullNorm[vBot * 3 + 1] = ny; fullNorm[vBot * 3 + 2] = nz;
+      fullUV[vTop * 2] = k / 8; fullUV[vTop * 2 + 1] = 0;
+      fullUV[vBot * 2] = k / 8; fullUV[vBot * 2 + 1] = 1;
+      fullCol[vTop * 3] = rockTopR; fullCol[vTop * 3 + 1] = rockTopG; fullCol[vTop * 3 + 2] = rockTopB;
+      fullCol[vBot * 3] = rockBotR; fullCol[vBot * 3 + 1] = rockBotG; fullCol[vBot * 3 + 2] = rockBotB;
+    }
+    for (let k = 0; k < SEG; k++) {
+      const t0 = baseV + k * 2;
+      const b0 = t0 + 1;
+      const t1 = t0 + 2;
+      const b1 = t0 + 3;
+      if (!flipWinding) {
+        indices[ptr++] = t0; indices[ptr++] = b0; indices[ptr++] = t1;
+        indices[ptr++] = t1; indices[ptr++] = b0; indices[ptr++] = b1;
+      } else {
+        indices[ptr++] = t0; indices[ptr++] = t1; indices[ptr++] = b0;
+        indices[ptr++] = t1; indices[ptr++] = b1; indices[ptr++] = b0;
+      }
+    }
+  };
+  emitSkirtEdge((k) => k, 0, 0, -1, true);                         // North (gz=0, -Z)
+  emitSkirtEdge((k) => SEG * STRIDE + k, 0, 0, 1, false);          // South (gz=SEG, +Z)
+  emitSkirtEdge((k) => k * STRIDE, -1, 0, 0, false);               // West (gx=0, -X)
+  emitSkirtEdge((k) => k * STRIDE + SEG, 1, 0, 0, true);           // East (gx=SEG, +X)
+
   const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-  geo.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
-  geo.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
-  geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  geo.setAttribute('position', new THREE.BufferAttribute(fullPos, 3));
+  geo.setAttribute('normal', new THREE.BufferAttribute(fullNorm, 3));
+  geo.setAttribute('uv', new THREE.BufferAttribute(fullUV, 2));
+  geo.setAttribute('color', new THREE.BufferAttribute(fullCol, 3));
   geo.setIndex(new THREE.BufferAttribute(indices, 1));
   geo.computeBoundingSphere();
 
@@ -12670,6 +12786,12 @@ function buildContinuousRoadAndViaductGroup(THREE, sim, overlayMode, mats) {
     railCornerY: new Float32Array(railCornerY),
     version: ((sim.infraHeights && sim.infraHeights.version) || 0) + 1
   };
+
+  // In Underground X-Ray view, skip opaque surface/elevated road decks & viaducts so metro tunnels, trains & water pipes are 100% unobstructed!
+  if (overlayMode === 'underground') {
+    group.userData = { streetProps: { lamps: [], signals: [], roundabouts: [], busStops: [] } };
+    return group;
+  }
 
   // --- Geometry Batches ---
   const bRoad2 = createGeoBatch(false);
@@ -21394,7 +21516,10 @@ class CitySimulation {
             continue;
           }
         }
-        if (t.roadGround === target && (typeof t.roadDir !== 'number' || t.roadDir < 0) && (!wet || t.roadBridge)) continue;
+        if (t.roadGround === target && (typeof t.roadDir !== 'number' || t.roadDir < 0) && (!wet || t.roadBridge)) {
+          if (!allowOverwrite) skippedProtected++;
+          continue;
+        }
         cost += wet ? CATALOG[toolId].bridgeCost : CATALOG[toolId].cost;
         validTiles.push(pos);
       } else if (toolId === 'road_oneway') {
@@ -21967,7 +22092,7 @@ class CitySimulation {
       this.checkMayorQuests();
     }
 
-    return { ok: true, count: validTiles.length, cost };
+    return { ok: true, count: validTiles.length, cost, skippedProtected };
   }
 
   takeLoan(loanId) {
@@ -24603,8 +24728,9 @@ class CitySimulation {
     this.applyTool('metro_station', [{ x: 31, z: 39 }], true);
     this.applyTool('metro_station', [{ x: 18, z: 43 }], true);
 
-    // 6. Water Treatment + Underground Pipe Grid + Backup Power (full road & pipe coverage x=9..39!)
-    this.applyTool('road_1', this.computeLineOrLPath(9, 50, 39, 50), true);
+    // 6. Water Treatment + Underground Pipe Grid + Backup Power (keep southern road strictly on dry shore — no wet stub into SE bay!)
+    const southRoadDry = this.computeLineOrLPath(9, 50, 39, 50).filter((p) => !this.isWaterTile(p.x, p.z));
+    this.applyTool('road_1', southRoadDry, true);
     this.applyTool('road_1', this.computeLineOrLPath(12, 46, 12, 50), true);
     for (const x of [11, 13, 15, 17, 19, 21, 23, 25, 27]) {
       this.applyTool('water_treat', [{ x, z: 48 }], true);
@@ -25141,6 +25267,7 @@ class TrafficManager {
     this.signalClock = 0;
     this.modalTimer = 0;
     this._nextVehId = 1;
+    this._nextTrainId = 1;
     this._nextShipId = 1;
     this._nextBoatId = 1;
     this._nextPedId = 1;
@@ -27024,58 +27151,146 @@ class TrafficManager {
     this.refreshActiveModalCounts();
   }
 
+  _sampleTrainPosOnPath(path, dist) {
+    if (!path || path.length < 2) return null;
+    const maxD = path.length - 1;
+    const d = Math.max(0, Math.min(maxD - 1e-4, dist));
+    const seg = Math.floor(d);
+    const f = d - seg;
+    const p0 = path[seg];
+    const p1 = path[Math.min(maxD, seg + 1)];
+    const w0 = tileToWorld(p0.x, p0.z);
+    const w1 = tileToWorld(p1.x, p1.z);
+    const dx = w1.wx - w0.wx;
+    const dz = w1.wz - w0.wz;
+    const len = Math.hypot(dx, dz) || 1;
+    return {
+      wx: w0.wx + dx * f,
+      wz: w0.wz + dz * f,
+      dirX: dx / len,
+      dirZ: dz / len
+    };
+  }
+
+  _hasTrainSpawnClearance(isMetro, tx, tz, minTiles = 4.2) {
+    const w = tileToWorld(tx, tz);
+    const minSq = minTiles * minTiles;
+    for (let i = 0; i < this.trains.length; i++) {
+      const tr = this.trains[i];
+      if (Boolean(tr.isMetro) !== Boolean(isMetro)) continue;
+      const spacing = isMetro ? 0.56 : 0.72;
+      for (const offset of [0, (tr.cars - 1) * spacing * 0.5, (tr.cars - 1) * spacing]) {
+        const pt = this._sampleTrainPosOnPath(tr.path, tr.dist - offset);
+        if (!pt) continue;
+        const dx = pt.wx - w.wx;
+        const dz = pt.wz - w.wz;
+        if (dx * dx + dz * dz < minSq) return false;
+      }
+    }
+    return true;
+  }
+
+  _getTrainStations(isMetro) {
+    const out = [];
+    if (!isMetro && this.sim.getTile(8, GRID_SIZE - 1)?.rail > 0) {
+      out.push({ x: 8, z: GRID_SIZE - 1, isPortal: true });
+    }
+    const wantType = isMetro ? 'metro_station' : 'hsr_station';
+    for (let i = 0; i < this.sim.grid.length; i++) {
+      const t = this.sim.grid[i];
+      if (t.building?.type === wantType && t.powered && !t.building.abandoned && !t.building.underConstruction) {
+        out.push({ x: t.x, z: t.z, isPortal: false });
+      }
+    }
+    return out;
+  }
+
   trySpawnTrains() {
     const activeHSR = this.trains.filter((tr) => !tr.isMetro).length;
     const activeMetro = this.trains.filter((tr) => tr.isMetro).length;
 
-    // 1. High-Speed Bullet Train (Fuxing 5-car articulated consist!)
+    // 1. High-Speed Bullet Train (Fuxing 5-car articulated consist, strict spawn headway!)
     if (activeHSR < 3) {
-      const hsrNodes = [];
-      if (this.sim.getTile(8, GRID_SIZE - 1)?.rail > 0) hsrNodes.push({ x: 8, z: GRID_SIZE - 1 });
-      for (let i = 0; i < this.sim.grid.length; i++) {
-        const t = this.sim.grid[i];
-        if (t.building?.type === 'hsr_station' && t.powered) {
-          hsrNodes.push({ x: t.x, z: t.z });
-        }
-      }
+      const hsrNodes = this._getTrainStations(false);
       if (hsrNodes.length >= 2) {
-        const a = hsrNodes[(Math.random() * hsrNodes.length) | 0];
-        const b = hsrNodes[(Math.random() * hsrNodes.length) | 0];
-        const path = this.findTrackPath(a.x, a.z, b.x, b.z, false);
-        if (path && path.length >= 5) {
+        let bestPair = null;
+        for (let attempt = 0; attempt < 6; attempt++) {
+          const a = hsrNodes[(Math.random() * hsrNodes.length) | 0];
+          const b = hsrNodes[(Math.random() * hsrNodes.length) | 0];
+          if (a.x === b.x && a.z === b.z) continue;
+          if (!this._hasTrainSpawnClearance(false, a.x, a.z, 5.2)) continue;
+          const path = this.findTrackPath(a.x, a.z, b.x, b.z, false);
+          if (path && path.length >= 6) {
+            bestPair = { a, b, path };
+            break;
+          }
+        }
+        if (bestPair) {
+          const { a, b, path } = bestPair;
+          const startDist = a.isPortal ? 0 : Math.min(path.length - 1.5, 4 * 0.72 + 0.15);
+          const head = this._sampleTrainPosOnPath(path, startDist);
           this.trains.push({
+            id: this._nextTrainId++,
             isMetro: false,
             cars: 5,
+            carSpacing: 0.72,
             path,
-            dist: 0,
-            speed: 3.8, // Fast bullet train!
-            dwell: 0
+            dist: startDist,
+            speed: a.isPortal ? 3.5 : 0,
+            maxSpeed: 3.5,
+            dwell: a.isPortal ? 0 : 0.9,
+            atTerminus: false,
+            exitingPortal: false,
+            destIsPortal: Boolean(b.isPortal),
+            prevOrigin: { x: a.x, z: a.z },
+            wx: head ? head.wx : 0,
+            wz: head ? head.wz : 0,
+            dirX: head ? head.dirX : 0,
+            dirZ: head ? head.dirZ : 1
           });
         }
       }
     }
 
-    // 2. Underground Metro Train (4-car consist)
-    if (activeMetro < 4) {
-      const mStations = [];
-      for (let i = 0; i < this.sim.grid.length; i++) {
-        const t = this.sim.grid[i];
-        if (t.building?.type === 'metro_station' && t.powered) {
-          mStations.push({ x: t.x, z: t.z });
-        }
-      }
+    // 2. Underground Metro Train (4-car consist, continuous loop/turnaround, ZERO sudden vanishing!)
+    if (activeMetro < 3) {
+      const mStations = this._getTrainStations(true);
       if (mStations.length >= 2) {
-        const a = mStations[(Math.random() * mStations.length) | 0];
-        const b = mStations[(Math.random() * mStations.length) | 0];
-        const path = this.findTrackPath(a.x, a.z, b.x, b.z, true);
-        if (path && path.length >= 4) {
+        let bestPlan = null;
+        for (let attempt = 0; attempt < 8; attempt++) {
+          const a = mStations[(Math.random() * mStations.length) | 0];
+          const b = mStations[(Math.random() * mStations.length) | 0];
+          if (a.x === b.x && a.z === b.z) continue;
+          if (!this._hasTrainSpawnClearance(true, a.x, a.z, 4.8)) continue;
+          const path = this.findTrackPath(a.x, a.z, b.x, b.z, true);
+          if (path && path.length >= 5) {
+            if (!bestPlan || path.length > bestPlan.path.length) {
+              bestPlan = { a, b, path };
+            }
+          }
+        }
+        if (bestPlan) {
+          const { a, b, path } = bestPlan;
+          const startDist = Math.min(path.length - 1.4, 3 * 0.56 + 0.14);
+          const head = this._sampleTrainPosOnPath(path, startDist);
           this.trains.push({
+            id: this._nextTrainId++,
             isMetro: true,
             cars: 4,
+            carSpacing: 0.56,
             path,
-            dist: 0,
-            speed: 2.7,
-            dwell: 0
+            dist: startDist,
+            speed: 0,
+            maxSpeed: 2.35,
+            dwell: 0.85,
+            atTerminus: false,
+            exitingPortal: false,
+            destIsPortal: false,
+            prevOrigin: { x: a.x, z: a.z },
+            wx: head ? head.wx : 0,
+            wz: head ? head.wz : 0,
+            dirX: head ? head.dirX : 0,
+            dirZ: head ? head.dirZ : 1
           });
         }
       }
@@ -27537,24 +27752,129 @@ class TrafficManager {
     this.rebuildTileOccupancy();
     this.refreshActiveModalCounts();
 
-    // Update HSR Bullet Trains & Metro Trains with full coach-span track validation
+    // Update HSR Bullet Trains & Metro Trains: full coach-span validation, block-signaling headway, smooth station dwell & continuous loop/turnaround (ZERO sudden vanishing!)
+    for (let i = 0; i < this.trains.length; i++) {
+      const tr = this.trains[i];
+      const head = this._sampleTrainPosOnPath(tr.path, tr.dist);
+      if (head) {
+        tr.wx = head.wx;
+        tr.wz = head.wz;
+        tr.dirX = head.dirX;
+        tr.dirZ = head.dirZ;
+      }
+    }
+
     for (let i = this.trains.length - 1; i >= 0; i--) {
       const tr = this.trains[i];
       if (!this.isValidTrainSpan(tr)) {
         this.trains.splice(i, 1);
         continue;
       }
+
+      const spacing = tr.carSpacing || (tr.isMetro ? 0.56 : 0.72);
+      const maxSpd = tr.maxSpeed || (tr.isMetro ? 2.35 : 3.5);
+      const maxPathDist = tr.path.length - 1;
+
       if (tr.dwell > 0) {
-        tr.dwell -= effDt;
+        tr.dwell = Math.max(0, tr.dwell - effDt);
+        tr.speed = 0;
+        if (tr.dwell <= 0 && tr.atTerminus) {
+          tr.atTerminus = false;
+          // Continuously dispatch onto next connected station around loop (or clean cab-swap reverse on shuttle line!)
+          const endNode = tr.path[tr.path.length - 1];
+          const stations = this._getTrainStations(tr.isMetro);
+          const others = stations.filter((s) => !(s.x === endNode.x && s.z === endNode.z));
+          // Prefer continuing forward to a station OTHER than prevOrigin so ring/loop metro lines circulate seamlessly!
+          const forwardCands = others.filter((s) => !(tr.prevOrigin && s.x === tr.prevOrigin.x && s.z === tr.prevOrigin.z));
+          const pool = forwardCands.length > 0 ? forwardCands : others;
+          let dispatched = false;
+          if (pool.length > 0) {
+            const pick = pool[(Math.random() * pool.length) | 0];
+            const nextLeg = this.findTrackPath(endNode.x, endNode.z, pick.x, pick.z, tr.isMetro);
+            if (nextLeg && nextLeg.length >= 4) {
+              // Check if nextLeg continues forward smoothly vs reverses along the exact incoming track
+              const prevBeforeEnd = tr.path[tr.path.length - 2];
+              const isReverse = prevBeforeEnd && nextLeg[1].x === prevBeforeEnd.x && nextLeg[1].z === prevBeforeEnd.z;
+              if (isReverse) {
+                // Smooth cab-swap turnaround: exact stationary consist footprint now faces opposite direction!
+                tr.path = nextLeg;
+                tr.dist = Math.min(nextLeg.length - 1.25, (tr.cars - 1) * spacing);
+              } else {
+                // Continuous forward continuation (keep trailing tail tiles behind station so ALL 4 cars glide seamlessly through the station!)
+                const keepTail = Math.min(tr.path.length - 1, Math.ceil((tr.cars - 1) * spacing) + 2);
+                const prefix = tr.path.slice(tr.path.length - 1 - keepTail, tr.path.length - 1);
+                tr.path = prefix.concat(nextLeg);
+                tr.dist = prefix.length;
+              }
+              tr.prevOrigin = { x: endNode.x, z: endNode.z };
+              tr.destIsPortal = Boolean(pick.isPortal);
+              dispatched = true;
+            }
+          }
+          if (!dispatched) {
+            // Fallback clean cab-swap reversal along existing intact track (NEVER abruptly vanishes at station!)
+            tr.path = tr.path.slice().reverse();
+            tr.dist = Math.min(tr.path.length - 1.25, (tr.cars - 1) * spacing);
+            tr.prevOrigin = { x: endNode.x, z: endNode.z };
+            tr.destIsPortal = false;
+          }
+          const h2 = this._sampleTrainPosOnPath(tr.path, tr.dist);
+          if (h2) { tr.wx = h2.wx; tr.wz = h2.wz; tr.dirX = h2.dirX; tr.dirZ = h2.dirZ; }
+        }
         continue;
       }
+
+      // Block-Signaling Anti-Tailgating & Anti-Collision on same layer (isMetro)
+      let targetSpeed = maxSpd;
+      const remToEnd = maxPathDist - tr.dist;
+      if (!tr.destIsPortal && remToEnd < 1.6) {
+        targetSpeed = Math.min(targetSpeed, Math.max(0.55, maxSpd * (remToEnd / 1.6)));
+      }
+      for (let j = 0; j < this.trains.length; j++) {
+        if (i === j) continue;
+        const o = this.trains[j];
+        if (Boolean(o.isMetro) !== Boolean(tr.isMetro)) continue;
+        const rx = (o.wx || 0) - (tr.wx || 0);
+        const rz = (o.wz || 0) - (tr.wz || 0);
+        const dist = Math.hypot(rx, rz);
+        const safeBlock = tr.isMetro ? 3.2 : 4.6;
+        if (dist < safeBlock + 1.4) {
+          const sameDir = (tr.dirX || 0) * (o.dirX || 0) + (tr.dirZ || 0) * (o.dirZ || 0);
+          const fwd = rx * (tr.dirX || 0) + rz * (tr.dirZ || 0);
+          const lat = Math.abs(-rx * (tr.dirZ || 0) + rz * (tr.dirX || 0));
+          // Follow block signal behind same-direction train; opposing trains pass smoothly on dual tracks!
+          if (sameDir > 0.35 && fwd > 0.1 && lat < 0.75) {
+            if (fwd < safeBlock) {
+              targetSpeed = 0;
+              break;
+            } else {
+              targetSpeed = Math.min(targetSpeed, Math.max(0.4, (o.speed || 0) * 0.85));
+            }
+          }
+        }
+      }
+
+      const trAccel = targetSpeed < (tr.speed || 0) ? 5.2 : 2.6;
+      tr.speed = (tr.speed || 0) + (targetSpeed - (tr.speed || 0)) * Math.min(1, effDt * trAccel);
+      if (tr.speed < 0.02 && targetSpeed === 0) tr.speed = 0;
+
       const prevSeg = Math.floor(tr.dist);
       tr.dist += tr.speed * effDt;
       const curSeg = Math.floor(tr.dist);
 
-      if (curSeg >= tr.path.length - 1) {
-        this.trains.splice(i, 1);
-        continue;
+      if (tr.destIsPortal) {
+        // HSR exiting off map edge: only remove AFTER the entire 5-car consist has smoothly passed off-edge!
+        const tailDist = tr.dist - (tr.cars - 1) * spacing;
+        if (tailDist >= maxPathDist) {
+          this.trains.splice(i, 1);
+          continue;
+        }
+      } else if (tr.dist >= maxPathDist) {
+        // Arrived at city Metro/HSR station -> dock cleanly & dwell before continuing loop/turnaround!
+        tr.dist = maxPathDist - 0.002;
+        tr.speed = 0;
+        tr.dwell = tr.isMetro ? 1.55 : 1.85;
+        tr.atTerminus = true;
       }
 
       if (!this.isValidTrainSpan(tr)) {
@@ -27562,14 +27882,18 @@ class TrafficManager {
         continue;
       }
 
-      // Pause briefly if arriving at an intermediate station!
-      if (curSeg !== prevSeg && curSeg > 1 && curSeg < tr.path.length - 2) {
+      // Pause briefly if passing an intermediate station!
+      if (!tr.atTerminus && curSeg !== prevSeg && curSeg > 1 && curSeg < tr.path.length - 2) {
         const node = tr.path[curSeg];
         const bType = this.sim.getTile(node.x, node.z)?.building?.type;
         if ((!tr.isMetro && bType === 'hsr_station') || (tr.isMetro && bType === 'metro_station')) {
-          tr.dwell = 1.6;
+          tr.dwell = tr.isMetro ? 1.35 : 1.60;
+          tr.speed = 0;
         }
       }
+
+      const hNow = this._sampleTrainPosOnPath(tr.path, Math.min(maxPathDist - 1e-4, tr.dist));
+      if (hNow) { tr.wx = hNow.wx; tr.wz = hNow.wz; tr.dirX = hNow.dirX; tr.dirZ = hNow.dirZ; }
     }
 
     // Smoothly update ground & elevated congestion metrics (preserving 1.0 gridlock spike on timeout frame)
@@ -28054,13 +28378,14 @@ class TrafficManager {
 
   findSeaOriginForBerth(bx, bz) {
     const wd = this.sim.waterDepth;
-    // Primary SE Sea Bay ocean edge (x=53, z=51)
-    const candidates = [{ x: 53, z: 51 }];
+    // Primary SE Sea Bay deep-water entry (x=53..54, z=51, keeping hull stern 100% inside inBounds!)
+    const candidates = [{ x: 53, z: 51 }, { x: 53, z: 52 }, { x: 54, z: 51 }];
     for (let r = 1; r <= 7; r++) {
       for (let dz = -r; dz <= r; dz++) {
         for (let dx = -r; dx <= r; dx++) {
           if (Math.abs(dx) !== r && Math.abs(dz) !== r) continue;
           const nx = 53 + dx, nz = 51 + dz;
+          if (nx >= GRID_SIZE - 1 || nz >= GRID_SIZE - 1) continue;
           if (inBounds(nx, nz) && wd[idx(nx, nz)] > 0.12) {
             candidates.push({ x: nx, z: nz });
           }
@@ -28138,7 +28463,7 @@ class TrafficManager {
         dwell: 0,
         departGrace: 0,
         stuckTimer: 0,
-        scale: 0.2,
+        scale: 0.72,
         speed: 0.55,
         maxSpeed: 0.92 + Math.random() * 0.16,
         wx: p0.wx,
@@ -28426,13 +28751,13 @@ class TrafficManager {
         continue;
       }
 
-      // Smooth horizon scale-in / scale-out ONLY at the outer sea edge so ships never abruptly pop in/out!
+      // Keep cargo ships full-size across the entire visible sea bay (gentle 0.72->1.0 horizon ease only at outermost 0.35 tiles!)
       const prog = ship.seg + ship.t;
       const rem = (wps.length - 1) - prog;
       if (ship.leg === 'inbound') {
-        ship.scale = Math.min(1.0, Math.max(0.15, prog / 0.85));
+        ship.scale = prog < 0.35 ? (0.72 + (prog / 0.35) * 0.28) : 1.0;
       } else {
-        ship.scale = Math.min(1.0, Math.max(0.15, rem / 0.85));
+        ship.scale = rem < 0.35 ? (0.72 + (rem / 0.35) * 0.28) : 1.0;
       }
 
       const s0 = this.sim.getTileElev(c0.x, c0.z) + this.sim.waterDepth[idx(c0.x, c0.z)];
@@ -28808,6 +29133,7 @@ class CityRenderer3D {
     this._vehActiveMap = new Map();
     this._vehSparePool = new Map();
     this.trainCarPool = [];
+    this._trainBuckets = { hsrHead: [], hsrMid: [], metroHead: [], metroMid: [] };
     this.airlinerPool = [];
     this._planeActiveMap = new Map();
     this._planeSparePool = new Map();
@@ -29559,6 +29885,36 @@ class CityRenderer3D {
     }
   }
 
+  pickTileAtScreen(clientX, clientY) {
+    if (this.overlayMode !== 'underground' && this.buildingGroup && this.buildingGroup.children.length > 0) {
+      const rect = this.canvas.getBoundingClientRect();
+      if (rect && rect.width > 0 && rect.height > 0) {
+        const ndc = new THREE.Vector2(
+          ((clientX - rect.left) / rect.width) * 2 - 1,
+          -((clientY - rect.top) / rect.height) * 2 + 1
+        );
+        const raycaster = new THREE.Raycaster();
+        raycaster.setFromCamera(ndc, this.camera);
+        const hits = raycaster.intersectObjects(this.buildingGroup.children, true);
+        for (let i = 0; i < hits.length; i++) {
+          let obj = hits[i].object;
+          while (obj && obj !== this.buildingGroup) {
+            if (obj.userData && typeof obj.userData.tileX === 'number' && typeof obj.userData.tileZ === 'number') {
+              const tx = obj.userData.tileX;
+              const tz = obj.userData.tileZ;
+              if (inBounds(tx, tz)) {
+                const w = tileToWorld(tx, tz);
+                return { wx: w.wx, wz: w.wz, tx, tz, valid: true, hitBuilding: true };
+              }
+            }
+            obj = obj.parent;
+          }
+        }
+      }
+    }
+    return this.screenToGround(clientX, clientY);
+  }
+
   screenToGround(clientX, clientY) {
     const rect = this.canvas.getBoundingClientRect();
     const ndc = new THREE.Vector2(
@@ -29647,11 +30003,12 @@ class CityRenderer3D {
     const terMesh = buildHighResTerrainMesh(THREE, this.sim, this.overlayMode, this.terrainDetailTex, this.mats.terrain);
     this.terrainGroup.add(terMesh);
 
-    const baseSkirt = new THREE.Mesh(this.geos.unitBox, this.mats.darkConcrete);
-    baseSkirt.scale.set(GRID_SIZE + 0.25, 1.85, GRID_SIZE + 0.25);
-    baseSkirt.position.set(0, -1.75, 0);
-    baseSkirt.receiveShadow = true;
-    this.terrainGroup.add(baseSkirt);
+    // Flat sealed underside slab flush with contour-hugging terrain skirt at y=-2.25 (ZERO edge gaps!)
+    const baseCap = new THREE.Mesh(this.geos.unitBox, this.mats.darkConcrete);
+    baseCap.scale.set(GRID_SIZE, 0.16, GRID_SIZE);
+    baseCap.position.set(0, -2.33, 0);
+    baseCap.receiveShadow = false;
+    this.terrainGroup.add(baseCap);
 
     this.sim.terrainDirty = false;
     this.rebuildStats.terrain++;
@@ -29689,9 +30046,20 @@ class CityRenderer3D {
             if (this.sim.getTile(x, z + 1)?.pipe) this._addBoxTo(this.infraGroup, wx, avgH + 0.12, wz + 0.5, 0.12, 0.08, 0.80, pm, false);
           }
           if (t.metro) {
-            this._addBoxTo(this.infraGroup, wx, avgH + 0.22, wz, 0.30, 0.10, 0.30, this.mats.metroGlow, false);
-            if (this.sim.getTile(x + 1, z)?.metro) this._addBoxTo(this.infraGroup, wx + 0.5, avgH + 0.22, wz, 0.78, 0.09, 0.22, this.mats.metroGlow, false);
-            if (this.sim.getTile(x, z + 1)?.metro) this._addBoxTo(this.infraGroup, wx, avgH + 0.22, wz + 0.5, 0.22, 0.09, 0.78, this.mats.metroGlow, false);
+            const mY = avgH + 0.22;
+            const isStation = t.building?.type === 'metro_station';
+            this._addBoxTo(this.infraGroup, wx, mY, wz, isStation ? 0.56 : 0.34, isStation ? 0.12 : 0.08, isStation ? 0.56 : 0.34, this.mats.metroGlow, false);
+            if (isStation) {
+              this._addBoxTo(this.infraGroup, wx, mY + 0.075, wz, 0.44, 0.03, 0.44, this.mats.cyanGlow, false);
+            }
+            if (this.sim.getTile(x + 1, z)?.metro) {
+              const nH = this.sim.getTileElev(x + 1, z);
+              this._addBoxTo(this.infraGroup, wx + 0.5, (mY + nH + 0.22) * 0.5, wz, 0.80, 0.08, 0.28, this.mats.metroGlow, false);
+            }
+            if (this.sim.getTile(x, z + 1)?.metro) {
+              const nH = this.sim.getTileElev(x, z + 1);
+              this._addBoxTo(this.infraGroup, wx, (mY + nH + 0.22) * 0.5, wz + 0.5, 0.28, 0.08, 0.80, this.mats.metroGlow, false);
+            }
           }
           // Translucent surface-road blueprint footprints so players clearly see where surface streets meet mountains
           if (t.roadGround >= 1 && t.roadGround <= 3) {
@@ -30096,6 +30464,8 @@ class CityRenderer3D {
             this._addBoxTo(this.buildingGroup, wx, avgH - fH * 0.5 + 0.016, wz, 0.88, fH, 0.88, this.mats.concrete, true);
             const rotRad = (t.building.rot || 0) * (Math.PI * 0.5);
             const bGrp = this.archLib.buildBuilding(t.building, wx, wz, avgH + 0.020, rotRad, this.animHooks);
+            bGrp.userData.tileX = x;
+            bGrp.userData.tileZ = z;
             this.buildingGroup.add(bGrp);
             this._registerBuildingEntry(bGrp, x, z);
           }
@@ -30427,8 +30797,8 @@ class CityRenderer3D {
 
     let y;
     if (isMetro) {
-      const node = path[f < 0.5 ? seg : seg + 1];
-      y = this.sim.getTileElev(node.x, node.z) + 0.25;
+      // Smooth bilinear slope elevation above glowing metro tube (ZERO step-jumps or terrain clipping!)
+      y = this._sampleExactSlopeHeight(pt.x, pt.z) + 0.285;
     } else if (this.sim.infraHeights && this.sim.infraHeights.railCornerY) {
       y = this._sampleInfraHeight(this.sim.infraHeights.railCornerY, pt.x, pt.z) + 0.028;
     } else {
@@ -30440,7 +30810,34 @@ class CityRenderer3D {
     return { x: pt.x, y, z: pt.z };
   }
 
-  _createTrainCarObject(isHead) {
+  _createTrainCarObject(isHead, isMetro = false) {
+    if (isMetro) {
+      // Sleek Illuminated Urban Subway Coach (distinct cyan/magenta metro stripe, ZERO extra material allocations!)
+      const g = new THREE.Group();
+      g.rotation.order = 'YXZ';
+      const body = new THREE.Mesh(this.geos.unitBox, this.mats.whiteSteel);
+      body.scale.set(0.19, 0.145, isHead ? 0.52 : 0.50);
+      body.position.y = 0.088;
+      const roof = new THREE.Mesh(this.geos.unitBox, this.mats.darkConcrete);
+      roof.scale.set(0.16, 0.026, isHead ? 0.48 : 0.47);
+      roof.position.y = 0.168;
+      const stripe = new THREE.Mesh(this.geos.unitBox, this.mats.metroGlow);
+      stripe.scale.set(0.198, 0.036, isHead ? 0.525 : 0.505);
+      stripe.position.y = 0.078;
+      const winBand = new THREE.Mesh(this.geos.unitBox, this.mats.cyanGlow);
+      winBand.scale.set(0.196, 0.042, isHead ? 0.42 : 0.44);
+      winBand.position.y = 0.122;
+      g.add(body, roof, stripe, winBand);
+      if (isHead) {
+        const nose = new THREE.Mesh(this.geos.unitBox, this.mats.cyanGlow);
+        nose.scale.set(0.15, 0.048, 0.04);
+        nose.position.set(0, 0.105, 0.258);
+        g.add(nose);
+      }
+      g.userData.isHead = Boolean(isHead);
+      g.userData.isMetro = true;
+      return g;
+    }
     let g = null;
     if (this.archLib && typeof this.archLib.createBulletTrainCarObject === 'function') {
       try { g = this.archLib.createBulletTrainCarObject(isHead); } catch { g = null; }
@@ -30457,6 +30854,7 @@ class CityRenderer3D {
     }
     g.rotation.order = 'YXZ';
     g.userData.isHead = Boolean(isHead);
+    g.userData.isMetro = false;
     return g;
   }
 
@@ -30631,31 +31029,29 @@ class CityRenderer3D {
       }
     }
 
-    // Bullet Trains & Metro Trains
-    let neededTrainCars = 0;
-    for (const tr of this.traffic.trains) {
-      if ((tr.isMetro && isUnder) || (!tr.isMetro && !isUnder)) neededTrainCars += tr.cars;
-    }
-    while (this.trainCarPool.length < neededTrainCars) {
-      const g = this._createTrainCarObject(false);
-      this.vehicleGroup.add(g);
-      this.trainCarPool.push(g);
-    }
+    // Bullet Trains & Underground Metro Trains (zero-thrash typed spare buckets + dual-track offset + tight coupling!)
+    const cursors = { hsrHead: 0, hsrMid: 0, metroHead: 0, metroMid: 0 };
+    const acquireTrainCar = (isMetro, isHead) => {
+      const key = isMetro ? (isHead ? 'metroHead' : 'metroMid') : (isHead ? 'hsrHead' : 'hsrMid');
+      const bucket = this._trainBuckets[key];
+      const idxCar = cursors[key]++;
+      if (idxCar >= bucket.length) {
+        const g = this._createTrainCarObject(isHead, isMetro);
+        this.vehicleGroup.add(g);
+        bucket.push(g);
+      }
+      return bucket[idxCar];
+    };
 
-    let tCursor = 0;
+    this.trainCarPool.length = 0;
     for (const tr of this.traffic.trains) {
       if ((tr.isMetro && !isUnder) || (!tr.isMetro && isUnder)) continue;
+      const spacing = tr.carSpacing || (tr.isMetro ? 0.56 : 0.72);
+      const trackLatOff = tr.isMetro ? 0.10 : 0.11;
       for (let c = 0; c < tr.cars; c++) {
-        const poolIdx = tCursor++;
         const isEnd = c === 0 || c === tr.cars - 1;
-        let carObj = this.trainCarPool[poolIdx];
-        if (Boolean(carObj.userData.isHead) !== isEnd) {
-          this.vehicleGroup.remove(carObj);
-          carObj = this._createTrainCarObject(isEnd);
-          this.vehicleGroup.add(carObj);
-          this.trainCarPool[poolIdx] = carObj;
-        }
-        const carDist = tr.dist - c * 0.72;
+        const carObj = acquireTrainCar(Boolean(tr.isMetro), isEnd);
+        const carDist = tr.dist - c * spacing;
         if (carDist < 0 || carDist >= tr.path.length - 1) {
           carObj.visible = false;
           continue;
@@ -30665,16 +31061,24 @@ class CityRenderer3D {
         const pC = this._sampleTrackPoint(tr.path, carDist, tr.isMetro);
         const dx = pB.x - pA.x, dz = pB.z - pA.z;
         const hLen = Math.hypot(dx, dz) || 1;
+        const rightX = -dz / hLen;
+        const rightZ = dx / hLen;
         const pitch = Math.atan2(pB.y - pA.y, hLen);
         let yaw = Math.atan2(dx, dz);
         if (c === tr.cars - 1 && tr.cars > 1) yaw += Math.PI;
 
         carObj.visible = true;
-        carObj.position.set(pC.x, pC.y, pC.z);
+        carObj.position.set(pC.x + rightX * trackLatOff, pC.y, pC.z + rightZ * trackLatOff);
         carObj.rotation.set(c === tr.cars - 1 && tr.cars > 1 ? pitch : -pitch, yaw, 0);
+        this.trainCarPool.push(carObj);
       }
     }
-    for (let k = tCursor; k < this.trainCarPool.length; k++) this.trainCarPool[k].visible = false;
+    for (const key of ['hsrHead', 'hsrMid', 'metroHead', 'metroMid']) {
+      const bucket = this._trainBuckets[key];
+      for (let k = cursors[key]; k < bucket.length; k++) {
+        bucket[k].visible = false;
+      }
+    }
 
     // Airliners (identity-bound pooling -> distinct liveries never swap on despawn!)
     const planes = isUnder ? [] : (this.traffic.aircraft || []);
@@ -31606,6 +32010,8 @@ class GameUI {
         const modes = ['none', 'underground', 'power', 'landValue', 'traffic', 'transit', 'pollution', 'education', 'noise'];
         const next = modes[(modes.indexOf(this.renderer.overlayMode) + 1) % modes.length];
         this.renderer.overlayMode = next;
+        this.sim.terrainDirty = true;
+        this.sim.infraDirty = true;
         this.updateOverlayLegend();
       }
     });
@@ -31615,6 +32021,8 @@ class GameUI {
           this.sfx.tap();
           this.autoOverlayActive = false;
           this.renderer.overlayMode = btn.dataset.ov;
+          this.sim.terrainDirty = true;
+          this.sim.infraDirty = true;
           overlayPicker.classList.remove('open');
           this.updateOverlayLegend();
         });
@@ -31697,7 +32105,9 @@ class GameUI {
         if (cat === 'pan') {
           this.selectTool('pan', null);
         } else if (TOOL_GROUPS[cat]) {
-          if (this.openCategory === cat) {
+          const subWrapEl = document.getElementById('sub-toolbar-wrap');
+          const subAlreadyVisible = Boolean(subWrapEl ? subWrapEl.classList.contains('open') : document.getElementById('sub-toolbar')?.classList.contains('open'));
+          if (this.openCategory === cat && subAlreadyVisible) {
             this.selectTool('pan', null);
           } else {
             const list = TOOL_GROUPS[cat];
@@ -31772,7 +32182,7 @@ class GameUI {
         this.syncLayoutOffsets();
         this._updateSubScrollButtons();
       });
-      for (const id of ['top-hud', 'chirper-pill', 'sub-toolbar-wrap', 'bottom-dock']) {
+      for (const id of ['top-hud', 'chirper-pill', 'left-float-stack', 'side-controls', 'sub-toolbar-wrap', 'bottom-dock']) {
         const el = document.getElementById(id);
         if (el) this._layoutObserver.observe(el);
       }
@@ -31790,8 +32200,11 @@ class GameUI {
     const clientW = subBar.clientWidth || 0;
     const scrollL = subBar.scrollLeft || 0;
     const overflows = isOpen && scrollW > clientW + 4;
-    btnL.classList.toggle('visible', overflows && scrollL > 4);
-    btnR.classList.toggle('visible', overflows && scrollL < scrollW - clientW - 4);
+    // Keep both chevrons mounted whenever toolbar overflows (no layout-width jitter!) and dim inactive end
+    btnL.classList.toggle('visible', overflows);
+    btnR.classList.toggle('visible', overflows);
+    btnL.classList.toggle('disabled', !overflows || scrollL <= 2);
+    btnR.classList.toggle('disabled', !overflows || scrollL >= scrollW - clientW - 2);
   }
 
   syncLayoutOffsets() {
@@ -31799,6 +32212,8 @@ class GameUI {
     if (!rootStyle || typeof rootStyle.setProperty !== 'function') return;
     const topHud = document.getElementById('top-hud');
     const chirper = document.getElementById('chirper-pill');
+    const leftStack = document.getElementById('left-float-stack');
+    const sideCtrl = document.getElementById('side-controls');
     const subWrap = document.getElementById('sub-toolbar-wrap');
     const subBar = document.getElementById('sub-toolbar');
     const dock = document.getElementById('bottom-dock');
@@ -31807,35 +32222,53 @@ class GameUI {
     const hudBottom = topRect && topRect.height > 10 ? Math.ceil(topRect.bottom) : 60;
     const chirperRect = chirper && typeof chirper.getBoundingClientRect === 'function' ? chirper.getBoundingClientRect() : null;
     const chirperH = chirperRect && chirperRect.height > 8 ? Math.ceil(chirperRect.height) : 30;
+    const leftRect = leftStack && typeof leftStack.getBoundingClientRect === 'function' ? leftStack.getBoundingClientRect() : null;
+    const leftH = leftRect && leftRect.height > 8 ? Math.ceil(leftRect.height) : 30;
 
     const vw = (typeof window !== 'undefined' && window.innerWidth) || 1280;
     const vh = (typeof window !== 'undefined' && window.innerHeight) || 720;
 
     const chirperTop = hudBottom + 8;
-    // On narrow screens (< 860px), stack left float below Chirper so they NEVER collide horizontally!
+    // On narrow screens (< 860px), stack left float below Chirper AND tool-hint strictly below left-float-stack!
     const leftStackTop = vw < 860 ? (chirperTop + chirperH + 8) : (hudBottom + 8);
-    const toolHintTop = chirperTop + chirperH + 8;
-    const toastTop = toolHintTop + 38;
+    const toolHintTop = vw < 860 ? (leftStackTop + leftH + 6) : (chirperTop + chirperH + 8);
+    const toastTop = toolHintTop + 36;
 
-    let bottomStackH = 74;
-    const subOpen = Boolean(subBar && subBar.classList.contains('open'));
-    const activeBottomEl = subOpen ? (subWrap || subBar) : dock;
-    if (activeBottomEl && typeof activeBottomEl.getBoundingClientRect === 'function') {
-      const br = activeBottomEl.getBoundingClientRect();
-      if (br && br.height > 10 && br.top > 0 && br.top < vh) {
-        bottomStackH = Math.max(70, Math.ceil(vh - br.top));
-      } else if (subOpen) {
-        bottomStackH = 148;
+    let dockOccupiedH = 74;
+    if (dock && typeof dock.getBoundingClientRect === 'function') {
+      const dr = dock.getBoundingClientRect();
+      if (dr && dr.height > 10 && dr.top > 0 && dr.top < vh) {
+        dockOccupiedH = Math.max(58, Math.ceil(vh - dr.top));
       }
-    } else if (subOpen) {
-      bottomStackH = 148;
     }
+    const subToolbarBottom = dockOccupiedH + 6;
+
+    let bottomStackH = dockOccupiedH;
+    const subOpen = Boolean(subBar && subBar.classList.contains('open'));
+    if (subOpen) {
+      const subEl = subWrap || subBar;
+      let subH = 70;
+      if (subEl && typeof subEl.getBoundingClientRect === 'function') {
+        const sr = subEl.getBoundingClientRect();
+        if (sr && sr.height > 10) subH = Math.ceil(sr.height);
+      }
+      bottomStackH = subToolbarBottom + subH;
+    }
+
+    // Clamp #side-controls strictly between chirper-pill bottom and bottom-dock top so '+' is NEVER occluded!
+    const sideRect = sideCtrl && typeof sideCtrl.getBoundingClientRect === 'function' ? sideCtrl.getBoundingClientRect() : null;
+    const sideH = sideRect && sideRect.height > 40 ? Math.ceil(sideRect.height) : (vw <= 640 ? 270 : 326);
+    const minSideTop = chirperTop + chirperH + 10;
+    const maxSideTop = Math.max(minSideTop, vh - bottomStackH - sideH - 10);
+    const sideControlsTop = Math.max(minSideTop, Math.min(maxSideTop, Math.round((vh - sideH) * 0.5)));
 
     rootStyle.setProperty('--hud-bottom', `${hudBottom}px`);
     rootStyle.setProperty('--chirper-top', `${chirperTop}px`);
     rootStyle.setProperty('--left-stack-top', `${leftStackTop}px`);
     rootStyle.setProperty('--tool-hint-top', `${toolHintTop}px`);
     rootStyle.setProperty('--toast-top', `${toastTop}px`);
+    rootStyle.setProperty('--side-controls-top', `${sideControlsTop}px`);
+    rootStyle.setProperty('--sub-toolbar-bottom', `${subToolbarBottom}px`);
     rootStyle.setProperty('--bottom-stack-h', `${bottomStackH}px`);
   }
 
@@ -32297,7 +32730,15 @@ class GameUI {
     if (!this.dragBuildStart || !this.dragBuildEnd) return;
     const rawTiles = this._computePlannedTiles(this.dragBuildStart, this.dragBuildEnd);
     const est = this.sim.estimateAction(this.activeTool, rawTiles);
-    this.renderer.previewTiles = est.validTiles.length > 0 ? est.validTiles : rawTiles.slice(0, 1);
+    if (this.activeTool === 'shipping_lane' && est.validTiles.length > 0) {
+      // Keep drag preview ribbon continuous over already-marked shipping lane tiles (no visual 1-tile holes!)
+      this.renderer.previewTiles = rawTiles.filter((p) => {
+        const t = this.sim.getTile(p.x, p.z);
+        return t && !t.dam && (this.sim.waterDepth[idx(p.x, p.z)] || 0) > 0.14;
+      });
+    } else {
+      this.renderer.previewTiles = est.validTiles.length > 0 ? est.validTiles : rawTiles.slice(0, 1);
+    }
 
     if (est.lockedLevel) {
       this.renderer.previewColor = [0.95, 0.25, 0.25];
@@ -32536,7 +32977,9 @@ class GameUI {
       if (this.activeTool === 'pan' && this.dragStartScreen && e.button === 0) {
         const moved = Math.hypot(e.clientX - this.dragStartScreen.x, e.clientY - this.dragStartScreen.y);
         if (moved < 9) {
-          const hit = this.renderer.screenToGround(e.clientX, e.clientY);
+          const hit = (typeof this.renderer.pickTileAtScreen === 'function')
+            ? this.renderer.pickTileAtScreen(e.clientX, e.clientY)
+            : this.renderer.screenToGround(e.clientX, e.clientY);
           if (hit && hit.valid) {
             if (this.editingBusLineId !== null) {
               const res = this.sim.addStopToBusLine(this.editingBusLineId, hit.tx, hit.tz);
@@ -32574,7 +33017,10 @@ class GameUI {
           this.sfx.tap();
         } else {
           const tiles = this._computePlannedTiles(this.dragBuildStart, this.dragBuildEnd);
-          this.sim.applyTool(this.activeTool, tiles, false);
+          const applyRes = this.sim.applyTool(this.activeTool, tiles, false);
+          if (applyRes && applyRes.ok && (applyRes.skippedProtected || 0) > 0) {
+            this.showToast(`✅ 已建成 ${applyRes.count} 格（🛡️ 自动避让保护了 ${applyRes.skippedProtected} 格原有设施）`, 2600);
+          }
           this.refreshSubToolbarUnlocks();
           this.refreshHUD();
           this.renderer.previewTiles = [];
@@ -33064,9 +33510,13 @@ class GameUI {
     if (this.sim.latestChirp) {
       const cu = document.getElementById('chirper-user');
       const ct = document.getElementById('chirper-text');
+      const cp = document.getElementById('chirper-pill');
       if (cu && ct) {
         cu.textContent = this.sim.latestChirp.user;
         ct.textContent = this.sim.latestChirp.text;
+      }
+      if (cp) {
+        cp.title = `${this.sim.latestChirp.user || ''} ${this.sim.latestChirp.text || ''}（点击切换下一条动态）`;
       }
     }
 
@@ -34346,9 +34796,8 @@ class GameUI {
     const textSpan = document.createElement('span');
     textSpan.textContent = msg;
     const closeSpan = document.createElement('span');
-    closeSpan.textContent = '✖';
-    closeSpan.style.opacity = '0.78';
-    closeSpan.style.fontSize = '12px';
+    closeSpan.className = 'toast-close';
+    closeSpan.textContent = '×';
 
     el.appendChild(textSpan);
     el.appendChild(closeSpan);
@@ -34503,7 +34952,7 @@ function bootGame() {
     ui.showToast(
       restored
         ? `👋 已恢复离线进度【${sim.cityName}】(${sim.getFormattedDate()})`
-        : '🏞️ 山河天际线 Pro v7.5 已启动！体验 1024px 超清建筑质感、单行道/一键立交、智能公交、建前绿区预览与 15 步撤销！'
+        : '🏞️ 山河天际线 Pro v8.2 已启动！体验超清 PBR 建筑、动态天气、⚓海运航道、连续环线地铁与全屏防覆盖建造！'
     );
   }, 550);
 

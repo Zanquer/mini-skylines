@@ -752,9 +752,16 @@ export function buildHighResTerrainMesh(THREE, sim, overlayMode, detailTex, shar
 
         if (activeOverlay === 'power' || activeOverlay === 'electricity') {
           if (tile.powered || tile.pylon) {
-            or = 0.22; og = 0.86; ob = 0.52;
+            or = 0.12; og = 0.68; ob = 0.98;
+            oWeight = 0.85;
           } else if (tile.zone || tile.building) {
-            or = 0.86; og = 0.32; ob = 0.28;
+            or = 0.96; og = 0.28; ob = 0.22;
+            oWeight = 0.88;
+          } else {
+            or = lum * 0.42 + 0.08;
+            og = lum * 0.44 + 0.10;
+            ob = lum * 0.50 + 0.14;
+            oWeight = 0.78;
           }
         } else if (activeOverlay === 'water' || activeOverlay === 'pipes') {
           if (tile.pipeBroken) {
@@ -863,8 +870,21 @@ export function buildHighResTerrainMesh(THREE, sim, overlayMode, detailTex, shar
     }
   }
 
-  // Pass 3: Adaptive diagonal quad triangulation (aligns splits with ridges & curved riverbanks)
-  const indices = new Uint16Array(SEG * SEG * 6);
+  // Pass 3: Adaptive diagonal quad triangulation + exact 4-side contour-hugging geological skirt (ZERO map-edge sky gaps!)
+  const SKIRT_Y = -2.25;
+  const skirtVertCount = STRIDE * 8; // 4 edges * (top + bottom)
+  const totalVerts = VCOUNT + skirtVertCount;
+  const fullPos = new Float32Array(totalVerts * 3);
+  const fullNorm = new Float32Array(totalVerts * 3);
+  const fullUV = new Float32Array(totalVerts * 2);
+  const fullCol = new Float32Array(totalVerts * 3);
+  fullPos.set(positions);
+  fullNorm.set(normals);
+  fullUV.set(uvs);
+  fullCol.set(colors);
+
+  const skirtTriCount = SEG * 4 * 2;
+  const indices = new Uint16Array(SEG * SEG * 6 + skirtTriCount * 3);
   let ptr = 0;
   for (let gz = 0; gz < SEG; gz++) {
     const row0 = gz * STRIDE;
@@ -893,11 +913,51 @@ export function buildHighResTerrainMesh(THREE, sim, overlayMode, detailTex, shar
     }
   }
 
+  let svCursor = VCOUNT;
+  const rockTopR = toOutChannel(0.42), rockTopG = toOutChannel(0.46), rockTopB = toOutChannel(0.51);
+  const rockBotR = toOutChannel(0.24), rockBotG = toOutChannel(0.28), rockBotB = toOutChannel(0.34);
+  const emitSkirtEdge = (getGridIdx, nx, ny, nz, flipWinding) => {
+    const baseV = svCursor;
+    for (let k = 0; k < STRIDE; k++) {
+      const srcV = getGridIdx(k);
+      const sx = positions[srcV * 3];
+      const sy = positions[srcV * 3 + 1];
+      const sz = positions[srcV * 3 + 2];
+      const vTop = svCursor++;
+      const vBot = svCursor++;
+      fullPos[vTop * 3] = sx; fullPos[vTop * 3 + 1] = sy; fullPos[vTop * 3 + 2] = sz;
+      fullPos[vBot * 3] = sx; fullPos[vBot * 3 + 1] = SKIRT_Y; fullPos[vBot * 3 + 2] = sz;
+      fullNorm[vTop * 3] = nx; fullNorm[vTop * 3 + 1] = ny; fullNorm[vTop * 3 + 2] = nz;
+      fullNorm[vBot * 3] = nx; fullNorm[vBot * 3 + 1] = ny; fullNorm[vBot * 3 + 2] = nz;
+      fullUV[vTop * 2] = k / 8; fullUV[vTop * 2 + 1] = 0;
+      fullUV[vBot * 2] = k / 8; fullUV[vBot * 2 + 1] = 1;
+      fullCol[vTop * 3] = rockTopR; fullCol[vTop * 3 + 1] = rockTopG; fullCol[vTop * 3 + 2] = rockTopB;
+      fullCol[vBot * 3] = rockBotR; fullCol[vBot * 3 + 1] = rockBotG; fullCol[vBot * 3 + 2] = rockBotB;
+    }
+    for (let k = 0; k < SEG; k++) {
+      const t0 = baseV + k * 2;
+      const b0 = t0 + 1;
+      const t1 = t0 + 2;
+      const b1 = t0 + 3;
+      if (!flipWinding) {
+        indices[ptr++] = t0; indices[ptr++] = b0; indices[ptr++] = t1;
+        indices[ptr++] = t1; indices[ptr++] = b0; indices[ptr++] = b1;
+      } else {
+        indices[ptr++] = t0; indices[ptr++] = t1; indices[ptr++] = b0;
+        indices[ptr++] = t1; indices[ptr++] = b1; indices[ptr++] = b0;
+      }
+    }
+  };
+  emitSkirtEdge((k) => k, 0, 0, -1, true);                         // North (gz=0, -Z)
+  emitSkirtEdge((k) => SEG * STRIDE + k, 0, 0, 1, false);          // South (gz=SEG, +Z)
+  emitSkirtEdge((k) => k * STRIDE, -1, 0, 0, false);               // West (gx=0, -X)
+  emitSkirtEdge((k) => k * STRIDE + SEG, 1, 0, 0, true);           // East (gx=SEG, +X)
+
   const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-  geo.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
-  geo.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
-  geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  geo.setAttribute('position', new THREE.BufferAttribute(fullPos, 3));
+  geo.setAttribute('normal', new THREE.BufferAttribute(fullNorm, 3));
+  geo.setAttribute('uv', new THREE.BufferAttribute(fullUV, 2));
+  geo.setAttribute('color', new THREE.BufferAttribute(fullCol, 3));
   geo.setIndex(new THREE.BufferAttribute(indices, 1));
   geo.computeBoundingSphere();
 
@@ -2162,6 +2222,12 @@ export function buildContinuousRoadAndViaductGroup(THREE, sim, overlayMode, mats
     railCornerY: new Float32Array(railCornerY),
     version: ((sim.infraHeights && sim.infraHeights.version) || 0) + 1
   };
+
+  // In Underground X-Ray view, skip opaque surface/elevated road decks & viaducts so metro tunnels, trains & water pipes are 100% unobstructed!
+  if (overlayMode === 'underground') {
+    group.userData = { streetProps: { lamps: [], signals: [], roundabouts: [], busStops: [] } };
+    return group;
+  }
 
   // --- Geometry Batches ---
   const bRoad2 = createGeoBatch(false);

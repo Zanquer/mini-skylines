@@ -264,6 +264,7 @@ export class CityRenderer3D {
     this._vehActiveMap = new Map();
     this._vehSparePool = new Map();
     this.trainCarPool = [];
+    this._trainBuckets = { hsrHead: [], hsrMid: [], metroHead: [], metroMid: [] };
     this.airlinerPool = [];
     this._planeActiveMap = new Map();
     this._planeSparePool = new Map();
@@ -1015,6 +1016,36 @@ export class CityRenderer3D {
     }
   }
 
+  pickTileAtScreen(clientX, clientY) {
+    if (this.overlayMode !== 'underground' && this.buildingGroup && this.buildingGroup.children.length > 0) {
+      const rect = this.canvas.getBoundingClientRect();
+      if (rect && rect.width > 0 && rect.height > 0) {
+        const ndc = new THREE.Vector2(
+          ((clientX - rect.left) / rect.width) * 2 - 1,
+          -((clientY - rect.top) / rect.height) * 2 + 1
+        );
+        const raycaster = new THREE.Raycaster();
+        raycaster.setFromCamera(ndc, this.camera);
+        const hits = raycaster.intersectObjects(this.buildingGroup.children, true);
+        for (let i = 0; i < hits.length; i++) {
+          let obj = hits[i].object;
+          while (obj && obj !== this.buildingGroup) {
+            if (obj.userData && typeof obj.userData.tileX === 'number' && typeof obj.userData.tileZ === 'number') {
+              const tx = obj.userData.tileX;
+              const tz = obj.userData.tileZ;
+              if (inBounds(tx, tz)) {
+                const w = tileToWorld(tx, tz);
+                return { wx: w.wx, wz: w.wz, tx, tz, valid: true, hitBuilding: true };
+              }
+            }
+            obj = obj.parent;
+          }
+        }
+      }
+    }
+    return this.screenToGround(clientX, clientY);
+  }
+
   screenToGround(clientX, clientY) {
     const rect = this.canvas.getBoundingClientRect();
     const ndc = new THREE.Vector2(
@@ -1103,11 +1134,12 @@ export class CityRenderer3D {
     const terMesh = buildHighResTerrainMesh(THREE, this.sim, this.overlayMode, this.terrainDetailTex, this.mats.terrain);
     this.terrainGroup.add(terMesh);
 
-    const baseSkirt = new THREE.Mesh(this.geos.unitBox, this.mats.darkConcrete);
-    baseSkirt.scale.set(GRID_SIZE + 0.25, 1.85, GRID_SIZE + 0.25);
-    baseSkirt.position.set(0, -1.75, 0);
-    baseSkirt.receiveShadow = true;
-    this.terrainGroup.add(baseSkirt);
+    // Flat sealed underside slab flush with contour-hugging terrain skirt at y=-2.25 (ZERO edge gaps!)
+    const baseCap = new THREE.Mesh(this.geos.unitBox, this.mats.darkConcrete);
+    baseCap.scale.set(GRID_SIZE, 0.16, GRID_SIZE);
+    baseCap.position.set(0, -2.33, 0);
+    baseCap.receiveShadow = false;
+    this.terrainGroup.add(baseCap);
 
     this.sim.terrainDirty = false;
     this.rebuildStats.terrain++;
@@ -1145,9 +1177,20 @@ export class CityRenderer3D {
             if (this.sim.getTile(x, z + 1)?.pipe) this._addBoxTo(this.infraGroup, wx, avgH + 0.12, wz + 0.5, 0.12, 0.08, 0.80, pm, false);
           }
           if (t.metro) {
-            this._addBoxTo(this.infraGroup, wx, avgH + 0.22, wz, 0.30, 0.10, 0.30, this.mats.metroGlow, false);
-            if (this.sim.getTile(x + 1, z)?.metro) this._addBoxTo(this.infraGroup, wx + 0.5, avgH + 0.22, wz, 0.78, 0.09, 0.22, this.mats.metroGlow, false);
-            if (this.sim.getTile(x, z + 1)?.metro) this._addBoxTo(this.infraGroup, wx, avgH + 0.22, wz + 0.5, 0.22, 0.09, 0.78, this.mats.metroGlow, false);
+            const mY = avgH + 0.22;
+            const isStation = t.building?.type === 'metro_station';
+            this._addBoxTo(this.infraGroup, wx, mY, wz, isStation ? 0.56 : 0.34, isStation ? 0.12 : 0.08, isStation ? 0.56 : 0.34, this.mats.metroGlow, false);
+            if (isStation) {
+              this._addBoxTo(this.infraGroup, wx, mY + 0.075, wz, 0.44, 0.03, 0.44, this.mats.cyanGlow, false);
+            }
+            if (this.sim.getTile(x + 1, z)?.metro) {
+              const nH = this.sim.getTileElev(x + 1, z);
+              this._addBoxTo(this.infraGroup, wx + 0.5, (mY + nH + 0.22) * 0.5, wz, 0.80, 0.08, 0.28, this.mats.metroGlow, false);
+            }
+            if (this.sim.getTile(x, z + 1)?.metro) {
+              const nH = this.sim.getTileElev(x, z + 1);
+              this._addBoxTo(this.infraGroup, wx, (mY + nH + 0.22) * 0.5, wz + 0.5, 0.28, 0.08, 0.80, this.mats.metroGlow, false);
+            }
           }
           // Translucent surface-road blueprint footprints so players clearly see where surface streets meet mountains
           if (t.roadGround >= 1 && t.roadGround <= 3) {
@@ -1552,6 +1595,8 @@ export class CityRenderer3D {
             this._addBoxTo(this.buildingGroup, wx, avgH - fH * 0.5 + 0.016, wz, 0.88, fH, 0.88, this.mats.concrete, true);
             const rotRad = (t.building.rot || 0) * (Math.PI * 0.5);
             const bGrp = this.archLib.buildBuilding(t.building, wx, wz, avgH + 0.020, rotRad, this.animHooks);
+            bGrp.userData.tileX = x;
+            bGrp.userData.tileZ = z;
             this.buildingGroup.add(bGrp);
             this._registerBuildingEntry(bGrp, x, z);
           }
@@ -1883,8 +1928,8 @@ export class CityRenderer3D {
 
     let y;
     if (isMetro) {
-      const node = path[f < 0.5 ? seg : seg + 1];
-      y = this.sim.getTileElev(node.x, node.z) + 0.25;
+      // Smooth bilinear slope elevation above glowing metro tube (ZERO step-jumps or terrain clipping!)
+      y = this._sampleExactSlopeHeight(pt.x, pt.z) + 0.285;
     } else if (this.sim.infraHeights && this.sim.infraHeights.railCornerY) {
       y = this._sampleInfraHeight(this.sim.infraHeights.railCornerY, pt.x, pt.z) + 0.028;
     } else {
@@ -1896,7 +1941,34 @@ export class CityRenderer3D {
     return { x: pt.x, y, z: pt.z };
   }
 
-  _createTrainCarObject(isHead) {
+  _createTrainCarObject(isHead, isMetro = false) {
+    if (isMetro) {
+      // Sleek Illuminated Urban Subway Coach (distinct cyan/magenta metro stripe, ZERO extra material allocations!)
+      const g = new THREE.Group();
+      g.rotation.order = 'YXZ';
+      const body = new THREE.Mesh(this.geos.unitBox, this.mats.whiteSteel);
+      body.scale.set(0.19, 0.145, isHead ? 0.52 : 0.50);
+      body.position.y = 0.088;
+      const roof = new THREE.Mesh(this.geos.unitBox, this.mats.darkConcrete);
+      roof.scale.set(0.16, 0.026, isHead ? 0.48 : 0.47);
+      roof.position.y = 0.168;
+      const stripe = new THREE.Mesh(this.geos.unitBox, this.mats.metroGlow);
+      stripe.scale.set(0.198, 0.036, isHead ? 0.525 : 0.505);
+      stripe.position.y = 0.078;
+      const winBand = new THREE.Mesh(this.geos.unitBox, this.mats.cyanGlow);
+      winBand.scale.set(0.196, 0.042, isHead ? 0.42 : 0.44);
+      winBand.position.y = 0.122;
+      g.add(body, roof, stripe, winBand);
+      if (isHead) {
+        const nose = new THREE.Mesh(this.geos.unitBox, this.mats.cyanGlow);
+        nose.scale.set(0.15, 0.048, 0.04);
+        nose.position.set(0, 0.105, 0.258);
+        g.add(nose);
+      }
+      g.userData.isHead = Boolean(isHead);
+      g.userData.isMetro = true;
+      return g;
+    }
     let g = null;
     if (this.archLib && typeof this.archLib.createBulletTrainCarObject === 'function') {
       try { g = this.archLib.createBulletTrainCarObject(isHead); } catch { g = null; }
@@ -1913,6 +1985,7 @@ export class CityRenderer3D {
     }
     g.rotation.order = 'YXZ';
     g.userData.isHead = Boolean(isHead);
+    g.userData.isMetro = false;
     return g;
   }
 
@@ -2087,31 +2160,29 @@ export class CityRenderer3D {
       }
     }
 
-    // Bullet Trains & Metro Trains
-    let neededTrainCars = 0;
-    for (const tr of this.traffic.trains) {
-      if ((tr.isMetro && isUnder) || (!tr.isMetro && !isUnder)) neededTrainCars += tr.cars;
-    }
-    while (this.trainCarPool.length < neededTrainCars) {
-      const g = this._createTrainCarObject(false);
-      this.vehicleGroup.add(g);
-      this.trainCarPool.push(g);
-    }
+    // Bullet Trains & Underground Metro Trains (zero-thrash typed spare buckets + dual-track offset + tight coupling!)
+    const cursors = { hsrHead: 0, hsrMid: 0, metroHead: 0, metroMid: 0 };
+    const acquireTrainCar = (isMetro, isHead) => {
+      const key = isMetro ? (isHead ? 'metroHead' : 'metroMid') : (isHead ? 'hsrHead' : 'hsrMid');
+      const bucket = this._trainBuckets[key];
+      const idxCar = cursors[key]++;
+      if (idxCar >= bucket.length) {
+        const g = this._createTrainCarObject(isHead, isMetro);
+        this.vehicleGroup.add(g);
+        bucket.push(g);
+      }
+      return bucket[idxCar];
+    };
 
-    let tCursor = 0;
+    this.trainCarPool.length = 0;
     for (const tr of this.traffic.trains) {
       if ((tr.isMetro && !isUnder) || (!tr.isMetro && isUnder)) continue;
+      const spacing = tr.carSpacing || (tr.isMetro ? 0.56 : 0.72);
+      const trackLatOff = tr.isMetro ? 0.10 : 0.11;
       for (let c = 0; c < tr.cars; c++) {
-        const poolIdx = tCursor++;
         const isEnd = c === 0 || c === tr.cars - 1;
-        let carObj = this.trainCarPool[poolIdx];
-        if (Boolean(carObj.userData.isHead) !== isEnd) {
-          this.vehicleGroup.remove(carObj);
-          carObj = this._createTrainCarObject(isEnd);
-          this.vehicleGroup.add(carObj);
-          this.trainCarPool[poolIdx] = carObj;
-        }
-        const carDist = tr.dist - c * 0.72;
+        const carObj = acquireTrainCar(Boolean(tr.isMetro), isEnd);
+        const carDist = tr.dist - c * spacing;
         if (carDist < 0 || carDist >= tr.path.length - 1) {
           carObj.visible = false;
           continue;
@@ -2121,16 +2192,24 @@ export class CityRenderer3D {
         const pC = this._sampleTrackPoint(tr.path, carDist, tr.isMetro);
         const dx = pB.x - pA.x, dz = pB.z - pA.z;
         const hLen = Math.hypot(dx, dz) || 1;
+        const rightX = -dz / hLen;
+        const rightZ = dx / hLen;
         const pitch = Math.atan2(pB.y - pA.y, hLen);
         let yaw = Math.atan2(dx, dz);
         if (c === tr.cars - 1 && tr.cars > 1) yaw += Math.PI;
 
         carObj.visible = true;
-        carObj.position.set(pC.x, pC.y, pC.z);
+        carObj.position.set(pC.x + rightX * trackLatOff, pC.y, pC.z + rightZ * trackLatOff);
         carObj.rotation.set(c === tr.cars - 1 && tr.cars > 1 ? pitch : -pitch, yaw, 0);
+        this.trainCarPool.push(carObj);
       }
     }
-    for (let k = tCursor; k < this.trainCarPool.length; k++) this.trainCarPool[k].visible = false;
+    for (const key of ['hsrHead', 'hsrMid', 'metroHead', 'metroMid']) {
+      const bucket = this._trainBuckets[key];
+      for (let k = cursors[key]; k < bucket.length; k++) {
+        bucket[k].visible = false;
+      }
+    }
 
     // Airliners (identity-bound pooling -> distinct liveries never swap on despawn!)
     const planes = isUnder ? [] : (this.traffic.aircraft || []);

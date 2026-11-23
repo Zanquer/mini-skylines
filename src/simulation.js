@@ -2467,7 +2467,10 @@ export class CitySimulation {
             continue;
           }
         }
-        if (t.roadGround === target && (typeof t.roadDir !== 'number' || t.roadDir < 0) && (!wet || t.roadBridge)) continue;
+        if (t.roadGround === target && (typeof t.roadDir !== 'number' || t.roadDir < 0) && (!wet || t.roadBridge)) {
+          if (!allowOverwrite) skippedProtected++;
+          continue;
+        }
         cost += wet ? CATALOG[toolId].bridgeCost : CATALOG[toolId].cost;
         validTiles.push(pos);
       } else if (toolId === 'road_oneway') {
@@ -3040,7 +3043,7 @@ export class CitySimulation {
       this.checkMayorQuests();
     }
 
-    return { ok: true, count: validTiles.length, cost };
+    return { ok: true, count: validTiles.length, cost, skippedProtected };
   }
 
   takeLoan(loanId) {
@@ -5676,8 +5679,9 @@ export class CitySimulation {
     this.applyTool('metro_station', [{ x: 31, z: 39 }], true);
     this.applyTool('metro_station', [{ x: 18, z: 43 }], true);
 
-    // 6. Water Treatment + Underground Pipe Grid + Backup Power (full road & pipe coverage x=9..39!)
-    this.applyTool('road_1', this.computeLineOrLPath(9, 50, 39, 50), true);
+    // 6. Water Treatment + Underground Pipe Grid + Backup Power (keep southern road strictly on dry shore — no wet stub into SE bay!)
+    const southRoadDry = this.computeLineOrLPath(9, 50, 39, 50).filter((p) => !this.isWaterTile(p.x, p.z));
+    this.applyTool('road_1', southRoadDry, true);
     this.applyTool('road_1', this.computeLineOrLPath(12, 46, 12, 50), true);
     for (const x of [11, 13, 15, 17, 19, 21, 23, 25, 27]) {
       this.applyTool('water_treat', [{ x, z: 48 }], true);
