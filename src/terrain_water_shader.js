@@ -2947,10 +2947,16 @@ export function buildContinuousRoadAndViaductGroup(THREE, sim, overlayMode, mats
       }
 
       // Exact-height LED streetlamps along non-junction straight 4-lane avenues & river bridges (every 2 tiles)
-      if (!rmSelf && !isJunctionOrTurn && (t.roadGround >= 2 || isWaterBridge) && ((x + z) % 2 === 0)) {
+      const nearTunnelPortal =
+        (inBounds(x, z - 1) && grid[idx(x, z - 1)].roadGround === 4) ||
+        (inBounds(x, z + 1) && grid[idx(x, z + 1)].roadGround === 4) ||
+        (inBounds(x - 1, z) && grid[idx(x - 1, z)].roadGround === 4) ||
+        (inBounds(x + 1, z) && grid[idx(x + 1, z)].roadGround === 4);
+      if (!rmSelf && !isJunctionOrTurn && !nearTunnelPortal && (t.roadGround >= 2 || isWaterBridge) && ((x + z) % 2 === 0)) {
         const cx = x0 + 0.5;
         const cz = z0 + 0.5;
         const lampSides = isWaterBridge ? [-1, 1] : [(((x + z) >> 1) & 1) ? 1 : -1];
+        const lampOffset = isWaterBridge ? 0.45 : 0.415;
         const runEW = hasEW && !hasNS;
 
         for (let sIdx = 0; sIdx < lampSides.length; sIdx++) {
@@ -2960,7 +2966,7 @@ export function buildContinuousRoadAndViaductGroup(THREE, sim, overlayMode, mats
             if (conn[sideDir]) continue;
             if (hasGroundFlareTaperInto(x - 1, z, 3, sideDir) || hasGroundFlareTaperInto(x + 1, z, 2, sideDir)) continue;
             const lx = cx;
-            const lz = cz + side * 0.46;
+            const lz = cz + side * lampOffset;
             if (pylonFootprints.some((p) => !p.isElev && Math.hypot(p.x - lx, p.z - lz) < 0.42)) continue;
             lamps.push({
               x: lx,
@@ -2973,7 +2979,7 @@ export function buildContinuousRoadAndViaductGroup(THREE, sim, overlayMode, mats
             const sideDir = side < 0 ? 2 : 3;
             if (conn[sideDir]) continue;
             if (hasGroundFlareTaperInto(x, z - 1, 1, sideDir) || hasGroundFlareTaperInto(x, z + 1, 0, sideDir)) continue;
-            const lx = cx + side * 0.46;
+            const lx = cx + side * lampOffset;
             const lz = cz;
             if (pylonFootprints.some((p) => !p.isElev && Math.hypot(p.x - lx, p.z - lz) < 0.42)) continue;
             lamps.push({
@@ -3221,7 +3227,10 @@ export function buildContinuousRoadAndViaductGroup(THREE, sim, overlayMode, mats
     }
   }
 
-  // --- LAYER B: Mountain Tunnel Portals (t.roadGround === 4) ---
+  // --- LAYER B: Deep-Anchored Hooded Mountain Tunnel Portals (t.roadGround === 4) ---
+  const cPortalCornice = [toCol(0.76), toCol(0.78), toCol(0.81)];
+  const cPortalWing = [toCol(0.58), toCol(0.60), toCol(0.64)];
+  const cPortalWarn = [toCol(0.96), toCol(0.74), toCol(0.14)];
   for (let z = 0; z < GRID_SIZE; z++) {
     for (let x = 0; x < GRID_SIZE; x++) {
       const t = grid[idx(x, z)];
@@ -3234,7 +3243,7 @@ export function buildContinuousRoadAndViaductGroup(THREE, sim, overlayMode, mats
         const nt = grid[idx(nx, nz)];
         if (nt.roadGround < 1 || nt.roadGround > 3 || nt.dam) continue;
 
-        // Build concrete arch portal at shared edge facing neighbor (nx, nz)
+        // Build deep-anchored hooded concrete portal at shared edge facing neighbor (nx, nz)
         const e = getTileEdgeEndpoints(x, z, d, roadCornerY);
         const fdx = DIRS[d].dx;
         const fdz = DIRS[d].dz;
@@ -3242,53 +3251,91 @@ export function buildContinuousRoadAndViaductGroup(THREE, sim, overlayMode, mats
         const inX = -fdx;
         const inZ = -fdz;
 
-        // Short asphalt throat entering tunnel mouth (0.24m deep, CCW +Y upward normal!)
+        // 1. Flush slightly raised asphalt throat entering tunnel mouth (0.16m deep, clears hillside slope with ZERO grass poke!)
         const ax0 = e.p0x, az0 = e.p0z;
         const ax1 = e.p1x, az1 = e.p1z;
-        const bx0 = ax0 + inX * 0.24, bz0 = az0 + inZ * 0.24;
-        const bx1 = ax1 + inX * 0.24, bz1 = az1 + inZ * 0.24;
-        bRoad4.addQuad(ax0, e.y0, az0, bx0, e.y0, bz0, bx1, e.y1, bz1, ax1, e.y1, az1, 0, 0, 0, 0.25, 1, 0.25, 1, 0);
+        const bx0 = ax0 + inX * 0.16, bz0 = az0 + inZ * 0.16;
+        const bx1 = ax1 + inX * 0.16, bz1 = az1 + inZ * 0.16;
+        const thY0 = e.y0 + 0.015;
+        const thY1 = e.y1 + 0.015;
+        bRoad4.addQuad(ax0, thY0, az0, bx0, thY0, bz0, bx1, thY1, bz1, ax1, thY1, az1, 0, 0, 0, 0.22, 1, 0.22, 1, 0);
 
         const baseY = Math.min(e.y0, e.y1);
-        const topArchY = Math.max(e.y0, e.y1) + 0.44;
-        const midX = (ax0 + ax1) * 0.5 + inX * 0.14;
-        const midZ = (az0 + az1) * 0.5 + inZ * 0.14;
+        const topArchY = Math.max(e.y0, e.y1) + 0.45;
+        const edgeMidX = (ax0 + ax1) * 0.5;
+        const edgeMidZ = (az0 + az1) * 0.5;
         const sideVx = ax1 - ax0;
         const sideVz = az1 - az0;
+        const anchorDown = 0.90; // Deep subsurface foundation skirt -> NEVER floats even from low ground-level mountain angles!
 
-        // Left & right concrete retaining piers
-        for (const s of [-0.41, 0.41]) {
-          const px = midX + sideVx * s;
-          const pz = midZ + sideVz * s;
+        // 2. Deep-anchored Left & Right enclosed concrete portal piers & barrel sidewalls (0.00m .. 0.44m into hillside)
+        for (const s of [-0.43, 0.43]) {
+          const px = edgeMidX + sideVx * s;
+          const pz = edgeMidZ + sideVz * s;
           bConcrete.addBeam(
-            px - inX * 0.11, pz - inZ * 0.11, baseY, baseY,
-            px + inX * 0.13, pz + inZ * 0.13, baseY, baseY,
-            0.085, topArchY - baseY, 0.12, true, true, false,
+            px, pz, baseY, baseY,
+            px + inX * 0.44, pz + inZ * 0.44, baseY, baseY,
+            0.085, topArchY - baseY, anchorDown, true, true, false,
             cPortal[0], cPortal[1], cPortal[2]
           );
         }
 
-        // Top arched headwall lintel + cornice coping
-        const pL0x = midX - sideVx * 0.49, pL0z = midZ - sideVz * 0.49;
-        const pR0x = midX + sideVx * 0.49, pR0z = midZ + sideVz * 0.49;
+        // 3. Flared side earth-retaining wingwalls flanking the portal (cleanly holds back green mountain slopes!)
+        for (const s of [-0.525, 0.525]) {
+          const wx = edgeMidX + sideVx * s;
+          const wz = edgeMidZ + sideVz * s;
+          bConcrete.addBeam(
+            wx + inX * 0.02, wz + inZ * 0.02, baseY, baseY,
+            wx + inX * 0.36, wz + inZ * 0.36, baseY, baseY,
+            0.042, (topArchY - baseY) * 0.62, anchorDown, true, true, false,
+            cPortalWing[0], cPortalWing[1], cPortalWing[2]
+          );
+        }
+
+        // 4. Front concrete headwall lintel + upper cornice coping + deep enclosed tunnel hood barrel (0.00m .. 0.44m)
+        const pL0x = edgeMidX - sideVx * 0.51, pL0z = edgeMidZ - sideVz * 0.51;
+        const pR0x = edgeMidX + sideVx * 0.51, pR0z = edgeMidZ + sideVz * 0.51;
+        const headMidIn = 0.08;
         bConcrete.addBeam(
-          pL0x, pL0z, topArchY - 0.11, topArchY - 0.11,
-          pR0x, pR0z, topArchY - 0.11, topArchY - 0.11,
-          0.12, 0.15, 0.0, true, true, true,
+          pL0x + inX * headMidIn, pL0z + inZ * headMidIn, topArchY - 0.11, topArchY - 0.11,
+          pR0x + inX * headMidIn, pR0z + inZ * headMidIn, topArchY - 0.11, topArchY - 0.11,
+          0.085, 0.15, 0.0, true, true, true,
           cPortal[0], cPortal[1], cPortal[2]
         );
+        // Architectural cornice cap crowning the headwall
+        bConcrete.addBeam(
+          pL0x + inX * 0.06, pL0z + inZ * 0.06, topArchY + 0.035, topArchY + 0.035,
+          pR0x + inX * 0.06, pR0z + inZ * 0.06, topArchY + 0.035, topArchY + 0.035,
+          0.105, 0.045, 0.01, true, true, true,
+          cPortalCornice[0], cPortalCornice[1], cPortalCornice[2]
+        );
+        // Deep enclosed concrete tunnel barrel roof hood embedded back into the mountain (0.14m .. 0.44m)
+        const hoodCenterIn = 0.29;
+        bConcrete.addBeam(
+          edgeMidX - sideVx * 0.48 + inX * hoodCenterIn, edgeMidZ - sideVz * 0.48 + inZ * hoodCenterIn, topArchY - 0.10, topArchY - 0.10,
+          edgeMidX + sideVx * 0.48 + inX * hoodCenterIn, edgeMidZ + sideVz * 0.48 + inZ * hoodCenterIn, topArchY - 0.10, topArchY - 0.10,
+          0.155, 0.13, 0.0, true, true, true,
+          cPortalWing[0], cPortalWing[1], cPortalWing[2]
+        );
+        // Crisp amber-yellow expressway height-clearance safety trim mounted flush on the outer face of the portal headwall
+        bConcrete.addBeam(
+          edgeMidX - sideVx * 0.36 - inX * 0.012, edgeMidZ - sideVz * 0.36 - inZ * 0.012, topArchY - 0.105, topArchY - 0.105,
+          edgeMidX + sideVx * 0.36 - inX * 0.012, edgeMidZ + sideVz * 0.36 - inZ * 0.012, topArchY - 0.105, topArchY - 0.105,
+          0.016, 0.032, 0.006, true, true, true,
+          cPortalWarn[0], cPortalWarn[1], cPortalWarn[2]
+        );
 
-        // Dark recessed tunnel bore opening facing outward (+fdx, +fdz)
-        const boreCenterX = midX + inX * 0.07;
-        const boreCenterZ = midZ + inZ * 0.07;
-        const bLx = boreCenterX - sideVx * 0.33;
-        const bLz = boreCenterZ - sideVz * 0.33;
-        const bRx = boreCenterX + sideVx * 0.33;
-        const bRz = boreCenterZ + sideVz * 0.33;
+        // 5. Recessed pitch-black tunnel bore opening facing outward (+fdx, +fdz) at 0.13m inside portal hood
+        const boreCenterX = edgeMidX + inX * 0.13;
+        const boreCenterZ = edgeMidZ + inZ * 0.13;
+        const bLx = boreCenterX - sideVx * 0.355;
+        const bLz = boreCenterZ - sideVz * 0.355;
+        const bRx = boreCenterX + sideVx * 0.355;
+        const bRz = boreCenterZ + sideVz * 0.355;
         bTunnelDark.addQuad(
           bRx, topArchY - 0.09, bRz,
-          bRx, baseY - 0.01, bRz,
-          bLx, baseY - 0.01, bLz,
+          bRx, baseY - 0.06, bRz,
+          bLx, baseY - 0.06, bLz,
           bLx, topArchY - 0.09, bLz
         );
       }

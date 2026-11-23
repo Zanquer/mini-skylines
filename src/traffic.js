@@ -25,6 +25,7 @@ function lerpAngle(a, b, t) {
 export class TrafficManager {
   constructor(sim) {
     this.sim = sim;
+    if (sim) sim.traffic = this;
     this.vehicles = [];
     this.trains = [];      // HSR multi-car bullet trains & underground metro trains!
     this.aircraft = [];    // 3D Wide-body Airliners approaching/landing/climbing at airports!
@@ -32,11 +33,14 @@ export class TrafficManager {
     this.leisureBoats = []; // 3D Coastal CC0 Sailboats & Fishing Boats cruising the bay!
     this.busStops = [];    // Active roadside EV bus stop tiles collected during refreshRoadGraph!
     this.pedestrians = []; // Lightweight sidewalk pedestrians (<= 240, pure data, zero Three.js dependency)
+    this.accidents = [];   // Active road traffic accidents awaiting or being cleared by Traffic Police
     this._pedRoadPool = [];
     this._pedSpawnTimer = 0;
     this.spawnTimer = 0;
     this.trainTimer = 0;
     this.fireTimer = 0;
+    this.policeTimer = 0;
+    this._accidentCooldown = 28;
     this.aircraftTimer = 0;
     this.shipTimer = 2.0;
     this._boatSpawnTimer = 1.0;
@@ -47,6 +51,8 @@ export class TrafficManager {
     this._nextShipId = 1;
     this._nextBoatId = 1;
     this._nextPedId = 1;
+    this._nextAccidentId = 1;
+    this.totalAccidentsCleared = 0;
 
     const N = GRID_SIZE * GRID_SIZE;
     this.roadDegree = new Uint8Array(N);
@@ -88,10 +94,14 @@ export class TrafficManager {
     this.leisureBoats.length = 0;
     this.busStops.length = 0;
     this.pedestrians.length = 0;
+    this.accidents.length = 0;
     this._pedRoadPool.length = 0;
     this._pedSpawnTimer = 0;
     this.spawnTimer = 0;
     this.fireTimer = 0;
+    this.policeTimer = 0;
+    this._accidentCooldown = 28;
+    this.totalAccidentsCleared = 0;
     this.trainTimer = 0;
     this.aircraftTimer = 0;
     this.shipTimer = 2.0;
@@ -151,6 +161,7 @@ export class TrafficManager {
         O: '甲级写字楼',
         waste_plant: '环保垃圾焚烧厂',
         fire_station: '消防总署',
+        police_station: '警察总局',
         police: '警察总局',
         hospital: '综合医院',
         school: '市立理工大学',
@@ -721,6 +732,18 @@ export class TrafficManager {
   sampleSegmentHeight(p0, p1, t) {
     const ct = Math.min(1, Math.max(0, t));
     if (!p0.onRamp && !p1.onRamp) {
+      // Keep tunnel portal transition strictly level at the surface approach elevation (eliminates hillside plunge/clipping!)
+      if (p0.layer === 0 && p1.layer === 0) {
+        const t0 = this.sim.getTile(p0.x, p0.z);
+        const t1 = this.sim.getTile(p1.x, p1.z);
+        const isT0 = Boolean(t0 && t0.roadGround === 4);
+        const isT1 = Boolean(t1 && t1.roadGround === 4);
+        if (isT0 !== isT1) {
+          return isT0
+            ? this.getRoadNodeY(p1.x, p1.z, 0)
+            : this.getRoadNodeY(p0.x, p0.z, 0);
+        }
+      }
       const y0 = this.getRoadNodeY(p0.x, p0.z, p0.layer);
       const y1 = this.getRoadNodeY(p1.x, p1.z, p1.layer);
       return (1 - ct) * y0 + ct * y1;
@@ -814,6 +837,10 @@ export class TrafficManager {
       }
       laneOff += 0.08 * rWeight;
     }
+    // Keep vehicles funnelled cleanly inside mountain tunnel bore opening (±0.35m) so wide trucks never clip portal piers!
+    if (p0.layer === 0 && p1.layer === 0 && (t0?.roadGround === 4 || t1?.roadGround === 4)) {
+      return Math.min(0.165, laneOff);
+    }
     return Math.min(0.34, laneOff);
   }
 
@@ -858,14 +885,33 @@ export class TrafficManager {
     v.wz = w0.wz + vz * v.t + rightZ * laneOff;
     v.wy = this.sampleSegmentHeight(p0, p1, v.t);
 
-    // Finite-difference 3D slope pitch across exact Hermite ramp & terrain profile!
-    const tLo = Math.max(0, (v.t || 0) - 0.05);
-    const tHi = Math.min(1, (v.t || 0) + 0.05);
-    const dtSpan = tHi - tLo;
-    const dy = dtSpan > 1e-4 ? (this.sampleSegmentHeight(p0, p1, tHi) - this.sampleSegmentHeight(p0, p1, tLo)) : 0;
-    const rawSlope = (len > 0.05 && dtSpan > 1e-4) ? Math.atan2(dy, dtSpan * len) : 0;
-    v.pitch = effDt <= 0 ? rawSlope : ((v.pitch || 0) * 0.78 + rawSlope * 0.22);
-    v.inTunnel = p0.layer === 0 && !p0.onRamp && this.sim.getTile(p0.x, p0.z)?.roadGround === 4;
+    const t0 = this.sim.getTile(p0.x, p0.z);
+    const t1 = this.sim.getTile(p1.x, p1.z);
+    const isT0 = p0.layer === 0 && !p0.onRamp && t0?.roadGround === 4;
+    const isT1 = p1.layer === 0 && !p1.onRamp && t1?.roadGround === 4;
+
+    if (isT0 !== isT1) {
+      // Exact portal-mouth visibility & level pitch: cars enter/emerge smoothly right at the hooded arch opening!
+      v.pitch = 0;
+      const ct = v.t || 0;
+      if (!isT0 && isT1) {
+        v.inTunnel = ct >= 0.62;
+        v._portalFade = ct <= 0.50 ? 1.0 : Math.max(0.42, 1.0 - ((ct - 0.50) / 0.12) * 0.58);
+      } else {
+        v.inTunnel = ct < 0.38;
+        v._portalFade = ct >= 0.50 ? 1.0 : Math.max(0.42, 0.42 + ((ct - 0.38) / 0.12) * 0.58);
+      }
+    } else {
+      // Finite-difference 3D slope pitch across exact Hermite ramp & terrain profile!
+      const tLo = Math.max(0, (v.t || 0) - 0.05);
+      const tHi = Math.min(1, (v.t || 0) + 0.05);
+      const dtSpan = tHi - tLo;
+      const dy = dtSpan > 1e-4 ? (this.sampleSegmentHeight(p0, p1, tHi) - this.sampleSegmentHeight(p0, p1, tLo)) : 0;
+      const rawSlope = (len > 0.05 && dtSpan > 1e-4) ? Math.atan2(dy, dtSpan * len) : 0;
+      v.pitch = effDt <= 0 ? rawSlope : ((v.pitch || 0) * 0.78 + rawSlope * 0.22);
+      v.inTunnel = Boolean(isT0 && isT1);
+      v._portalFade = 1.0;
+    }
   }
 
   tryRerouteVehicle(v) {
@@ -890,6 +936,12 @@ export class TrafficManager {
         if (altAcc) {
           newPath = this.findRoadPath(cur.x, cur.z, altAcc.rx, altAcc.rz, startOnRamp, startLayer, false);
         }
+      }
+    }
+    if ((!newPath || newPath.length < 2) && v.kind === 'police' && v.policeTargetAccidentId) {
+      const acc = this.accidents.find((a) => a.id === v.policeTargetAccidentId);
+      if (acc) {
+        newPath = this.findRoadPath(cur.x, cur.z, acc.x, acc.z, startOnRamp, startLayer, false);
       }
     }
     if (newPath && newPath.length >= 2) {
@@ -1085,6 +1137,15 @@ export class TrafficManager {
       const pt = this.sim.getTile(p.tx, p.tz);
       if (!pt || !(pt.roadGround === 1 || pt.roadGround === 2) || !this.isGroundRoadPassable(pt) || pt.dam || pt.ramp) {
         this.pedestrians.splice(i, 1);
+      }
+    }
+
+    for (let i = this.accidents.length - 1; i >= 0; i--) {
+      const acc = this.accidents[i];
+      const at = this.sim.getTile(acc.x, acc.z);
+      if (!at || !(at.roadGround >= 1 && at.roadGround <= 3) || at.dam) {
+        this._clearAccidentEntities(acc, false);
+        this.accidents.splice(i, 1);
       }
     }
 
@@ -1558,6 +1619,372 @@ export class TrafficManager {
     this.syncVehicleTransform(v, 0);
     this.vehicles.push(v);
     this.refreshActiveModalCounts();
+  }
+
+  _clearAccidentEntities(acc, sendPoliceHome = true) {
+    if (!acc) return;
+    for (let i = 0; i < this.vehicles.length; i++) {
+      const v = this.vehicles[i];
+      if (v.accidentId === acc.id) {
+        v.accidentId = null;
+        v.accidentYawOffset = 0;
+        v.stuckTimer = 0;
+        if (v._origTripLabel) v.tripLabel = v._origTripLabel;
+      }
+      if (v.kind === 'police' && (v.policeOnSceneId === acc.id || v.policeTargetAccidentId === acc.id)) {
+        v.policeOnSceneId = null;
+        v.policeTargetAccidentId = null;
+        v.stuckTimer = 0;
+        v.policeReturning = true;
+        v.tripLabel = '🚓 交警勘查完毕返航';
+        if (sendPoliceHome && acc.policeStationTile) {
+          const cur = v.path && v.path[Math.min(v.seg, v.path.length - 1)];
+          const stAcc = this.sim.findRoadAccess(acc.policeStationTile.x, acc.policeStationTile.z);
+          if (cur && stAcc) {
+            const retPath = this.findRoadPath(cur.x, cur.z, stAcc.rx, stAcc.rz, false, 0, false);
+            if (retPath && retPath.length >= 2) {
+              v.path = retPath;
+              v.seg = 0;
+              v.t = 0;
+              v.toName = v.fromName || '警察总局';
+              v.destTile = { x: acc.policeStationTile.x, z: acc.policeStationTile.z };
+              this.syncVehicleTransform(v, 0);
+              continue;
+            }
+          }
+        }
+        // If no home station or path available, allow smooth finish at end of current path
+        if (v.path && v.seg >= v.path.length - 1) {
+          v.seg = Math.max(0, v.path.length - 2);
+          v.t = 0.96;
+        }
+      }
+    }
+  }
+
+  triggerTrafficAccident(tx = null, tz = null, options = {}) {
+    if (this.accidents.length >= 3) return null;
+    this.ensureRampGraphFresh();
+
+    const isEligibleVeh = (v) => (
+      v && !v.inTunnel && !v.accidentId && !v.policeOnSceneId &&
+      v.kind !== 'firetruck' && v.kind !== 'police' && v.kind !== 'bus' &&
+      v.path && v.path[v.seg] && (v.path[v.seg].layer || 0) === 0 && !v.path[v.seg].onRamp
+    );
+
+    let chosenTile = null;
+    let involved = [];
+
+    if (typeof tx === 'number' && typeof tz === 'number' && inBounds(tx, tz)) {
+      const t = this.sim.getTile(tx, tz);
+      if (!t || !(t.roadGround >= 1 && t.roadGround <= 3) || t.dam || t.ramp) return null;
+      if (this.accidents.some((a) => a.x === tx && a.z === tz)) return null;
+      chosenTile = t;
+      for (let i = 0; i < this.vehicles.length && involved.length < 2; i++) {
+        const v = this.vehicles[i];
+        if (!isEligibleVeh(v)) continue;
+        const cur = v.path[v.seg];
+        if (Math.abs(cur.x - tx) <= 1 && Math.abs(cur.z - tz) <= 1) {
+          involved.push(v);
+        }
+      }
+      // If triggered directly on an empty road tile (e.g., manual test/event), stage a realistic stopped sedan at the crash tile
+      if (involved.length === 0) {
+        let nb = null;
+        for (const d of RAMP_DIRS) {
+          const nx = tx + d.dx, nz = tz + d.dz;
+          const nt = this.sim.getTile(nx, nz);
+          if (nt && nt.roadGround >= 1 && nt.roadGround <= 3 && !nt.dam) {
+            nb = { x: nx, z: nz, layer: 0, onRamp: false };
+            break;
+          }
+        }
+        if (nb) {
+          const w0 = tileToWorld(tx, tz);
+          const staged = {
+            kind: 'car',
+            id: this._nextVehId++,
+            variantIdx: (this._nextAccidentId * 3) % 10,
+            tripType: 'commute',
+            tripLabel: '🚗 市民通勤',
+            fromName: '城区道路',
+            toName: '市区干道',
+            originTile: { x: tx, z: tz },
+            destTile: { x: nb.x, z: nb.z },
+            color: [0.92, 0.94, 0.97],
+            length: 0.30,
+            width: 0.145,
+            height: 0.12,
+            path: [{ x: tx, z: tz, layer: 0, onRamp: false }, nb],
+            seg: 0,
+            t: 0.18,
+            speed: 0,
+            maxSpeed: 1.85,
+            stuckTimer: 0,
+            laneSlot: 0,
+            laneChangeCooldown: 0,
+            wx: w0.wx,
+            wy: this.getRoadNodeY(tx, tz, 0),
+            wz: w0.wz,
+            dirX: nb.x - tx,
+            dirZ: nb.z - tz,
+            inTunnel: false
+          };
+          this.syncVehicleTransform(staged, 0);
+          this.vehicles.push(staged);
+          involved.push(staged);
+        }
+      }
+    } else {
+      // Pick a busy ground road/intersection with live surface vehicles
+      let bestScore = -1;
+      for (let i = 0; i < this.vehicles.length; i++) {
+        const v = this.vehicles[i];
+        if (!isEligibleVeh(v)) continue;
+        const cur = v.path[v.seg];
+        const t = this.sim.getTile(cur.x, cur.z);
+        if (!t || !(t.roadGround >= 1 && t.roadGround <= 3) || t.dam || t.ramp) continue;
+        if (this.accidents.some((a) => Math.hypot(a.x - cur.x, a.z - cur.z) < 5)) continue;
+        const ti = idx(cur.x, cur.z);
+        const deg = this.roadDegree[ti] || 0;
+        const score = (deg >= 3 ? 3.0 : 1.0) + (this.tileOccupancy[ti] || 0) * 1.4 + (t.congestion || 0) * 2.0;
+        if (score > bestScore) {
+          bestScore = score;
+          chosenTile = t;
+          involved = [v];
+        }
+      }
+      if (chosenTile && involved.length === 1) {
+        const v0 = involved[0];
+        for (let i = 0; i < this.vehicles.length; i++) {
+          const o = this.vehicles[i];
+          if (o === v0 || !isEligibleVeh(o)) continue;
+          if (Math.hypot(o.wx - v0.wx, o.wz - v0.wz) <= 1.05) {
+            involved.push(o);
+            break;
+          }
+        }
+      }
+    }
+
+    if (!chosenTile) return null;
+    const deg = this.roadDegree[idx(chosenTile.x, chosenTile.z)] || 0;
+    const roadName = deg >= 4
+      ? '四向十字路口'
+      : (deg === 3 ? '三向交叉路口' : (chosenTile.roadGround >= 2 ? '四车道主干道' : '城市街道'));
+    const wInfo = typeof this.sim.getWeatherInfo === 'function' ? this.sim.getWeatherInfo() : { id: 'sunny' };
+    const isBadWeather = wInfo.id === 'rain' || wInfo.id === 'storm' || wInfo.id === 'snow' || wInfo.id === 'blizzard';
+    const cause = options.cause || (
+      isBadWeather
+        ? '雨雪路面打滑追尾剐蹭'
+        : (deg >= 3 ? '繁忙路口抢行刮擦事故' : '并线未让行轻微碰撞')
+    );
+
+    const highSafety = (chosenTile.safety || 0) >= 60;
+    const totalTime = Number(options.duration || (isBadWeather ? 11.5 : (highSafety ? 8.5 : 10.0)));
+    const wCenter = tileToWorld(chosenTile.x, chosenTile.z);
+    const primaryVeh = involved[0];
+    const acc = {
+      id: this._nextAccidentId++,
+      x: chosenTile.x,
+      z: chosenTile.z,
+      wx: primaryVeh ? primaryVeh.wx : wCenter.wx,
+      wy: primaryVeh ? primaryVeh.wy : this.getRoadNodeY(chosenTile.x, chosenTile.z, 0),
+      wz: primaryVeh ? primaryVeh.wz : wCenter.wz,
+      roadName,
+      cause,
+      vehicleIds: involved.map((v) => v.id),
+      state: 'awaiting_police',
+      policeVehicleId: null,
+      policeStationTile: null,
+      totalTime,
+      remainingTime: totalTime,
+      selfClearTimer: Number(options.selfClearTime || 26.0),
+      elapsed: 0
+    };
+
+    for (let k = 0; k < involved.length; k++) {
+      const v = involved[k];
+      v._origTripLabel = v._origTripLabel || v.tripLabel;
+      v.accidentId = acc.id;
+      v.accidentYawOffset = k === 0 ? 0.28 : -0.34;
+      v.speed = 0;
+      v.stuckTimer = 0;
+      v.tripLabel = `🚨 交通事故现场（${cause}）`;
+    }
+
+    this.accidents.push(acc);
+    this._accidentCooldown = 48;
+    chosenTile.congestion = Math.max(chosenTile.congestion || 0, 0.85);
+    this.sim.latestChirp = {
+      user: '@交警支队播报',
+      text: `🚨 (${acc.x},${acc.z}) ${acc.roadName}发生【${acc.cause}】！道路局部缓行，已呼叫附近警察总局派交警巡逻车赶赴现场处理。`,
+      mood: 'warn'
+    };
+
+    this.tryDispatchPoliceCar();
+    return acc;
+  }
+
+  tryDispatchPoliceCar() {
+    if (this.accidents.length === 0) return;
+
+    for (let aIdx = 0; aIdx < this.accidents.length; aIdx++) {
+      const acc = this.accidents[aIdx];
+      if (acc.state !== 'awaiting_police') continue;
+
+      let bestPath = null;
+      let bestStation = null;
+      for (let i = 0; i < this.sim.grid.length; i++) {
+        const t = this.sim.grid[i];
+        const b = t.building;
+        if (b && (b.type === 'police_station' || b.type === 'police') && !b.abandoned && !b.underConstruction && t.powered) {
+          const srcAcc = this.sim.findRoadAccess(t.x, t.z);
+          if (!srcAcc) continue;
+          let p = null;
+          if (srcAcc.rx === acc.x && srcAcc.rz === acc.z) {
+            p = [
+              { x: acc.x, z: acc.z, layer: 0, onRamp: false },
+              { x: acc.x, z: acc.z, layer: 0, onRamp: false }
+            ];
+          } else {
+            p = this.findRoadPath(srcAcc.rx, srcAcc.rz, acc.x, acc.z, false, 0, false);
+          }
+          if (p && p.length >= 2 && (!bestPath || p.length < bestPath.length)) {
+            bestPath = p;
+            bestStation = t;
+          }
+        }
+      }
+      if (!bestPath || !bestStation) continue;
+
+      const fromName = this.getEndpointName({
+        bx: bestStation.x,
+        bz: bestStation.z,
+        building: bestStation.building
+      });
+      const w0 = tileToWorld(bestPath[0].x, bestPath[0].z);
+      const pv = {
+        kind: 'police',
+        policeTargetAccidentId: acc.id,
+        policeOnSceneId: null,
+        policeReturning: false,
+        id: this._nextVehId++,
+        variantIdx: 0,
+        tripType: 'service',
+        tripLabel: '🚓 交警紧急出警处理事故',
+        fromName,
+        toName: `事故现场 (${acc.x}, ${acc.z})`,
+        originTile: { x: bestStation.x, z: bestStation.z },
+        destTile: { x: acc.x, z: acc.z },
+        color: [0.95, 0.97, 1.0],
+        length: 0.34,
+        width: 0.15,
+        height: 0.145,
+        path: bestPath,
+        seg: 0,
+        t: 0,
+        speed: 2.4,
+        maxSpeed: 2.85,
+        stuckTimer: 0,
+        laneSlot: 0,
+        laneChangeCooldown: 0,
+        wx: w0.wx,
+        wy: this.getRoadNodeY(bestPath[0].x, bestPath[0].z, 0),
+        wz: w0.wz,
+        dirX: 0,
+        dirZ: -1,
+        inTunnel: false
+      };
+      this.syncVehicleTransform(pv, 0);
+      this.vehicles.push(pv);
+      acc.state = 'police_en_route';
+      acc.policeVehicleId = pv.id;
+      acc.policeStationTile = { x: bestStation.x, z: bestStation.z };
+      this.refreshActiveModalCounts();
+    }
+  }
+
+  updateAccidents(effDt) {
+    if (this.accidents.length === 0) return;
+
+    for (let i = this.accidents.length - 1; i >= 0; i--) {
+      const acc = this.accidents[i];
+      acc.elapsed += effDt;
+
+      const t = this.sim.getTile(acc.x, acc.z);
+      if (!t || !(t.roadGround >= 1 && t.roadGround <= 3) || t.dam) {
+        this._clearAccidentEntities(acc, false);
+        this.accidents.splice(i, 1);
+        continue;
+      }
+      t.congestion = Math.max(t.congestion || 0, 0.80);
+
+      let pv = acc.policeVehicleId
+        ? this.vehicles.find((v) => v.id === acc.policeVehicleId)
+        : null;
+
+      if (acc.state === 'police_en_route') {
+        if (!pv) {
+          acc.state = 'awaiting_police';
+          acc.policeVehicleId = null;
+        } else {
+          const distToScene = Math.hypot(pv.wx - acc.wx, pv.wz - acc.wz);
+          const arrived = distToScene <= 0.95 || pv.policeOnSceneId === acc.id || pv.seg >= pv.path.length - 1;
+          if (arrived) {
+            pv.policeOnSceneId = acc.id;
+            pv.speed = 0;
+            pv.stuckTimer = 0;
+            pv.tripLabel = `🚓 交警正在现场勘查清障`;
+            acc.state = 'clearing';
+            for (const v of this.vehicles) {
+              if (v.accidentId === acc.id) {
+                v.tripLabel = '🚨 交警现场定责清障中';
+              }
+            }
+            this.sim.latestChirp = {
+              user: '@交警支队播报',
+              text: `🚓 交警巡逻车已抵达 (${acc.x},${acc.z}) 事故现场并布设警示锥桶，预计 ${Math.ceil(acc.remainingTime)} 秒后清障恢复通行！`,
+              mood: 'info'
+            };
+          }
+        }
+      } else if (acc.state === 'clearing') {
+        if (!pv) {
+          acc.state = 'awaiting_police';
+          acc.policeVehicleId = null;
+        } else {
+          pv.speed = 0;
+          pv.stuckTimer = 0;
+          acc.remainingTime = Math.max(0, acc.remainingTime - effDt);
+          if (acc.remainingTime <= 0) {
+            this._clearAccidentEntities(acc, true);
+            this.totalAccidentsCleared++;
+            this.accidents.splice(i, 1);
+            this.sim.latestChirp = {
+              user: '@交警支队播报',
+              text: `✅ (${acc.x},${acc.z}) ${acc.roadName}交通事故已勘查清障完毕，道路恢复畅通！`,
+              mood: 'good'
+            };
+            continue;
+          }
+        }
+      } else {
+        // Awaiting police (if city has no powered/reachable police station, drivers slowly self-clear after ~26s)
+        acc.selfClearTimer = Math.max(0, acc.selfClearTimer - effDt);
+        if (acc.selfClearTimer <= 0) {
+          this._clearAccidentEntities(acc, false);
+          this.totalAccidentsCleared++;
+          this.accidents.splice(i, 1);
+          this.sim.latestChirp = {
+            user: '@市民路况播报',
+            text: `🚧 (${acc.x},${acc.z}) 事故双方自行协商撤离，道路缓慢恢复（建造【🚓 警察总局】可派交警 3 倍速专业处置！）`,
+            mood: 'info'
+          };
+          continue;
+        }
+      }
+    }
   }
 
   _hasSpawnClearance(wx, wz, layer = 0, minDist = 0.68) {
@@ -2214,6 +2641,30 @@ export class TrafficManager {
       this.tryDispatchFireTruck();
     }
 
+    this.policeTimer += effDt;
+    if (this.policeTimer >= 0.9) {
+      this.policeTimer = 0;
+      this.tryDispatchPoliceCar();
+    }
+
+    // Rare realistic spontaneous traffic accidents on busy/wet intersections (strictly gated for populated cities!)
+    this._accidentCooldown = Math.max(0, (this._accidentCooldown || 0) - effDt);
+    if (
+      this._accidentCooldown <= 0 &&
+      this.accidents.length < 2 &&
+      (this.sim.population || 0) >= 250 &&
+      this.vehicles.length >= 12
+    ) {
+      const wInfo = typeof this.sim.getWeatherInfo === 'function' ? this.sim.getWeatherInfo() : { id: 'sunny' };
+      const weatherRisk = wInfo.id === 'storm' || wInfo.id === 'blizzard'
+        ? 3.0
+        : (wInfo.id === 'rain' || wInfo.id === 'snow' ? 2.0 : 1.0);
+      if (Math.random() < 0.0065 * weatherRisk * effDt) {
+        this.triggerTrafficAccident();
+      }
+    }
+    this.updateAccidents(effDt);
+
     this.trainTimer += effDt;
     if (this.trainTimer >= 1.8) {
       this.trainTimer = 0;
@@ -2243,11 +2694,25 @@ export class TrafficManager {
         continue;
       }
 
+      // Active Traffic Accident vehicles & On-Scene Traffic Police patrol cars stay parked safely during clearance countdown
+      if (v.accidentId || v.policeOnSceneId) {
+        v.speed = 0;
+        v.stuckTimer = 0;
+        this.syncVehicleTransform(v, effDt);
+        continue;
+      }
+
       let nxt = v.path[v.seg + 1];
       if (!nxt) {
         if (v.kind === 'firetruck' && v.fireTargetIdx !== undefined) {
           const bt = this.sim.grid[v.fireTargetIdx];
           if (bt && bt.building) bt.building.fire = 0;
+        }
+        if (v.kind === 'police' && v.policeTargetAccidentId && this.accidents.some((a) => a.id === v.policeTargetAccidentId)) {
+          v.policeOnSceneId = v.policeTargetAccidentId;
+          v.speed = 0;
+          v.stuckTimer = 0;
+          continue;
         }
         this.sim.onTripComplete?.(v);
         this.sim.onTripCompleted?.(v);
@@ -2313,7 +2778,7 @@ export class TrafficManager {
           targetSpeed = Math.min(targetSpeed, v.maxSpeed * 0.82);
         }
 
-        if (v.kind !== 'firetruck' && nxtDeg >= 3) {
+        if (v.kind !== 'firetruck' && v.kind !== 'police' && nxtDeg >= 3) {
           const jMode = nxtTile.junctionMode || 'signal';
           const moveVertical = Math.abs(nxt.z - cur.z) > 0;
 
@@ -2344,8 +2809,9 @@ export class TrafficManager {
         }
       }
 
-      // Full 360° 3D Bumper-to-Bumper, Intersection Cross-Traffic & 4-Lane Parallel Overtaking Avoidance!
+      // Full 360° 3D Bumper-to-Bumper, Intersection Cross-Traffic, Opposing-Turn & 4-Lane Overtaking Avoidance!
       const latLimit = isMultiLane ? 0.145 : 0.175;
+      let hardStop = false;
       for (let j = 0; j < this.vehicles.length; j++) {
         if (i === j) continue;
         const o = this.vehicles[j];
@@ -2359,16 +2825,17 @@ export class TrafficManager {
         const rvx = o.wx - v.wx;
         const rvz = o.wz - v.wz;
         const distSq = rvx * rvx + rvz * rvz;
-        if (distSq > 0.56) continue; // > 0.75 units away
+        if (distSq > 1.12) continue; // > 1.06 units away
 
         const sameDir = v.dirX * o.dirX + v.dirZ * o.dirZ;
         const fwdDist = rvx * v.dirX + rvz * v.dirZ;
         const latDist = Math.abs(-rvx * v.dirZ + rvz * v.dirX);
-        const safeGap = (v.length + o.length) * 0.62 + 0.12;
+        const safeGap = (v.length + o.length) * 0.62 + 0.14;
 
         if (sameDir >= 0.45) {
-          // 1. Same-lane car-following & smooth speed matching + 4-lane parallel overtake
-          if (fwdDist > 0.01 && fwdDist < safeGap * 1.45 && latDist < latLimit) {
+          // 1. Same-lane car-following & smooth speed matching + 4-lane parallel overtake (also routes around parked accidents)
+          const effLat = (o.accidentId || o.policeOnSceneId) ? Math.max(latLimit, 0.19) : latLimit;
+          if (fwdDist > 0.01 && fwdDist < safeGap * 1.50 && latDist < effLat) {
             if (fwdDist < safeGap) {
               if (allowOvertake && targetSpeed > 0 && o.speed < v.maxSpeed * 0.85 && !(v.laneChangeCooldown > 0)) {
                 const altSlot = v.laneSlot === 1 ? 0 : 1;
@@ -2380,29 +2847,54 @@ export class TrafficManager {
               }
               targetSpeed = 0;
               blockedByVehicle = true;
+              if (fwdDist < safeGap * 0.74) hardStop = true;
               break;
             } else {
               // Gentle proportional follow deceleration before hard stop
-              targetSpeed = Math.min(targetSpeed, Math.max(0.15, o.speed * 0.92));
+              targetSpeed = Math.min(targetSpeed, Math.max(0.12, o.speed * 0.90));
             }
           }
         } else if (sameDir > -0.75) {
-          // 2. Perpendicular / Turning / Roundabout cross-traffic guard (asymmetric priority -> ZERO intersection pileups or deadlocks!)
-          if (fwdDist > 0.03 && fwdDist < 0.48 && latDist < 0.28) {
+          // 2. Predictive + Static Perpendicular / Turning / Roundabout cross-traffic guard (anticipates crossing vehicles 0.36s early -> ZERO intersection clipping!)
+          const crossFwd = (v.length * 0.5 + o.width * 0.5) + 0.30 + Math.min(0.28, (v.speed || 0) * 0.16);
+          const crossLat = (o.length * 0.5 + v.width * 0.5) + 0.16;
+          const oLead = Math.min(0.48, (o.speed || 0) * 0.36);
+          const fRvx = rvx + o.dirX * oLead;
+          const fRvz = rvz + o.dirZ * oLead;
+          const futFwd = fRvx * v.dirX + fRvz * v.dirZ;
+          const futLat = Math.abs(-fRvx * v.dirZ + fRvz * v.dirX);
+          const directHit = fwdDist > 0.01 && fwdDist < crossFwd && latDist < crossLat;
+          const predHit = futFwd > 0.01 && futFwd < crossFwd && futLat < crossLat * 1.05;
+          if (directHit || predHit) {
             const oFwdToV = (-rvx) * o.dirX + (-rvz) * o.dirZ;
-            const oAlreadyInside = oFwdToV < 0.12 || o.speed > v.speed + 0.22;
+            const oAlreadyInside = Boolean(o.accidentId || o.policeOnSceneId) || oFwdToV < 0.16 || o.speed > v.speed + 0.18;
             const yieldToCross = oAlreadyInside || ((v.id || i) > (o.id || j));
             if (yieldToCross) {
               targetSpeed = 0;
               blockedByVehicle = true;
+              if ((directHit && fwdDist < crossFwd * 0.85) || (predHit && futFwd < crossFwd * 0.72)) hardStop = true;
+              break;
+            }
+          }
+        } else {
+          // 3. Opposing-direction left-turn / narrow-street overlap guard (prevents head-on clipping during turns!)
+          const oppFwd = (v.length + o.length) * 0.56 + 0.16;
+          const oppLat = (v.width + o.width) * 0.68;
+          if (fwdDist > 0.01 && fwdDist < oppFwd && latDist < oppLat) {
+            const yieldOpp = Boolean(o.accidentId || o.policeOnSceneId) || ((v.id || i) > (o.id || j));
+            if (yieldOpp) {
+              targetSpeed = 0;
+              blockedByVehicle = true;
+              if (fwdDist < oppFwd * 0.75) hardStop = true;
               break;
             }
           }
         }
       }
 
-      const accel = targetSpeed < v.speed ? 8.5 : 3.4;
+      const accel = targetSpeed < v.speed ? (hardStop ? 24.0 : 10.5) : 3.4;
       v.speed += (targetSpeed - v.speed) * Math.min(1, effDt * accel);
+      if (hardStop && targetSpeed === 0) v.speed = Math.min(v.speed, 0.04);
       if (v.speed < 0.01 && targetSpeed === 0) v.speed = 0;
 
       // Smart Anti-Deadlock Timer: waiting cleanly at a red light NEVER deletes cars mid-road; genuine traffic jams reroute once then clear at 12s!
@@ -2466,6 +2958,16 @@ export class TrafficManager {
               mood: 'good'
             };
           }
+        }
+        // Traffic Police patrol car arrived at accident destination -> park safely on scene instead of despawning!
+        if (v.kind === 'police' && v.policeTargetAccidentId && this.accidents.some((a) => a.id === v.policeTargetAccidentId)) {
+          v.seg = Math.max(0, v.path.length - 2);
+          v.t = 0.72;
+          v.policeOnSceneId = v.policeTargetAccidentId;
+          v.speed = 0;
+          v.stuckTimer = 0;
+          this.syncVehicleTransform(v, effDt);
+          continue;
         }
         if (v.kind === 'garbagetruck' && v.destTile) {
           const dtTile = this.sim.getTile(v.destTile.x, v.destTile.z);
@@ -2820,8 +3322,26 @@ export class TrafficManager {
       }
 
       p.ttl -= effDt;
-      p.t += p.speed * effDt;
-      p.walkPhase = (p.walkPhase + p.speed * effDt * 15) % (Math.PI * 2);
+      // Gentle pedestrian crosswalk courtesy yield when a moving vehicle is physically crossing directly ahead
+      let pedYield = false;
+      const vehs = this.vehicles;
+      for (let vj = 0; vj < vehs.length; vj++) {
+        const veh = vehs[vj];
+        if (!veh || veh.inTunnel || (veh.speed || 0) < 0.08) continue;
+        const dx = veh.wx - p.wx;
+        const dz = veh.wz - p.wz;
+        if (dx * dx + dz * dz < 0.085) {
+          const ahead = dx * (p.dirX || 0) + dz * (p.dirZ || 0);
+          if (ahead > -0.02 && ahead < 0.28) {
+            pedYield = true;
+            break;
+          }
+        }
+      }
+      if (!pedYield) {
+        p.t += p.speed * effDt;
+        p.walkPhase = (p.walkPhase + p.speed * effDt * 15) % (Math.PI * 2);
+      }
 
       if (p.t >= 1.0) {
         if (p.ttl <= 0 && this.pedestrians.length > Math.floor(targetPed * 0.85)) {

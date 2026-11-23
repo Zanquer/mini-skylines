@@ -129,7 +129,7 @@ function bootGame() {
     ui.showToast(
       restored
         ? `👋 已恢复离线进度【${sim.cityName}】(${sim.getFormattedDate()})`
-        : '🏞️ 山河天际线 Pro v8.2 已启动！体验超清 PBR 建筑、动态天气、⚓海运航道、连续环线地铁与全屏防覆盖建造！'
+        : '🏞️ 山河天际线 Pro v8.3 已启动！体验交警出警事故清障、深锚穿山隧道口、连续环线地铁与全屏防覆盖建造！'
     );
   }, 550);
 

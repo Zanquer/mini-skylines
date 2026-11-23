@@ -3769,6 +3769,29 @@ export class ArchitectureLibrary {
       return grp;
     }
 
+    if (k === 'police') {
+      // Traffic Police Patrol Cruiser (uses bundled Kenney CC0 police.glb + dual red/blue roof lightbar, ZERO material leaks!)
+      if (this._placeFittedGLB(grp, 'cc0_police', 0, 0, 0, 0.165, 0.145, 0.34, false, 0)) {
+        const stL = this._addMesh(grp, this.geos.box, this.m.beaconRed, -0.026, 0.140, 0.005, 0.046, 0.016, 0.024, false);
+        stL.name = 'strobe';
+        const stR = this._addMesh(grp, this.geos.box, this.m.cyanGlow, 0.026, 0.140, 0.005, 0.046, 0.016, 0.024, false);
+        stR.name = 'strobeB';
+        return grp;
+      }
+      // Sleek White & Navy Procedural Patrol Sedan Fallback
+      this._addMesh(grp, this.geos.vehSedanBody, this.m.carPearlWhite, 0, 0, 0, 1, 1, 1, true);
+      this._addMesh(grp, this.geos.box, this.m.airlineBlue, 0, 0.048, -0.004, 0.148, 0.024, 0.255, false);
+      this._addMesh(grp, this.geos.vehSedanCabin, this.m.cockpitGlass, 0, 0, 0, 1, 1, 1, true);
+      this._addMesh(grp, this.geos.vehSedanWheels, this.m.tireRubber, 0, 0, 0, 1, 1, 1, true);
+      this._addMesh(grp, this.geos.vehSedanHL, this.m.vehHeadlight, 0, 0, 0, 1, 1, 1, false);
+      this._addMesh(grp, this.geos.vehSedanTL, this.m.vehTaillight, 0, 0, 0, 1, 1, 1, false);
+      const stL = this._addMesh(grp, this.geos.box, this.m.beaconRed, -0.025, 0.118, -0.010, 0.044, 0.015, 0.024, false);
+      stL.name = 'strobe';
+      const stR = this._addMesh(grp, this.geos.box, this.m.cyanGlow, 0.025, 0.118, -0.010, 0.044, 0.015, 0.024, false);
+      stR.name = 'strobeB';
+      return grp;
+    }
+
     if (k === 'garbagetruck') {
       if (this._placeFittedGLB(grp, 'cc0_garbage', 0, 0, 0, 0.19, 0.22, 0.44, false, 0)) {
         return grp;

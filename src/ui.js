@@ -1356,6 +1356,7 @@ export class GameUI {
     const actionsEl = document.getElementById('insp-actions');
     const hintEl = document.getElementById('insp-hint');
     const progWrap = document.getElementById('insp-prog-wrap');
+    const progFill = document.getElementById('insp-prog-fill');
 
     const stuckSec = Number(veh.stuckTimer || 0);
     const rawSpd = Number(veh.speed ?? veh.curSpeed ?? 0);
@@ -1363,20 +1364,55 @@ export class GameUI {
     const dx = veh.destTile?.x ?? veh.destTile?.tx;
     const dz = veh.destTile?.z ?? veh.destTile?.tz;
     const hasDest = typeof dx === 'number' && typeof dz === 'number';
+    const activeAcc = (Array.isArray(this.traffic?.accidents) && (veh.accidentId || veh.policeOnSceneId || veh.policeTargetAccidentId))
+      ? this.traffic.accidents.find((a) => a.id === (veh.accidentId || veh.policeOnSceneId || veh.policeTargetAccidentId))
+      : null;
 
-    titleEl.textContent = veh.tripLabel ? `🚗 ${veh.tripLabel}` : '🚗 市民/货运车辆追踪';
+    titleEl.textContent = veh.tripLabel
+      ? (veh.kind === 'police' ? veh.tripLabel : (veh.accidentId ? veh.tripLabel : `🚗 ${veh.tripLabel}`))
+      : '🚗 市民/货运车辆追踪';
 
     let typeBadge = '🚗 市民通勤/消费';
-    if (veh.tripType === 'freight') typeBadge = '🚚 工业货运供应链';
+    if (veh.kind === 'police') typeBadge = '🚓 交警执勤巡逻车';
+    else if (veh.accidentId) typeBadge = '🚨 交通事故涉事车辆';
+    else if (veh.tripType === 'freight') typeBadge = '🚚 工业货运供应链';
     else if (veh.tripType === 'service' || (veh.tripLabel && (veh.tripLabel.includes('垃圾') || veh.tripLabel.includes('消防')))) {
       typeBadge = '🚒 市政特种执勤';
     }
 
-    badgesEl.innerHTML = `
-      <span class="badge info">${typeBadge}</span>
+    let statusBadgeHtml = `
       <span class="badge ${stuckSec > 3 ? 'warn' : 'ok'}">
         ${stuckSec > 3 ? `🚦 堵车等待 ${stuckSec.toFixed(1)}s` : '🟢 顺畅行驶中'}
       </span>
+    `;
+    let extraAccRow = '';
+    if (activeAcc) {
+      const rem = activeAcc.state === 'awaiting_police' ? activeAcc.selfClearTimer : activeAcc.remainingTime;
+      const tot = activeAcc.state === 'awaiting_police' ? 26.0 : (activeAcc.totalTime || 10.0);
+      const pct = Math.max(4, Math.min(100, Math.round((1 - rem / Math.max(1, tot)) * 100)));
+      statusBadgeHtml = activeAcc.state === 'clearing'
+        ? `<span class="badge ok">🚓 交警现场清障中 · 剩余 ${rem.toFixed(1)}s</span>`
+        : (activeAcc.state === 'police_en_route'
+          ? `<span class="badge info">🚓 交警巡逻车赶赴中</span>`
+          : `<span class="badge warn">⏳ 等待交警 · 自清 ${Math.ceil(rem)}s</span>`);
+      extraAccRow = `<div style="grid-column:1/-1;color:#fde68a;">🚨 事故原因：<strong>${activeAcc.cause}</strong> · 处置进度 <strong>${pct}%</strong></div>`;
+      if (progWrap && progFill) {
+        const progLbl = document.getElementById('insp-prog-label');
+        if (progLbl) {
+          progLbl.textContent = activeAcc.state === 'awaiting_police'
+            ? '⏳ 事故自行协商撤离进度'
+            : '🚓 交警事故清障进度';
+        }
+        progWrap.style.display = 'block';
+        progFill.style.width = `${pct}%`;
+      }
+    } else if (progWrap) {
+      progWrap.style.display = 'none';
+    }
+
+    badgesEl.innerHTML = `
+      <span class="badge info">${typeBadge}</span>
+      ${statusBadgeHtml}
     `;
 
     gridEl.innerHTML = `
@@ -1385,7 +1421,8 @@ export class GameUI {
         <div style="margin-top:3px;">🏁 <strong>目的地：</strong><span style="color:#7dd3fc;font-weight:700;">${veh.toName || (hasDest ? `地块 (${dx}, ${dz})` : '城际干道')}</span></div>
       </div>
       <div>当前车速：<strong>${kmh} km/h</strong></div>
-      <div>受阻等待：<strong>${stuckSec.toFixed(1)} / 12s</strong></div>
+      <div>${activeAcc ? `预计疏通：<strong>${(activeAcc.state === 'awaiting_police' ? activeAcc.selfClearTimer : activeAcc.remainingTime).toFixed(1)} 秒</strong>` : `受阻等待：<strong>${stuckSec.toFixed(1)} / 12s</strong>`}</div>
+      ${extraAccRow}
     `;
 
     if (hasDest) {
@@ -1411,8 +1448,9 @@ export class GameUI {
       actionsEl.innerHTML = '';
     }
 
-    progWrap.style.display = 'none';
-    hintEl.textContent = '💡 若路口死锁等待超 12 秒，货车超时会导致商场断货、垃圾车超时会导致小区垃圾成山！可点击拥堵路口切换【🛑 支路让主路】或【🔄 改建环岛】。';
+    hintEl.textContent = activeAcc
+      ? '🚓 交警巡逻车抵达现场后将布设警示锥桶并按倒计时勘查清障；完善【🚓 警察总局】覆盖可缩短处置耗时！'
+      : '💡 若路口死锁等待超 12 秒，货车超时会导致商场断货、垃圾车超时会导致小区垃圾成山！可点击拥堵路口切换【🛑 支路让主路】或【🔄 改建环岛】。';
     card.classList.add('open');
   }
 
@@ -1535,6 +1573,8 @@ export class GameUI {
       }
 
       if (!b.abandoned && b.level < this.sim.getMaxLevelForZone(b.type) && !b.underConstruction && ['RL','RH','CL','CH','I','O'].includes(b.type)) {
+        const progLbl = document.getElementById('insp-prog-label');
+        if (progLbl) progLbl.textContent = '建筑升级进度';
         progWrap.style.display = 'block';
         progFill.style.width = `${Math.min(100, Math.round(b.upgradeProgress || 0))}%`;
       } else {
@@ -1562,9 +1602,27 @@ export class GameUI {
 
       const dirArrows = ['⬆️ 向北单行', '⬇️ 向南单行', '⬅️ 向西单行', '➡️ 向东单行'];
       const isOneWay = typeof t.roadDir === 'number' && t.roadDir >= 0;
+      const tileAcc = Array.isArray(this.traffic?.accidents)
+        ? this.traffic.accidents.find((a) => a.x === x && a.z === z)
+        : null;
+
+      let accBadgeHtml = '';
+      let accRowHtml = '';
+      if (tileAcc) {
+        const rem = tileAcc.state === 'awaiting_police' ? tileAcc.selfClearTimer : tileAcc.remainingTime;
+        const tot = tileAcc.state === 'awaiting_police' ? 26.0 : (tileAcc.totalTime || 10.0);
+        const pct = Math.max(4, Math.min(100, Math.round((1 - rem / Math.max(1, tot)) * 100)));
+        accBadgeHtml = tileAcc.state === 'clearing'
+          ? `<span class="badge ok">🚓 交警现场清障 · 剩余 ${rem.toFixed(1)}s</span>`
+          : (tileAcc.state === 'police_en_route'
+            ? `<span class="badge info">🚓 交警出警赶赴中</span>`
+            : `<span class="badge warn">🚨 交通事故 · 等待交警 (${Math.ceil(rem)}s)</span>`);
+        accRowHtml = `<div style="grid-column:1/-1;color:#fde68a;">🚨 <strong>交通事故：</strong>${tileAcc.cause} · 预计 <strong>${rem.toFixed(1)} 秒</strong>恢复 (${pct}%)</div>`;
+      }
 
       badgesEl.innerHTML = `
         <span class="badge info">海拔 ${elev}m</span>
+        ${accBadgeHtml}
         ${deg >= 3 ? `<span class="badge ok">${jBadgeLabel}</span>` : ''}
         ${isOneWay ? `<span class="badge info">${dirArrows[t.roadDir] || '➡️ 单行道'}</span>` : ''}
         ${t.banTrucks ? `<span class="badge warn">🚫 禁行重卡</span>` : ''}
@@ -1583,6 +1641,7 @@ export class GameUI {
         <div>地价 / 噪音：<strong>${Math.round(t.landValue)} / ${Math.round(t.noise || 0)}</strong></div>
         <div>水体污染：<strong>${Math.round((this.sim.waterPoll[z * 56 + x] || 0) * 100)}%</strong></div>
         <div>路面拥堵：<strong>${Math.round((t.congestion || 0) * 100)}%</strong></div>
+        ${accRowHtml}
         ${busRow}
       `;
 
@@ -1676,7 +1735,22 @@ export class GameUI {
           ? '💡 上游干净河岸适合建【抽水站】，西北深V急流峡谷适合横拉【水力发电大坝】！'
           : '💡 在漫游模式下点击路上行驶的【汽车】可追踪其起点、终点与货运/清运任务！';
       }
-      progWrap.style.display = 'none';
+      if (tileAcc) {
+        const rem = tileAcc.state === 'awaiting_police' ? tileAcc.selfClearTimer : tileAcc.remainingTime;
+        const tot = tileAcc.state === 'awaiting_police' ? 26.0 : (tileAcc.totalTime || 10.0);
+        const pct = Math.max(4, Math.min(100, Math.round((1 - rem / Math.max(1, tot)) * 100)));
+        const progLbl = document.getElementById('insp-prog-label');
+        if (progLbl) {
+          progLbl.textContent = tileAcc.state === 'awaiting_police'
+            ? '⏳ 事故自行协商撤离进度'
+            : '🚓 交警事故清障进度';
+        }
+        progWrap.style.display = 'block';
+        progFill.style.width = `${pct}%`;
+        hintEl.textContent = '🚓 交警抵达事故现场后将按真实处置倒计时勘查清障并恢复通行，建造【🚓 警察总局】可大幅提速！';
+      } else {
+        progWrap.style.display = 'none';
+      }
     }
 
     card.classList.add('open');
@@ -1710,6 +1784,26 @@ export class GameUI {
         const badgesEl = document.getElementById('insp-badges');
         if (badgesEl) {
           badgesEl.innerHTML = `<span class="badge ok">✅ 该车辆已抵达终点或结束行程</span>`;
+        }
+      }
+    } else if (
+      this.renderer?.selectedTile &&
+      document.getElementById('inspector-card')?.classList.contains('open') &&
+      Array.isArray(this.traffic?.accidents) &&
+      this.traffic.accidents.some((a) => a.x === this.renderer.selectedTile.x && a.z === this.renderer.selectedTile.z)
+    ) {
+      // Keep live accident clearance countdown ticking smoothly while inspecting an accident road tile!
+      const st = this.renderer.selectedTile;
+      const tileAcc = this.traffic.accidents.find((a) => a.x === st.x && a.z === st.z);
+      if (tileAcc) {
+        const rem = tileAcc.state === 'awaiting_police' ? tileAcc.selfClearTimer : tileAcc.remainingTime;
+        const tot = tileAcc.state === 'awaiting_police' ? 26.0 : (tileAcc.totalTime || 10.0);
+        const pct = Math.max(4, Math.min(100, Math.round((1 - rem / Math.max(1, tot)) * 100)));
+        const progWrap = document.getElementById('insp-prog-wrap');
+        const progFill = document.getElementById('insp-prog-fill');
+        if (progWrap && progFill) {
+          progWrap.style.display = 'block';
+          progFill.style.width = `${pct}%`;
         }
       }
     }

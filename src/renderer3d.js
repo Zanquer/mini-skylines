@@ -284,6 +284,8 @@ export class CityRenderer3D {
     this.scaffoldPool = [];
     this.meteorPool = [];
     this.damWarnPool = [];
+    this.accidentBeaconPool = [];
+    this.accidentConePool = [];
     this.tornadoRings = [];
     this._initPersistentOverlayMeshes();
 
@@ -670,7 +672,8 @@ export class CityRenderer3D {
     this.selectedTileRim.visible = false;
     this.uiOverlayGroup.add(this.selectedTileRim);
 
-    this.selectedVehicleHalo = new THREE.Mesh(this.geos.cylTower, this.mats.goldGlow);
+    this.selectedVehicleHalo = new THREE.Mesh(this.geos.taperSpire, this.mats.goldGlow);
+    this.selectedVehicleHalo.rotation.x = Math.PI;
     this.selectedVehicleHalo.visible = false;
     this.uiOverlayGroup.add(this.selectedVehicleHalo);
 
@@ -682,12 +685,14 @@ export class CityRenderer3D {
     }
 
     // Pre-warm fixed VFX & overlay pools once at startup -> ZERO Material allocations during render() even in disasters!
-    this._poolCaps = { glow: 56, fire: 64, smoke: 96, spray: 48, damWarn: 16, preview: 64, scaffold: 32, meteor: 8 };
+    this._poolCaps = { glow: 56, fire: 64, smoke: 96, spray: 48, damWarn: 16, preview: 64, scaffold: 32, meteor: 8, accidentBeacon: 8, accidentCone: 24 };
     for (let i = 0; i < this._poolCaps.glow; i++) this._acquirePoolSprite(this.glowPool, i, { map: this.glowTex, additive: true });
     for (let i = 0; i < this._poolCaps.fire; i++) this._acquirePoolSprite(this.firePool, i, { map: this.smokeTex });
     for (let i = 0; i < this._poolCaps.smoke; i++) this._acquirePoolSprite(this.smokePool, i, { map: this.smokeTex });
     for (let i = 0; i < this._poolCaps.spray; i++) this._acquirePoolSprite(this.sprayPool, i, { map: this.smokeTex });
     for (let i = 0; i < this._poolCaps.damWarn; i++) this._acquirePoolMesh(this.damWarnPool, i, this.geos.waterSphere, this.mats.redCross);
+    for (let i = 0; i < this._poolCaps.accidentBeacon; i++) this._acquirePoolMesh(this.accidentBeaconPool, i, this.geos.waterSphere, this.mats.redCross);
+    for (let i = 0; i < this._poolCaps.accidentCone; i++) this._acquirePoolMesh(this.accidentConePool, i, this.geos.taperSpire, this.mats.meteorGlow);
     for (let i = 0; i < this._poolCaps.preview; i++) this._acquirePoolMesh(this.previewMeshPool, i, this.geos.unitBox, this.mats.previewMat);
     for (let i = 0; i < this._poolCaps.preview; i++) this._acquirePoolMesh(this.previewRimPool, i, this.geos.unitBox, this.mats.previewRimMat);
     for (let i = 0; i < this._poolCaps.scaffold; i++) this._acquirePoolMesh(this.scaffoldPool, i, this.geos.unitBox, this.mats.goldGlow);
@@ -2003,7 +2008,21 @@ export class CityRenderer3D {
       if (tA.ramp || tB.ramp) return null;
       return this._sampleInfraHeight(ih.elevCornerY, wx, wz);
     }
-    if (tA.dam || tB.dam || tA.roadGround === 4 || tB.roadGround === 4) return null;
+    if (tA.dam || tB.dam) return null;
+    const isT0 = tA.roadGround === 4;
+    const isT1 = tB.roadGround === 4;
+    if (isT0 && isT1) return null;
+    if (isT0 !== isT1) {
+      // Mountain tunnel portal transition: clamp (wx, wz) inside the surface approach tile so tires ride 100% flush with the portal throat!
+      const surf = isT0 ? nxt : cur;
+      const sx0 = surf.x - HALF_GRID + 0.02;
+      const sx1 = surf.x - HALF_GRID + 0.98;
+      const sz0 = surf.z - HALF_GRID + 0.02;
+      const sz1 = surf.z - HALF_GRID + 0.98;
+      const cx = Math.max(sx0, Math.min(sx1, wx));
+      const cz = Math.max(sz0, Math.min(sz1, wz));
+      return this._sampleInfraHeight(ih.roadCornerY, cx, cz) + 0.012;
+    }
     return this._sampleInfraHeight(ih.roadCornerY, wx, wz);
   }
 
@@ -2125,38 +2144,56 @@ export class CityRenderer3D {
 
       const obj = entry.obj;
       obj.visible = true;
-      // Smooth curb entry/exit scale easing on origin & final arrival tiles (prevents sudden visual pop-in/out!)
+      // Smooth curb entry/exit & tunnel-mouth depth easing (prevents sudden visual pop-in/out & hillside bumper poke!)
       let vScale = 1.0;
-      if (!v.busLineId && v.path && v.path.length >= 2) {
+      if (!v.busLineId && !v.accidentId && !v.policeOnSceneId && v.path && v.path.length >= 2) {
         if (v.seg === 0 && v.t < 0.22) vScale = 0.35 + (v.t / 0.22) * 0.65;
         else if (v.seg >= v.path.length - 2 && v.t > 0.78) vScale = 0.35 + ((1.0 - v.t) / 0.22) * 0.65;
+      }
+      if (!isUnder && typeof v._portalFade === 'number' && v._portalFade < 1.0) {
+        vScale *= v._portalFade;
       }
       obj.scale.setScalar(Math.max(0.35, Math.min(1.0, vScale)));
       this.vehiclePool.push({ kind: v.kind, obj, vehicle: v });
 
+      const yawBase = Math.atan2(v.dirX, v.dirZ) + (v.accidentYawOffset || 0);
       if (isUnder) {
         const tx = Math.floor(v.wx + HALF_GRID);
         const tz = Math.floor(v.wz + HALF_GRID);
         const tunY = inBounds(tx, tz) ? (this.sim.getTileElev(tx, tz) + 0.38) : (v.wy + 0.35);
         obj.position.set(v.wx, tunY, v.wz);
-        obj.rotation.set(0, Math.atan2(v.dirX, v.dirZ), 0);
+        obj.rotation.set(0, yawBase, 0);
       } else {
         const deckY = this._vehicleDeckHeight(v, v.wx, v.wz);
+        const pCur = v.path && v.path[v.seg];
+        const pNxt = v.path && v.path[v.seg + 1];
+        const onPortalSeg = Boolean(
+          pCur && pNxt && pCur.layer === 0 && pNxt.layer === 0 &&
+          ((this.sim.getTile(pCur.x, pCur.z)?.roadGround === 4) !== (this.sim.getTile(pNxt.x, pNxt.z)?.roadGround === 4))
+        );
         if (deckY !== null) {
-          const ahead = this._vehicleDeckHeight(v, v.wx + v.dirX * 0.12, v.wz + v.dirZ * 0.12);
-          const behind = this._vehicleDeckHeight(v, v.wx - v.dirX * 0.12, v.wz - v.dirZ * 0.12);
-          const deckPitch = (ahead !== null && behind !== null) ? Math.atan2(ahead - behind, 0.24) : (v.pitch || 0);
+          let deckPitch = 0;
+          if (!onPortalSeg) {
+            const ahead = this._vehicleDeckHeight(v, v.wx + v.dirX * 0.12, v.wz + v.dirZ * 0.12);
+            const behind = this._vehicleDeckHeight(v, v.wx - v.dirX * 0.12, v.wz - v.dirZ * 0.12);
+            deckPitch = (ahead !== null && behind !== null) ? Math.atan2(ahead - behind, 0.24) : (v.pitch || 0);
+          }
           obj.position.set(v.wx, deckY + 0.004, v.wz);
-          obj.rotation.set(-deckPitch, Math.atan2(v.dirX, v.dirZ), 0);
+          obj.rotation.set(-deckPitch, yawBase, 0);
         } else {
           obj.position.set(v.wx, v.wy, v.wz);
-          obj.rotation.set(-(v.pitch || 0), Math.atan2(v.dirX, v.dirZ), 0);
+          obj.rotation.set(onPortalSeg ? 0 : -(v.pitch || 0), yawBase, 0);
         }
       }
 
       if (v.kind === 'firetruck') {
         const st = obj.getObjectByName('strobe');
         if (st) st.material = strobeRed ? this.mats.redCross : this.mats.cyanGlow;
+      } else if (v.kind === 'police') {
+        const stL = obj.getObjectByName('strobe');
+        const stR = obj.getObjectByName('strobeB');
+        if (stL) stL.material = strobeRed ? this.mats.redCross : this.mats.cyanGlow;
+        if (stR) stR.material = strobeRed ? this.mats.cyanGlow : this.mats.redCross;
       }
     }
 
@@ -2433,6 +2470,8 @@ export class CityRenderer3D {
     let smokeCount = 0;
     let sprayCount = 0;
     let damWarnCount = 0;
+    let accBeaconCount = 0;
+    let accConeCount = 0;
     let glowCount = 0;
 
     if (!isUnder) {
@@ -2498,6 +2537,41 @@ export class CityRenderer3D {
         sp.visible = true;
       }
 
+      // Active Traffic Accident 3D Scene Markers (zero-leak pooled safety cones, pulsing overhead beacon & hood steam!)
+      const activeAccidents = Array.isArray(this.traffic?.accidents) ? this.traffic.accidents : [];
+      for (let aIdx = 0; aIdx < activeAccidents.length; aIdx++) {
+        const acc = activeAccidents[aIdx];
+        const deckY = this.sim.infraHeights?.roadCornerY
+          ? this._sampleInfraHeight(this.sim.infraHeights.roadCornerY, acc.wx, acc.wz)
+          : (acc.wy || this.sim.getTileElev(acc.x, acc.z) + 0.03);
+        const coneOffsets = [[-0.25, -0.22], [0.25, -0.22], [-0.25, 0.22], [0.25, 0.22]];
+        for (let ci = 0; ci < coneOffsets.length && accConeCount < this._poolCaps.accidentCone; ci++) {
+          const cone = this._acquirePoolMesh(this.accidentConePool, accConeCount++, this.geos.taperSpire, this.mats.meteorGlow);
+          cone.scale.set(0.095, 0.085, 0.095);
+          cone.position.set(acc.wx + coneOffsets[ci][0], deckY + 0.045, acc.wz + coneOffsets[ci][1]);
+          cone.visible = true;
+        }
+        if (accBeaconCount < this._poolCaps.accidentBeacon) {
+          const beacon = this._acquirePoolMesh(this.accidentBeaconPool, accBeaconCount++, this.geos.waterSphere, this.mats.redCross);
+          const bob = Math.sin(this.clock * 6.5 + aIdx) * 0.035;
+          beacon.material = acc.state === 'clearing'
+            ? (strobeRed ? this.mats.cyanGlow : this.mats.goldGlow)
+            : (strobeRed ? this.mats.redCross : this.mats.goldGlow);
+          beacon.scale.setScalar(0.17);
+          beacon.position.set(acc.wx, deckY + 0.36 + bob, acc.wz);
+          beacon.visible = true;
+        }
+        if (smokeCount < this._poolCaps.smoke) {
+          const ph = (this.clock * 0.95 + aIdx * 0.37) % 1.0;
+          const sp = this._acquirePoolSprite(this.smokePool, smokeCount++, { map: this.smokeTex });
+          sp.material.color.setHex(0xe2e8f0);
+          sp.material.opacity = 0.50 * (1 - ph);
+          sp.position.set(acc.wx + ph * 0.08, deckY + 0.14 + ph * 0.38, acc.wz - ph * 0.06);
+          sp.scale.setScalar(0.18 + ph * 0.22);
+          sp.visible = true;
+        }
+      }
+
       // Selective Nighttime Glow / Bloom Halos (tower beacons + nearest curved LED streetlamps)
       if (night > 0.20 && this._maxGlowSprites > 0 && this.glowTex) {
         const glowAlpha = Math.min(1, (night - 0.20) / 0.55);
@@ -2535,6 +2609,8 @@ export class CityRenderer3D {
     this._hidePoolFrom(this.smokePool, smokeCount);
     this._hidePoolFrom(this.sprayPool, sprayCount);
     this._hidePoolFrom(this.damWarnPool, damWarnCount);
+    this._hidePoolFrom(this.accidentBeaconPool, accBeaconCount);
+    this._hidePoolFrom(this.accidentConePool, accConeCount);
     this._hidePoolFrom(this.glowPool, glowCount);
 
     // Disasters (pooled meteors & tornado funnel)
@@ -2667,12 +2743,15 @@ export class CityRenderer3D {
     // Zero-Leak 3D Weather Precipitation (Rain Streaks & Snowflakes)
     this._syncWeatherParticles(dt, isUnder);
 
-    // Selected Vehicle Golden Halo
+    // Selected Vehicle Floating Golden Pointer (sleek inverted pin — never obscures the vehicle or accident scene!)
     if (!isUnder && this.selectedVehicle && this.traffic.vehicles.includes(this.selectedVehicle) && !this.selectedVehicle.inTunnel) {
       const v = this.selectedVehicle;
-      const pulse = 1.0 + Math.sin(this.clock * 7.5) * 0.14;
-      this.selectedVehicleHalo.scale.set(0.68 * pulse, 0.035, 0.68 * pulse);
-      this.selectedVehicleHalo.position.set(v.wx, (v.wy || 0) + 0.24, v.wz);
+      const bob = Math.sin(this.clock * 6.5) * 0.035;
+      const pulse = 1.0 + Math.sin(this.clock * 7.5) * 0.10;
+      const baseY = this._vehicleDeckHeight(v, v.wx, v.wz) ?? (v.wy || 0);
+      this.selectedVehicleHalo.scale.set(0.14 * pulse, 0.16, 0.14 * pulse);
+      this.selectedVehicleHalo.position.set(v.wx, baseY + 0.34 + bob, v.wz);
+      this.selectedVehicleHalo.rotation.y = this.clock * 2.2;
       this.selectedVehicleHalo.visible = true;
     } else {
       this.selectedVehicleHalo.visible = false;
