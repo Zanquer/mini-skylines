@@ -145,40 +145,34 @@ return this.manifest;
 return null;
 }
 }
-async loadPBRTextures(THREE, { quality = 'high', onProgress = null } = {}) {
+async loadPBRTextures(THREE, { quality = 'high', onProgress = null, onSuiteUpdate = null, onAlbedoReady = null } = {}) {
 if (!THREE || !THREE.TextureLoader || !this.isExternalSupported) {
 if (onProgress) onProgress(1, '内置材质已就绪');
+if (onAlbedoReady) onAlbedoReady(this.textures);
 return this.textures;
 }
 const manifest = await this.loadManifest();
 if (!manifest || !Array.isArray(manifest.textures)) {
 if (onProgress) onProgress(1, '使用内置高清材质');
+if (onAlbedoReady) onAlbedoReady(this.textures);
 return this.textures;
 }
 const loadPbrMaps = quality !== 'eco';
-const jobs = [];
+const albedoJobs = [];
+const detailJobs = [];
 for (const entry of manifest.textures) {
-jobs.push({ key: entry.key, channel: 'map', url: this.baseUrl + entry.albedo, srgb: true });
+albedoJobs.push({ key: entry.key, channel: 'map', url: this.baseUrl + entry.albedo, srgb: true });
 if (loadPbrMaps) {
-if (entry.normal) jobs.push({ key: entry.key, channel: 'normalMap', url: this.baseUrl + entry.normal, srgb: false });
-if (entry.roughness) jobs.push({ key: entry.key, channel: 'roughnessMap', url: this.baseUrl + entry.roughness, srgb: false });
+if (entry.normal) detailJobs.push({ key: entry.key, channel: 'normalMap', url: this.baseUrl + entry.normal, srgb: false });
+if (entry.roughness) detailJobs.push({ key: entry.key, channel: 'roughnessMap', url: this.baseUrl + entry.roughness, srgb: false });
 }
 }
 const loader = new THREE.TextureLoader();
+const runBatch = async (jobs, concurrency, phaseLabel, emitEvery) => {
 let done = 0;
 const total = Math.max(1, jobs.length);
-const concurrency = 6;
 let cursor = 0;
-const runWorker = async () => {
-while (cursor < jobs.length) {
-const job = jobs[cursor++];
-if (!this.textures[job.key]) this.textures[job.key] = {};
-if (this.textures[job.key][job.channel]) {
-done++;
-if (onProgress) onProgress(done / total, `加载 PBR 纹理 (${done}/${total})`);
-continue;
-}
-await new Promise((resolve) => {
+const loadOne = (job, attempt = 0) => new Promise((resolve) => {
 loader.load(
 job.url,
 (tex) => {
@@ -188,23 +182,43 @@ tex.anisotropy = quality === 'high' ? 4 : 2;
 tex.colorSpace = job.srgb ? THREE.SRGBColorSpace : (THREE.NoColorSpace || THREE.LinearSRGBColorSpace);
 tex.needsUpdate = true;
 this.textures[job.key][job.channel] = tex;
-done++;
-if (onProgress) onProgress(done / total, `加载高清 PBR 贴图 (${done}/${total})`);
-resolve();
+resolve(true);
 },
 undefined,
 () => {
-done++;
-if (onProgress) onProgress(done / total, `加载贴图 (${done}/${total})`);
-resolve();
+if (attempt < 1) {
+setTimeout(() => loadOne(job, attempt + 1).then(resolve), 220);
+return;
+}
+resolve(false);
 }
 );
 });
+const runWorker = async () => {
+while (cursor < jobs.length) {
+const job = jobs[cursor++];
+if (!this.textures[job.key]) this.textures[job.key] = {};
+if (!this.textures[job.key][job.channel]) {
+await loadOne(job, 0);
+}
+done++;
+if (onProgress) onProgress(done / total, `${phaseLabel} (${done}/${total})`);
+if (onSuiteUpdate && (done % emitEvery === 0 || done === total)) {
+onSuiteUpdate(this.textures);
+}
 }
 };
 const workers = [];
-for (let i = 0; i < concurrency; i++) workers.push(runWorker());
+for (let i = 0; i < Math.min(concurrency, jobs.length || 1); i++) workers.push(runWorker());
 await Promise.all(workers);
+};
+await runBatch(albedoJobs, 10, '加载主视觉高清贴图', 2);
+if (onSuiteUpdate) onSuiteUpdate(this.textures);
+if (onAlbedoReady) onAlbedoReady(this.textures);
+if (detailJobs.length > 0) {
+await runBatch(detailJobs, 8, '补全 PBR 法线/光泽贴图', 4);
+if (onSuiteUpdate) onSuiteUpdate(this.textures);
+}
 return this.textures;
 }
 async loadGLBModels(THREE, { onProgress = null } = {}) {
@@ -309,28 +323,39 @@ await Promise.all(workers);
 return this.glbs;
 }
 getCacheName() {
-const ver = (this.manifest && this.manifest.version) || 'v7.0';
+const ver = (this.manifest && this.manifest.version) || 'v8.4';
 return `mini-skylines-${ver}`;
+}
+getAssetCacheName() {
+const ver = (this.manifest && this.manifest.version) || 'v8.4-dev';
+const assetHash = ver.split('-')[1] || 'dev';
+return `mini-skylines-assets-${assetHash}`;
 }
 async getOfflineCacheStatus() {
 if (typeof caches === 'undefined' || !this.isExternalSupported) {
 return { supported: false, version: 'offline-inline', cachedCount: 0, totalCount: 0, totalBytes: 0, complete: false };
 }
 const manifest = await this.loadManifest();
-const version = (manifest && manifest.version) || 'v7.0';
+const version = (manifest && manifest.version) || 'v8.4';
 const coreUrls = ['./', './index.html', './app.bundle.js', './vendor/three_classic.js', './manifest.json', './assets/manifest.json'];
 const assetUrls = manifest && Array.isArray(manifest.files) ? manifest.files.map((f) => './' + f.path) : [];
-const allUrls = [...coreUrls, ...assetUrls];
+const totalCount = coreUrls.length + assetUrls.length;
 const totalBytes = (manifest ? manifest.totalBytes : 0) + 1400000;
 let cachedCount = 0;
 try {
 const names = await caches.keys();
-const targetName = names.find((n) => n === this.getCacheName()) || names.find((n) => n.startsWith('mini-skylines-'));
-if (targetName) {
-const cache = await caches.open(targetName);
-for (const u of allUrls) {
-const hit = await cache.match(u, { ignoreSearch: true });
-if (hit) cachedCount++;
+const codeCacheName = names.find((n) => n === this.getCacheName()) || names.find((n) => n.startsWith('mini-skylines-v'));
+const assetCacheName = names.find((n) => n === this.getAssetCacheName()) || codeCacheName;
+if (codeCacheName) {
+const codeCache = await caches.open(codeCacheName);
+for (const u of coreUrls) {
+if (await codeCache.match(u, { ignoreSearch: true })) cachedCount++;
+}
+}
+if (assetCacheName) {
+const assetCache = await caches.open(assetCacheName);
+for (const u of assetUrls) {
+if (await assetCache.match(u, { ignoreSearch: true })) cachedCount++;
 }
 }
 } catch {}
@@ -338,9 +363,9 @@ return {
 supported: true,
 version,
 cachedCount,
-totalCount: allUrls.length,
+totalCount,
 totalBytes,
-complete: allUrls.length > 0 && cachedCount >= allUrls.length - 1
+complete: totalCount > 0 && cachedCount >= totalCount - 1
 };
 }
 async cacheAllOfflineAssets(onProgress = null) {
@@ -350,23 +375,27 @@ return { ok: false, reason: '当前运行环境不支持离线 Cache Storage（�
 const manifest = await this.loadManifest();
 const coreUrls = ['./', './index.html', './app.bundle.js', './vendor/three_classic.js', './manifest.json', './assets/manifest.json'];
 const assetUrls = manifest && Array.isArray(manifest.files) ? manifest.files.map((f) => './' + f.path) : [];
-const allUrls = [...coreUrls, ...assetUrls];
-const cacheName = this.getCacheName();
-const cache = await caches.open(cacheName);
+const items = [
+...coreUrls.map((url) => ({ url, isAsset: false })),
+...assetUrls.map((url) => ({ url, isAsset: true }))
+];
+const codeCache = await caches.open(this.getCacheName());
+const assetCache = await caches.open(this.getAssetCacheName());
 let done = 0;
 let failed = 0;
-const total = Math.max(1, allUrls.length);
-const concurrency = 4;
+const total = Math.max(1, items.length);
+const concurrency = 6;
 let cursor = 0;
 const run = async () => {
-while (cursor < allUrls.length) {
-const url = allUrls[cursor++];
+while (cursor < items.length) {
+const item = items[cursor++];
+const targetCache = item.isAsset ? assetCache : codeCache;
 try {
-const existing = await cache.match(url, { ignoreSearch: true });
+const existing = await targetCache.match(item.url, { ignoreSearch: true });
 if (!existing) {
-const resp = await fetch(url, { cache: 'reload' });
+const resp = await fetch(item.url, { cache: 'reload' });
 if (resp && resp.ok) {
-await cache.put(url, resp.clone());
+await targetCache.put(item.url, resp.clone());
 } else {
 failed++;
 }
@@ -381,7 +410,7 @@ if (onProgress) onProgress(done / total, done, total);
 const workers = [];
 for (let i = 0; i < concurrency; i++) workers.push(run());
 await Promise.all(workers);
-return { ok: failed === 0, cached: done - failed, total: allUrls.length, failed, version: this.manifest?.version || 'v7.0' };
+return { ok: failed === 0, cached: done - failed, total: items.length, failed, version: this.manifest?.version || 'v8.4' };
 }
 async checkForUpdates() {
 if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) {
@@ -13523,20 +13552,29 @@ const waterShort = this.waterDemand > this.waterSupply;
 if (this.traffic && Array.isArray(this.traffic.accidents)) {
 for (let ai = 0; ai < this.traffic.accidents.length; ai++) {
 const acc = this.traffic.accidents[ai];
+const isJam = acc.type === 'jam';
 const reasonText = acc.state === 'clearing'
-? `🚓 交警正在现场勘查清障，预计剩余 ${Math.ceil(acc.remainingTime)} 秒恢复通行（${acc.cause}）`
+? (isJam
+? `🚓 交警正在现场绿波指挥疏导，预计剩余 ${Math.ceil(acc.remainingTime)} 秒恢复畅通`
+: `🚓 交警正在现场勘查清障，预计剩余 ${Math.ceil(acc.remainingTime)} 秒恢复通行（${acc.cause}）`)
 : (acc.state === 'police_en_route'
-? `🚓 交警巡逻车已紧急出警，正赶往现场处理【${acc.cause}】`
-: `🚨 发生【${acc.cause}】，等待警察总局派交警处理（无警局时 ${Math.ceil(acc.selfClearTimer)} 秒后自行协商撤离）`);
+? (isJam
+? `🚓 交警巡逻车已紧急出警，正赶往现场指挥疏导拥堵路口`
+: `🚓 交警巡逻车已紧急出警，正赶往现场处理【${acc.cause}】`)
+: (isJam
+? `🚦 路口出现车流拥堵滞留，等待警察总局派交警疏导（无警局时 ${Math.ceil(acc.selfClearTimer)} 秒后缓慢自清）`
+: `🚨 发生【${acc.cause}】，等待警察总局派交警处理（无警局时 ${Math.ceil(acc.selfClearTimer)} 秒后自行协商撤离）`));
 categories.disaster.push({
 category: 'disaster',
-icon: '🚨',
-title: `交通事故 · ${acc.roadName}`,
+icon: isJam ? '🚦' : '🚨',
+title: `${isJam ? '严重拥堵疏导' : '交通事故'} · ${acc.roadName}`,
 reason: reasonText,
-actionTip: '确保道路连通已通电的【🚓 警察总局】可 3 倍速派交警专业清障，点击可跳转查看现场进度',
+actionTip: isJam
+? '交警将启动人工绿波放行；长期治堵请点击路口切【🛑 主路优先】或【🔄 改建环岛】'
+: '确保道路连通已通电的【🚓 警察总局】可 3 倍速派交警专业清障，点击可跳转查看现场进度',
 x: acc.x,
 z: acc.z,
-severity: 4
+severity: isJam ? 3 : 4
 });
 }
 }
@@ -16365,6 +16403,7 @@ const wCenter = tileToWorld(chosenTile.x, chosenTile.z);
 const primaryVeh = involved[0];
 const acc = {
 id: this._nextAccidentId++,
+type: options.type || 'crash',
 x: chosenTile.x,
 z: chosenTile.z,
 wx: primaryVeh ? primaryVeh.wx : wCenter.wx,
@@ -16396,6 +16435,46 @@ chosenTile.congestion = Math.max(chosenTile.congestion || 0, 0.85);
 this.sim.latestChirp = {
 user: '@交警支队播报',
 text: `🚨 (${acc.x},${acc.z}) ${acc.roadName}发生【${acc.cause}】！道路局部缓行，已呼叫附近警察总局派交警巡逻车赶赴现场处理。`,
+mood: 'warn'
+};
+this.tryDispatchPoliceCar();
+return acc;
+}
+triggerTrafficJamIntervention(tx, tz, options = {}) {
+if (!inBounds(tx, tz) || this.accidents.length >= 3) return null;
+const t = this.sim.getTile(tx, tz);
+if (!t || !(t.roadGround >= 1 && t.roadGround <= 3) || t.dam || t.ramp) return null;
+if (this.accidents.some((a) => Math.hypot(a.x - tx, a.z - tz) < 5.5)) return null;
+const deg = this.roadDegree[idx(tx, tz)] || 0;
+const roadName = deg >= 4
+? '四向十字路口'
+: (deg === 3 ? '三向交叉路口' : (t.roadGround >= 2 ? '四车道主干道' : '城市街道'));
+const wCenter = tileToWorld(tx, tz);
+const totalTime = Number(options.duration || 7.0);
+const acc = {
+id: this._nextAccidentId++,
+type: 'jam',
+x: tx,
+z: tz,
+wx: wCenter.wx,
+wy: this.getRoadNodeY(tx, tz, 0),
+wz: wCenter.wz,
+roadName,
+cause: options.cause || '路口车流严重拥堵打结',
+vehicleIds: [],
+state: 'awaiting_police',
+policeVehicleId: null,
+policeStationTile: null,
+totalTime,
+remainingTime: totalTime,
+selfClearTimer: Number(options.selfClearTime || 14.0),
+elapsed: 0
+};
+this.accidents.push(acc);
+t.congestion = Math.max(t.congestion || 0, 0.90);
+this.sim.latestChirp = {
+user: '@交警支队播报',
+text: `🚦 (${acc.x},${acc.z}) ${acc.roadName}车辆拥堵滞留！已派附近警察总局【🚓 交警巡逻车】火速前往现场指挥疏导！`,
 mood: 'warn'
 };
 this.tryDispatchPoliceCar();
@@ -16444,9 +16523,9 @@ policeReturning: false,
 id: this._nextVehId++,
 variantIdx: 0,
 tripType: 'service',
-tripLabel: '🚓 交警紧急出警处理事故',
+tripLabel: acc.type === 'jam' ? '🚓 交警赶赴疏导拥堵路口' : '🚓 交警紧急出警处理事故',
 fromName,
-toName: `事故现场 (${acc.x}, ${acc.z})`,
+toName: `${acc.type === 'jam' ? '拥堵路口' : '事故现场'} (${acc.x}, ${acc.z})`,
 originTile: { x: bestStation.x, z: bestStation.z },
 destTile: { x: acc.x, z: acc.z },
 color: [0.95, 0.97, 1.0],
@@ -16497,12 +16576,12 @@ acc.state = 'awaiting_police';
 acc.policeVehicleId = null;
 } else {
 const distToScene = Math.hypot(pv.wx - acc.wx, pv.wz - acc.wz);
-const arrived = distToScene <= 0.95 || pv.policeOnSceneId === acc.id || pv.seg >= pv.path.length - 1;
+const arrived = distToScene <= (acc.type === 'jam' ? 1.45 : 0.95) || pv.policeOnSceneId === acc.id || pv.seg >= pv.path.length - 1;
 if (arrived) {
 pv.policeOnSceneId = acc.id;
 pv.speed = 0;
 pv.stuckTimer = 0;
-pv.tripLabel = `🚓 交警正在现场勘查清障`;
+pv.tripLabel = acc.type === 'jam' ? '🚓 交警现场指挥绿波疏导' : '🚓 交警正在现场勘查清障';
 acc.state = 'clearing';
 for (const v of this.vehicles) {
 if (v.accidentId === acc.id) {
@@ -16511,7 +16590,9 @@ v.tripLabel = '🚨 交警现场定责清障中';
 }
 this.sim.latestChirp = {
 user: '@交警支队播报',
-text: `🚓 交警巡逻车已抵达 (${acc.x},${acc.z}) 事故现场并布设警示锥桶，预计 ${Math.ceil(acc.remainingTime)} 秒后清障恢复通行！`,
+text: acc.type === 'jam'
+? `🚓 交警巡逻车已抵达 (${acc.x},${acc.z}) 拥堵路口启动人工绿波指挥，正在疏导积压车流（预计 ${Math.ceil(acc.remainingTime)} 秒）！`
+: `🚓 交警巡逻车已抵达 (${acc.x},${acc.z}) 事故现场并布设警示锥桶，预计 ${Math.ceil(acc.remainingTime)} 秒后清障恢复通行！`,
 mood: 'info'
 };
 }
@@ -16523,6 +16604,16 @@ acc.policeVehicleId = null;
 } else {
 pv.speed = 0;
 pv.stuckTimer = 0;
+if (acc.type === 'jam') {
+for (let vi = 0; vi < this.vehicles.length; vi++) {
+const qv = this.vehicles[vi];
+if (!qv || qv.accidentId || qv.policeOnSceneId || qv.inTunnel || qv.maxSpeed <= 0.1) continue;
+if (Math.hypot(qv.wx - acc.wx, qv.wz - acc.wz) <= 2.65) {
+qv._jamClearTimer = Math.max(qv._jamClearTimer || 0, 2.6);
+qv.stuckTimer = 0;
+}
+}
+}
 acc.remainingTime = Math.max(0, acc.remainingTime - effDt);
 if (acc.remainingTime <= 0) {
 this._clearAccidentEntities(acc, true);
@@ -16530,7 +16621,9 @@ this.totalAccidentsCleared++;
 this.accidents.splice(i, 1);
 this.sim.latestChirp = {
 user: '@交警支队播报',
-text: `✅ (${acc.x},${acc.z}) ${acc.roadName}交通事故已勘查清障完毕，道路恢复畅通！`,
+text: acc.type === 'jam'
+? `✅ (${acc.x},${acc.z}) ${acc.roadName}经交警现场指挥疏导，车流已恢复顺畅通行！`
+: `✅ (${acc.x},${acc.z}) ${acc.roadName}交通事故已勘查清障完毕，道路恢复畅通！`,
 mood: 'good'
 };
 continue;
@@ -16539,12 +16632,24 @@ continue;
 } else {
 acc.selfClearTimer = Math.max(0, acc.selfClearTimer - effDt);
 if (acc.selfClearTimer <= 0) {
+if (acc.type === 'jam') {
+for (let vi = 0; vi < this.vehicles.length; vi++) {
+const qv = this.vehicles[vi];
+if (!qv || qv.accidentId || qv.policeOnSceneId || qv.inTunnel || qv.maxSpeed <= 0.1) continue;
+if (Math.hypot(qv.wx - acc.wx, qv.wz - acc.wz) <= 2.65) {
+qv._jamClearTimer = Math.max(qv._jamClearTimer || 0, 3.2);
+qv.stuckTimer = 0;
+}
+}
+}
 this._clearAccidentEntities(acc, false);
 this.totalAccidentsCleared++;
 this.accidents.splice(i, 1);
 this.sim.latestChirp = {
 user: '@市民路况播报',
-text: `🚧 (${acc.x},${acc.z}) 事故双方自行协商撤离，道路缓慢恢复（建造【🚓 警察总局】可派交警 3 倍速专业处置！）`,
+text: acc.type === 'jam'
+? `🚧 (${acc.x},${acc.z}) 拥堵路口车流缓慢自行疏通（建造【🚓 警察总局】可派交警第一时间绿波疏导！）`
+: `🚧 (${acc.x},${acc.z}) 事故双方自行协商撤离，道路缓慢恢复（建造【🚓 警察总局】可派交警 3 倍速专业处置！）`,
 mood: 'info'
 };
 continue;
@@ -17259,6 +17364,10 @@ const roadBoost = isElevated ? 1.55 : (onRampSeg ? 1.32 : (nxtTile.roadGround >=
 let targetSpeed = v.maxSpeed * roadBoost * weatherRoadMult;
 let blockedBySignal = false;
 let blockedByVehicle = false;
+if (v._jamClearTimer > 0) {
+v._jamClearTimer = Math.max(0, v._jamClearTimer - effDt);
+}
+const inJamGreenWave = (v._jamClearTimer || 0) > 0;
 if (!isElevated && !nxt.onRamp) {
 const nxtIdx = idx(nxt.x, nxt.z);
 const nxtDeg = this.roadDegree[nxtIdx];
@@ -17268,7 +17377,7 @@ const enteringRoundabout = nxtDeg >= 3 && nxtTile.junctionMode === 'roundabout';
 if (inRoundaboutHub || (enteringRoundabout && v.t > 0.30)) {
 targetSpeed = Math.min(targetSpeed, v.maxSpeed * 0.82);
 }
-if (v.kind !== 'firetruck' && v.kind !== 'police' && nxtDeg >= 3) {
+if (v.kind !== 'firetruck' && v.kind !== 'police' && !inJamGreenWave && nxtDeg >= 3) {
 const jMode = nxtTile.junctionMode || 'signal';
 const moveVertical = Math.abs(nxt.z - cur.z) > 0;
 if (jMode === 'roundabout') {
@@ -17294,7 +17403,7 @@ blockedBySignal = true;
 }
 }
 }
-const latLimit = isMultiLane ? 0.145 : 0.175;
+const latLimit = isMultiLane ? 0.105 : 0.175;
 let hardStop = false;
 for (let j = 0; j < this.vehicles.length; j++) {
 if (i === j) continue;
@@ -17313,8 +17422,9 @@ const sameDir = v.dirX * o.dirX + v.dirZ * o.dirZ;
 const fwdDist = rvx * v.dirX + rvz * v.dirZ;
 const latDist = Math.abs(-rvx * v.dirZ + rvz * v.dirX);
 const safeGap = (v.length + o.length) * 0.62 + 0.14;
+const oIsStoppedHazard = Boolean(o.accidentId || o.policeOnSceneId);
 if (sameDir >= 0.45) {
-const effLat = (o.accidentId || o.policeOnSceneId) ? Math.max(latLimit, 0.19) : latLimit;
+const effLat = oIsStoppedHazard ? Math.max(latLimit, 0.19) : latLimit;
 if (fwdDist > 0.01 && fwdDist < safeGap * 1.50 && latDist < effLat) {
 if (fwdDist < safeGap) {
 if (allowOvertake && targetSpeed > 0 && o.speed < v.maxSpeed * 0.85 && !(v.laneChangeCooldown > 0)) {
@@ -17345,8 +17455,9 @@ const directHit = fwdDist > 0.01 && fwdDist < crossFwd && latDist < crossLat;
 const predHit = futFwd > 0.01 && futFwd < crossFwd && futLat < crossLat * 1.05;
 if (directHit || predHit) {
 const oFwdToV = (-rvx) * o.dirX + (-rvz) * o.dirZ;
-const oAlreadyInside = Boolean(o.accidentId || o.policeOnSceneId) || oFwdToV < 0.16 || o.speed > v.speed + 0.18;
-const yieldToCross = oAlreadyInside || ((v.id || i) > (o.id || j));
+const oStrictlyCloser = !inJamGreenWave && (oFwdToV + 0.08 < fwdDist);
+const tieBreak = !inJamGreenWave && Math.abs(oFwdToV - fwdDist) <= 0.08 && ((v.id || i) > (o.id || j));
+const yieldToCross = oIsStoppedHazard || oStrictlyCloser || tieBreak;
 if (yieldToCross) {
 targetSpeed = 0;
 blockedByVehicle = true;
@@ -17358,7 +17469,7 @@ break;
 const oppFwd = (v.length + o.length) * 0.56 + 0.16;
 const oppLat = (v.width + o.width) * 0.68;
 if (fwdDist > 0.01 && fwdDist < oppFwd && latDist < oppLat) {
-const yieldOpp = Boolean(o.accidentId || o.policeOnSceneId) || ((v.id || i) > (o.id || j));
+const yieldOpp = oIsStoppedHazard || (!inJamGreenWave && ((v.id || i) > (o.id || j)));
 if (yieldOpp) {
 targetSpeed = 0;
 blockedByVehicle = true;
@@ -17372,22 +17483,30 @@ const accel = targetSpeed < v.speed ? (hardStop ? 24.0 : 10.5) : 3.4;
 v.speed += (targetSpeed - v.speed) * Math.min(1, effDt * accel);
 if (hardStop && targetSpeed === 0) v.speed = Math.min(v.speed, 0.04);
 if (v.speed < 0.01 && targetSpeed === 0) v.speed = 0;
+const nearActiveIncident = this.accidents.length > 0 && this.accidents.some(
+(a) => Math.abs(a.x - cur.x) <= 3 && Math.abs(a.z - cur.z) <= 3
+);
 v.stuckTimer = v.stuckTimer || 0;
 if (v.speed < 0.06) {
-if (blockedBySignal && !blockedByVehicle && v.maxSpeed > 0.1) {
-v.stuckTimer += effDt * 0.10;
+if (v.maxSpeed > 0.1 && (nearActiveIncident || (blockedBySignal && !blockedByVehicle))) {
+v.stuckTimer += effDt * 0.06;
 } else {
 v.stuckTimer += effDt;
 }
 } else if (v.speed > 0.18) {
 v.stuckTimer = Math.max(0, v.stuckTimer - effDt * 2.5);
 }
-if (v.stuckTimer >= 12.0) {
-if (v.maxSpeed > 0.1 && !v._reroutedOnce && this.tryRerouteVehicle(v)) {
+if (v.maxSpeed > 0.1 && v.stuckTimer >= 7.5 && !nearActiveIncident && cur.layer === 0 && !cur.onRamp) {
+if (!v._reroutedOnce && this.tryRerouteVehicle(v)) {
 v._reroutedOnce = true;
 v.stuckTimer = 3.0;
-} else {
+} else if ((this.sim.population || 0) >= 120) {
+this.triggerTrafficJamIntervention(cur.x, cur.z);
+}
+}
+if (v.stuckTimer >= 12.0) {
 const oldIdx = idx(cur.x, cur.z);
+if (v.maxSpeed <= 0.1) {
 if (cur.layer === 0 && !cur.onRamp && this.tileOccupancy[oldIdx] > 0) {
 this.tileOccupancy[oldIdx]--;
 }
@@ -17403,6 +17522,22 @@ this.sim.onTripGridlockTimeout?.(v);
 this.vehicles.splice(i, 1);
 continue;
 }
+if (cur.layer === 0 && !cur.onRamp && !nearActiveIncident && (this.sim.population || 0) >= 120) {
+this.triggerTrafficJamIntervention(cur.x, cur.z);
+}
+if (!v._jamPenaltyReported) {
+v._jamPenaltyReported = true;
+this.modalSplit.gridlockTimeouts++;
+if (cur.layer === 1) curTile.elevCongestion = 1.0;
+else if (curTile.roadGround > 0) {
+curTile.congestion = 1.0;
+if (!gridlockTiles) gridlockTiles = new Set();
+gridlockTiles.add(oldIdx);
+}
+this.sim.onTripGridlockTimeout?.(v);
+}
+v.stuckTimer = 0;
+v._jamClearTimer = 4.2;
 }
 const prevSeg = v.seg;
 const segWorldLen = Math.hypot(nxt.x - cur.x, nxt.z - cur.z) || 1.0;
@@ -17664,13 +17799,26 @@ return { ...backChoice, reversed: true };
 }
 return { x: tx, z: tz, reversed: true };
 }
+_findAdjacentBuildingDir(tx, tz) {
+for (let k = 0; k < 4; k++) {
+const d = RAMP_DIRS[k];
+const nx = tx + d.dx;
+const nz = tz + d.dz;
+if (!inBounds(nx, nz)) continue;
+const nt = this.sim.grid[idx(nx, nz)];
+if (nt && nt.building && !nt.building.underConstruction) {
+return { dx: d.dx, dz: d.dz };
+}
+}
+return null;
+}
 _syncPedTransform(p) {
 const w0 = tileToWorld(p.tx, p.tz);
 const w1 = tileToWorld(p.nx, p.nz);
 const dx = w1.wx - w0.wx;
 const dz = w1.wz - w0.wz;
 const len = Math.hypot(dx, dz);
-if (len > 0.01) {
+if (len > 0.01 && p.fadeState !== 'exiting') {
 p.dirX = dx / len;
 p.dirZ = dz / len;
 }
@@ -17678,8 +17826,23 @@ const swOff = 0.43 * p.side;
 const rightX = -p.dirZ;
 const rightZ = p.dirX;
 const frac = Math.min(1, Math.max(0, p.t));
-p.wx = w0.wx + dx * frac + rightX * swOff;
-p.wz = w0.wz + dz * frac + rightZ * swOff;
+let bx = w0.wx + dx * frac + rightX * swOff;
+let bz = w0.wz + dz * frac + rightZ * swOff;
+if (p.doorDir) {
+if (p.fadeState === 'entering') {
+const pull = (1.0 - (p.fadeScale ?? 1.0)) * 0.18;
+bx += p.doorDir.dx * pull;
+bz += p.doorDir.dz * pull;
+} else if (p.fadeState === 'exiting') {
+const stepIn = (1.0 - (p.fadeScale ?? 0)) * 0.22;
+bx = (p._exitOriginX ?? bx) + p.doorDir.dx * stepIn;
+bz = (p._exitOriginZ ?? bz) + p.doorDir.dz * stepIn;
+p.dirX = p.doorDir.dx;
+p.dirZ = p.doorDir.dz;
+}
+}
+p.wx = bx;
+p.wz = bz;
 const y0 = this.sim.isWaterTile(p.tx, p.tz)
 ? this.getRoadNodeY(p.tx, p.tz, 0)
 : (this.sim.getTileElev(p.tx, p.tz) + 0.04);
@@ -17702,13 +17865,34 @@ const timeScale = period.id === 'late_night'
 const pop = this.sim.population || 0;
 const baseCap = Math.min(240, Math.min(16, this._pedRoadPool.length * 0.55) + pop * 0.032);
 const targetPed = Math.min(240, Math.round(baseCap * timeScale));
-while (this.pedestrians.length > targetPed + 8) {
-this.pedestrians.pop();
+let activeWalkers = 0;
+for (let i = 0; i < this.pedestrians.length; i++) {
+if (!this.pedestrians[i].returningHome && this.pedestrians[i].fadeState !== 'exiting') {
+activeWalkers++;
+}
+}
+if (activeWalkers > targetPed) {
+let toSendHome = activeWalkers - targetPed;
+for (let i = 0; i < this.pedestrians.length && toSendHome > 0; i++) {
+const p = this.pedestrians[i];
+if (!p.returningHome && p.fadeState !== 'exiting') {
+p.returningHome = true;
+toSendHome--;
+}
+}
 }
 let spawnBudget = Math.min(6, Math.max(0, targetPed - this.pedestrians.length));
 while (spawnBudget-- > 0 && this.pedestrians.length < 240) {
-const spot = this._pedRoadPool[(Math.random() * this._pedRoadPool.length) | 0];
-if (!spot || !this._isPedRoadTile(spot.x, spot.z)) continue;
+let spot = null;
+let doorDir = null;
+for (let tries = 0; tries < 4; tries++) {
+const cand = this._pedRoadPool[(Math.random() * this._pedRoadPool.length) | 0];
+if (!cand || !this._isPedRoadTile(cand.x, cand.z)) continue;
+spot = cand;
+doorDir = this._findAdjacentBuildingDir(cand.x, cand.z);
+if (doorDir) break;
+}
+if (!spot) continue;
 const next = this._pickPedNextTile(spot.x, spot.z, -1, -1);
 const p = {
 id: this._nextPedId++,
@@ -17716,7 +17900,7 @@ tx: spot.x,
 tz: spot.z,
 nx: next.x,
 nz: next.z,
-t: Math.random() * 0.6,
+t: Math.random() * 0.5,
 side: Math.random() < 0.5 ? 1 : -1,
 wx: 0,
 wy: 0,
@@ -17729,8 +17913,13 @@ pantsIdx: (Math.random() * 6) | 0,
 hairIdx: (Math.random() * 5) | 0,
 skinIdx: (Math.random() * 4) | 0,
 heightScale: 0.90 + Math.random() * 0.20,
+fadeScale: 0.08,
+fadeState: 'entering',
+doorDir,
+returningHome: false,
+homeSearchBlocks: 0,
 speed: 0.085 + Math.random() * 0.045,
-ttl: 55 + Math.random() * 65
+ttl: 75 + Math.random() * 85
 };
 this._syncPedTransform(p);
 this.pedestrians.push(p);
@@ -17741,7 +17930,36 @@ if (!this._isPedRoadTile(p.tx, p.tz)) {
 this.pedestrians.splice(i, 1);
 continue;
 }
+if (p.fadeState === 'entering') {
+p.fadeScale = Math.min(1.0, (p.fadeScale ?? 0.08) + effDt * 1.9);
+if (p.fadeScale >= 1.0) {
+p.fadeScale = 1.0;
+p.fadeState = 'walking';
+}
+} else if (p.fadeState === 'exiting') {
+p.fadeScale = Math.max(0, (p.fadeScale ?? 1.0) - effDt * 1.65);
+p.walkPhase = (p.walkPhase + p.speed * effDt * 15) % (Math.PI * 2);
+this._syncPedTransform(p);
+if (p.fadeScale <= 0.02) {
+this.pedestrians.splice(i, 1);
+}
+continue;
+}
 p.ttl -= effDt;
+if (p.ttl <= 0) {
+p.returningHome = true;
+}
+if (p.returningHome && p.fadeState === 'walking') {
+const bDir = this._findAdjacentBuildingDir(p.tx, p.tz);
+if (bDir) {
+p.fadeState = 'exiting';
+p.doorDir = bDir;
+p._exitOriginX = p.wx;
+p._exitOriginZ = p.wz;
+this._syncPedTransform(p);
+continue;
+}
+}
 let pedYield = false;
 const vehs = this.vehicles;
 for (let vj = 0; vj < vehs.length; vj++) {
@@ -17762,18 +17980,28 @@ p.t += p.speed * effDt;
 p.walkPhase = (p.walkPhase + p.speed * effDt * 15) % (Math.PI * 2);
 }
 if (p.t >= 1.0) {
-if (p.ttl <= 0 && this.pedestrians.length > Math.floor(targetPed * 0.85)) {
-this.pedestrians.splice(i, 1);
-continue;
-}
 const prevX = p.tx;
 const prevZ = p.tz;
 p.tx = p.nx;
 p.tz = p.nz;
 p.t -= 1.0;
 if (!this._isPedRoadTile(p.tx, p.tz)) {
-this.pedestrians.splice(i, 1);
+p.tx = prevX;
+p.tz = prevZ;
+p.t = 0.05;
+p.side = -p.side;
+}
+if (p.returningHome) {
+p.homeSearchBlocks = (p.homeSearchBlocks || 0) + 1;
+const bDir = this._findAdjacentBuildingDir(p.tx, p.tz);
+if (bDir || p.homeSearchBlocks >= 4) {
+p.fadeState = 'exiting';
+p.doorDir = bDir || { dx: -p.dirZ * p.side, dz: p.dirX * p.side };
+p._exitOriginX = p.wx;
+p._exitOriginZ = p.wz;
+this._syncPedTransform(p);
 continue;
+}
 }
 const next = this._pickPedNextTile(p.tx, p.tz, prevX, prevZ);
 p.nx = next.x;
@@ -20578,7 +20806,8 @@ const hairPal = this._pedHairPalette;
 const skinPal = this._pedSkinPalette;
 for (let i = 0; i < pedCount; i++) {
 const p = peds[i];
-const sc = p.heightScale || 1.0;
+const fadeSc = p.fadeScale !== undefined ? Math.max(0.01, Math.min(1.0, p.fadeScale)) : 1.0;
+const sc = (p.heightScale || 1.0) * fadeSc;
 const phase = p.walkPhase || 0;
 const swing = Math.sin(phase);
 const legAng = swing * 0.44;
@@ -20738,7 +20967,7 @@ beacon.scale.setScalar(0.17);
 beacon.position.set(acc.wx, deckY + 0.36 + bob, acc.wz);
 beacon.visible = true;
 }
-if (smokeCount < this._poolCaps.smoke) {
+if (acc.type !== 'jam' && smokeCount < this._poolCaps.smoke) {
 const ph = (this.clock * 0.95 + aIdx * 0.37) % 1.0;
 const sp = this._acquirePoolSprite(this.smokePool, smokeCount++, { map: this.smokeTex });
 sp.material.color.setHex(0xe2e8f0);
@@ -22372,9 +22601,10 @@ extraAccRow = `<div style="grid-column:1/-1;color:#fde68a;">🚨 事故原因：
 if (progWrap && progFill) {
 const progLbl = document.getElementById('insp-prog-label');
 if (progLbl) {
+const isJam = activeAcc.type === 'jam';
 progLbl.textContent = activeAcc.state === 'awaiting_police'
-? '⏳ 事故自行协商撤离进度'
-: '🚓 交警事故清障进度';
+? (isJam ? '⏳ 拥堵缓慢自清进度' : '⏳ 事故自行协商撤离进度')
+: (isJam ? '🚓 交警现场疏导进度' : '🚓 交警事故清障进度');
 }
 progWrap.style.display = 'block';
 progFill.style.width = `${pct}%`;
@@ -22565,15 +22795,16 @@ const tileAcc = Array.isArray(this.traffic?.accidents)
 let accBadgeHtml = '';
 let accRowHtml = '';
 if (tileAcc) {
+const isJam = tileAcc.type === 'jam';
 const rem = tileAcc.state === 'awaiting_police' ? tileAcc.selfClearTimer : tileAcc.remainingTime;
-const tot = tileAcc.state === 'awaiting_police' ? 26.0 : (tileAcc.totalTime || 10.0);
+const tot = tileAcc.state === 'awaiting_police' ? (isJam ? 14.0 : 26.0) : (tileAcc.totalTime || 10.0);
 const pct = Math.max(4, Math.min(100, Math.round((1 - rem / Math.max(1, tot)) * 100)));
 accBadgeHtml = tileAcc.state === 'clearing'
-? `<span class="badge ok">🚓 交警现场清障 · 剩余 ${rem.toFixed(1)}s</span>`
+? `<span class="badge ok">${isJam ? '🚓 交警绿波疏导中' : '🚓 交警现场清障'} · 剩余 ${rem.toFixed(1)}s</span>`
 : (tileAcc.state === 'police_en_route'
 ? `<span class="badge info">🚓 交警出警赶赴中</span>`
-: `<span class="badge warn">🚨 交通事故 · 等待交警 (${Math.ceil(rem)}s)</span>`);
-accRowHtml = `<div style="grid-column:1/-1;color:#fde68a;">🚨 <strong>交通事故：</strong>${tileAcc.cause} · 预计 <strong>${rem.toFixed(1)} 秒</strong>恢复 (${pct}%)</div>`;
+: `<span class="badge warn">${isJam ? '🚦 严重拥堵' : '🚨 交通事故'} · 等待交警 (${Math.ceil(rem)}s)</span>`);
+accRowHtml = `<div style="grid-column:1/-1;color:#fde68a;">${isJam ? '🚦 <strong>拥堵疏导：</strong>' : '🚨 <strong>交通事故：</strong>'}${tileAcc.cause} · 预计 <strong>${rem.toFixed(1)} 秒</strong>恢复 (${pct}%)</div>`;
 }
 badgesEl.innerHTML = `
 <span class="badge info">海拔 ${elev}m</span>
@@ -22687,18 +22918,21 @@ hintEl.textContent = wDepth > 0.1
 : '💡 在漫游模式下点击路上行驶的【汽车】可追踪其起点、终点与货运/清运任务！';
 }
 if (tileAcc) {
+const isJam = tileAcc.type === 'jam';
 const rem = tileAcc.state === 'awaiting_police' ? tileAcc.selfClearTimer : tileAcc.remainingTime;
-const tot = tileAcc.state === 'awaiting_police' ? 26.0 : (tileAcc.totalTime || 10.0);
+const tot = tileAcc.state === 'awaiting_police' ? (isJam ? 14.0 : 26.0) : (tileAcc.totalTime || 10.0);
 const pct = Math.max(4, Math.min(100, Math.round((1 - rem / Math.max(1, tot)) * 100)));
 const progLbl = document.getElementById('insp-prog-label');
 if (progLbl) {
 progLbl.textContent = tileAcc.state === 'awaiting_police'
-? '⏳ 事故自行协商撤离进度'
-: '🚓 交警事故清障进度';
+? (isJam ? '⏳ 拥堵缓慢自清进度' : '⏳ 事故自行协商撤离进度')
+: (isJam ? '🚓 交警现场疏导进度' : '🚓 交警事故清障进度');
 }
 progWrap.style.display = 'block';
 progFill.style.width = `${pct}%`;
-hintEl.textContent = '🚓 交警抵达事故现场后将按真实处置倒计时勘查清障并恢复通行，建造【🚓 警察总局】可大幅提速！';
+hintEl.textContent = isJam
+? '🚓 交警巡逻车抵达拥堵路口后将启动人工绿波指挥放行，不再让车辆凭空消失；建议顺手将该路口升级为【🔄 环岛】治本！'
+: '🚓 交警抵达事故现场后将按真实处置倒计时勘查清障并恢复通行，建造【🚓 警察总局】可大幅提速！';
 } else {
 progWrap.style.display = 'none';
 }
@@ -24059,24 +24293,38 @@ ui.refreshHUD();
 } catch {}
 }
 if (assetManager.isExternalSupported && globalThis.THREE) {
-setSplashProgress(0.45, '加载旗舰 PBR 物理材质包...');
+setSplashProgress(0.45, '流式加载高清 PBR 主贴图（双桶缓存秒开）...');
+let resolveAlbedo = null;
+const albedoReadyPromise = new Promise((res) => { resolveAlbedo = res; });
+let albedoDone = false;
 const pbrPromise = assetManager.loadPBRTextures(globalThis.THREE, {
 quality: savedQuality,
-onProgress: (f, msg) => setSplashProgress(0.45 + f * 0.50, msg)
+onProgress: (f, msg) => {
+if (!albedoDone) setSplashProgress(0.45 + f * 0.50, msg);
+},
+onSuiteUpdate: (tex) => {
+if (tex && typeof renderer.applyExternalPBRTextures === 'function') {
+renderer.applyExternalPBRTextures(tex);
+}
+},
+onAlbedoReady: (tex) => {
+albedoDone = true;
+if (tex && typeof renderer.applyExternalPBRTextures === 'function') {
+renderer.applyExternalPBRTextures(tex);
+}
+if (resolveAlbedo) resolveAlbedo(tex);
+}
 });
-const loadedTex = await Promise.race([
+await Promise.race([
+albedoReadyPromise,
 pbrPromise,
-new Promise((resolve) => setTimeout(() => resolve(null), 4200))
+new Promise((resolve) => setTimeout(() => resolve(null), 2400))
 ]);
-if (loadedTex && typeof renderer.applyExternalPBRTextures === 'function') {
-renderer.applyExternalPBRTextures(loadedTex);
-} else if (!loadedTex) {
 pbrPromise.then((tex) => {
 if (tex && typeof renderer.applyExternalPBRTextures === 'function') {
 renderer.applyExternalPBRTextures(tex);
 }
 }).catch(() => {});
-}
 if (typeof assetManager.loadGLBModels === 'function') {
 assetManager.loadGLBModels(globalThis.THREE).then((glbs) => {
 if (glbs && typeof renderer.applyExternalGLBModels === 'function') {
@@ -24086,13 +24334,13 @@ renderer.applyExternalGLBModels(glbs);
 }
 }
 setSplashProgress(1.0, '就绪！欢迎回到山河天际线');
-setTimeout(dismissSplash, 160);
+setTimeout(dismissSplash, 140);
 })();
 setTimeout(() => {
 ui.showToast(
 restored
 ? `👋 已恢复离线进度【${sim.cityName}】(${sim.getFormattedDate()})`
-: '🏞️ 山河天际线 Pro v8.3 已启动！体验交警出警事故清障、深锚穿山隧道口、连续环线地铁与全屏防覆盖建造！'
+: '🏞️ 山河天际线 Pro v8.4 已启动！双桶永久贴图缓存、拥堵交警现场疏导与市民入户零突兀消失全面升级！'
 );
 }, 550);
 let lastTime = performance.now();

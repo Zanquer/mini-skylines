@@ -1,5 +1,6 @@
-// Auto-generated Service Worker for 山河天际线 Pro 3D (v8.3-e93bc80e66-a8fd7626)
-const CACHE_NAME = 'mini-skylines-v8.3-e93bc80e66-a8fd7626';
+// Auto-generated Service Worker for 山河天际线 Pro 3D (v8.4-e93bc80e66-c32143d0)
+const CACHE_NAME = 'mini-skylines-v8.4-e93bc80e66-c32143d0';
+const ASSET_CACHE_NAME = 'mini-skylines-assets-e93bc80e66';
 const CORE_SHELL = [
   './',
   './index.html',
@@ -21,7 +22,9 @@ self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys()
       .then((keys) => Promise.all(
-        keys.filter((k) => k.startsWith('mini-skylines-') && k !== CACHE_NAME).map((k) => caches.delete(k))
+        keys
+          .filter((k) => k.startsWith('mini-skylines-') && k !== CACHE_NAME && k !== ASSET_CACHE_NAME)
+          .map((k) => caches.delete(k))
       ))
       .then(() => self.clients.claim())
   );
@@ -36,9 +39,9 @@ self.addEventListener('fetch', (event) => {
   const isManifestJson = url.pathname.endsWith('manifest.json');
 
   if (isBinaryAsset && !isManifestJson) {
-    // Cache-First for immutable binary PBR textures, models & icons
+    // Persistent Cache-First for immutable binary PBR textures, GLB models & icons (survives code updates!)
     event.respondWith(
-      caches.open(CACHE_NAME).then((cache) =>
+      caches.open(ASSET_CACHE_NAME).then((cache) =>
         cache.match(event.request, { ignoreSearch: true }).then((cached) => {
           if (cached) return cached;
           return fetch(event.request).then((resp) => {
