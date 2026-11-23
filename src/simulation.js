@@ -51,6 +51,7 @@ export const CATALOG = {
   waste_plant:   { id: 'waste_plant',   name: '环保垃圾焚烧厂', cost: 2100, upkeep: 52, powerOut: 180, trashCap: 2600, unlockPop: 350, unlockLevel: 3, icon: '♻️', desc: '焚烧处理城市垃圾并产出 +180 MW 电力！缺乏垃圾处理会导致垃圾围城致病荒废' },
 
   // Air/Sea Trade Hubs & Tourism Wonders
+  shipping_lane:    { id: 'shipping_lane',    name: '海运航道规划', cost: 15, upkeep: 0, unlockPop: 0, unlockLevel: 1, icon: '⚓', desc: '在深海或宽阔江面拖拽布设航标航道！远洋货轮将优先沿您规划的航线分道航行，避开拥堵与岛屿' },
   seaport:          { id: 'seaport',          name: '深水集装箱海港', cost: 4200, upkeep: 92, unlockPop: 1100, unlockLevel: 8, icon: '🚢', desc: '必须建在海湾或深水河岸！远洋货轮靠泊出口工业品，工业与商业税收 +12%' },
   airport:          { id: 'airport',          name: '国际民航机场', cost: 6400, upkeep: 145, unlockPop: 1600, unlockLevel: 10, icon: '✈️', desc: '3.8单位全长发光跑道与宽体客机起降！吸引全球游客，商业与办公税收 +15%（后方需预留5格净空跑道，可按R旋转）' },
   zoo:              { id: 'zoo',              name: '野生动物园', cost: 3800, upkeep: 68, unlockPop: 700, unlockLevel: 5, icon: '🦁', desc: '3D 珍稀动物漫步园区（雄鹿/羊驼/赤狐/长颈鹿/大熊猫）！大幅拉升旅游收入、市民幸福度与科普教育' },
@@ -895,6 +896,7 @@ export class CitySimulation {
         roadDir: typeof t.roadDir === 'number' ? t.roadDir : -1,
         banTrucks: Boolean(t.banTrucks),
         busStop: Boolean(t.busStop),
+        shippingLane: Boolean(t.shippingLane),
         junctionMode: t.junctionMode || null,
         roundaboutPaid: Boolean(t.roundaboutPaid),
         roadElevated: t.roadElevated,
@@ -948,6 +950,7 @@ export class CitySimulation {
       t.roadDir = s.roadDir;
       t.banTrucks = s.banTrucks;
       t.busStop = s.busStop;
+      t.shippingLane = Boolean(s.shippingLane);
       t.junctionMode = s.junctionMode;
       t.roundaboutPaid = s.roundaboutPaid;
       t.roadElevated = s.roadElevated;
@@ -2428,13 +2431,15 @@ export class CitySimulation {
 
   estimateAction(toolId, tiles, opts = null) {
     let cost = 0;
+    let skippedProtected = 0;
     const validTiles = [];
+    const allowOverwrite = Boolean(opts && opts.allowOverwrite);
     if (!this.isToolUnlocked(toolId)) {
-      return { cost: 0, validTiles: [], lockedLevel: CATALOG[toolId]?.unlockLevel || 1 };
+      return { cost: 0, validTiles: [], skippedProtected: 0, lockedLevel: CATALOG[toolId]?.unlockLevel || 1 };
     }
     if ((toolId === 'interchange_diamond' || toolId === 'interchange_rbt') && tiles && tiles.length > 0) {
       const prev = this.previewInterchange(toolId, tiles[0].x, tiles[0].z, opts?.rot || 0);
-      return { cost: prev.valid ? prev.cost : 0, validTiles: prev.valid ? prev.tiles : [] };
+      return { cost: prev.valid ? prev.cost : 0, validTiles: prev.valid ? prev.tiles : [], skippedProtected: 0 };
     }
 
     const oneWayDirs = toolId === 'road_oneway' ? this._inferOneWayDirs(tiles, opts) : null;
@@ -2452,14 +2457,24 @@ export class CitySimulation {
         const target = toolId === 'road_1' ? 1 : 2;
         if (onRunway || t.roadGround === 3 || t.dam) continue;
         if (slope > 0.72 && !wet) continue;
-        if (t.building && !BUILDING_NAMES[t.building.type]) continue;
+        if (t.building && !BUILDING_NAMES[t.building.type]) { skippedProtected++; continue; }
+        // Protect player's existing buildings, pylons, and higher-tier/one-way roads when dragging!
+        if (!allowOverwrite) {
+          if (t.building && !t.building.abandoned) { skippedProtected++; continue; }
+          if (t.pylon) { skippedProtected++; continue; }
+          if (toolId === 'road_1' && (t.roadGround === 2 || (t.roadGround === 1 && typeof t.roadDir === 'number' && t.roadDir >= 0))) {
+            skippedProtected++;
+            continue;
+          }
+        }
         if (t.roadGround === target && (typeof t.roadDir !== 'number' || t.roadDir < 0) && (!wet || t.roadBridge)) continue;
         cost += wet ? CATALOG[toolId].bridgeCost : CATALOG[toolId].cost;
         validTiles.push(pos);
       } else if (toolId === 'road_oneway') {
         if (onRunway || t.roadGround === 3 || t.dam) continue;
         if (slope > 0.72 && !wet) continue;
-        if (t.building && !BUILDING_NAMES[t.building.type]) continue;
+        if (t.building && !BUILDING_NAMES[t.building.type]) { skippedProtected++; continue; }
+        if (!allowOverwrite && ((t.building && !t.building.abandoned) || t.pylon)) { skippedProtected++; continue; }
         const targetDir = oneWayDirs[k];
         if (t.roadGround === 1 && t.roadDir === targetDir && (!wet || t.roadBridge)) continue;
         cost += wet ? CATALOG.road_oneway.bridgeCost : CATALOG.road_oneway.cost;
@@ -2468,17 +2483,24 @@ export class CitySimulation {
         if (t.roadGround < 1 || t.roadGround === 3 || t.roadGround === 4 || t.dam || t.ramp || t.busStop) continue;
         cost += CATALOG.bus_stop.cost;
         validTiles.push(pos);
+      } else if (toolId === 'shipping_lane') {
+        if (this.waterDepth[idx(pos.x, pos.z)] <= 0.14 || t.dam || t.building || t.shippingLane) continue;
+        cost += CATALOG.shipping_lane.cost;
+        validTiles.push(pos);
       } else if (toolId === 'road_elev') {
         if (onRunway || t.roadElevated === 1 || t.dam) continue;
-        if (t.building && !BUILDING_NAMES[t.building.type]) continue;
+        if (t.building && !BUILDING_NAMES[t.building.type]) { skippedProtected++; continue; }
+        if (!allowOverwrite && ((t.building && !t.building.abandoned) || t.pylon)) { skippedProtected++; continue; }
         cost += CATALOG.road_elev.cost;
         validTiles.push(pos);
       } else if (toolId === 'road_ramp') {
-        if (onRunway || t.ramp || t.dam || wet || t.roadGround === 3 || t.rail > 0 || (t.building && !BUILDING_NAMES[t.building.type])) continue;
+        if (onRunway || t.ramp || t.dam || wet || t.roadGround === 3 || t.rail > 0 || (t.building && !BUILDING_NAMES[t.building.type])) { skippedProtected++; continue; }
+        if (!allowOverwrite && ((t.building && !t.building.abandoned) || t.pylon)) { skippedProtected++; continue; }
         cost += CATALOG.road_ramp.cost;
         validTiles.push(pos);
       } else if (toolId === 'road_tunnel') {
         if (wet || t.dam || t.roadGround === 4) continue;
+        if (!allowOverwrite && (t.roadGround > 0 || t.building || t.pylon)) { skippedProtected++; continue; }
         cost += CATALOG.road_tunnel.cost;
         validTiles.push(pos);
       } else if (toolId === 'metro_line') {
@@ -2487,7 +2509,8 @@ export class CitySimulation {
         validTiles.push(pos);
       } else if (toolId === 'rail_track') {
         if (onRunway || t.rail >= 1 || t.dam) continue;
-        if (t.building && t.building.type !== 'hsr_station') continue;
+        if (t.building && t.building.type !== 'hsr_station') { skippedProtected++; continue; }
+        if (!allowOverwrite && t.pylon) { skippedProtected++; continue; }
         cost += wet ? CATALOG.rail_track.bridgeCost : CATALOG.rail_track.cost;
         validTiles.push(pos);
       } else if (toolId === 'water_pipe') {
@@ -2496,6 +2519,7 @@ export class CitySimulation {
         validTiles.push(pos);
       } else if (toolId === 'hydro_dam') {
         if (onRunway || t.roadGround === 3 || t.rail === 2) continue;
+        if (!allowOverwrite && (t.building || t.rail > 0 || t.pylon)) { skippedProtected++; continue; }
         cost += CATALOG.hydro_dam.cost;
         validTiles.push(pos);
       } else if (toolId === 'power_pylon') {
@@ -2507,15 +2531,20 @@ export class CitySimulation {
         // Prevent zoning under elevated viaducts, ramps, mid-slip ramp flanks, rails, or airport runways!
         if (onRunway || wet || slope > 0.62 || t.roadGround > 0 || t.roadElevated > 0 || t.ramp || t.rail > 0 || t.dam || t.pylon) continue;
         if (this._isBlockedByMidSlipFlank(pos.x, pos.z)) continue;
-        if (t.building && !BUILDING_NAMES[t.building.type]) continue;
+        if (t.building && !BUILDING_NAMES[t.building.type]) { skippedProtected++; continue; }
         if (t.zone === zType && (!t.building || !t.building.abandoned)) continue;
+        // Protect existing zones & healthy buildings from accidental drag-overwrites (use dezone/bulldoze to clear first!)
+        if (!allowOverwrite && ((t.zone && t.zone !== zType && (!t.building || !t.building.abandoned)) || (t.building && !t.building.abandoned))) {
+          skippedProtected++;
+          continue;
+        }
         cost += CATALOG[toolId].cost;
         validTiles.push(pos);
       } else if (toolId === 'dezone') {
         if (t.zone) validTiles.push(pos);
       } else if (toolId === 'bulldoze') {
         if (t.roadGround === 3 || t.rail === 2) continue;
-        if (t.roadGround > 0 || t.roadElevated > 0 || t.ramp || t.rail > 0 || t.dam || t.pylon || t.building || t.zone || t.busStop) {
+        if (t.roadGround > 0 || t.roadElevated > 0 || t.ramp || t.rail > 0 || t.dam || t.pylon || t.building || t.zone || t.busStop || t.shippingLane) {
           cost += CATALOG.bulldoze.cost;
           validTiles.push(pos);
         }
@@ -2546,7 +2575,7 @@ export class CitySimulation {
     }
 
     if (this.difficulty === 'sandbox') cost = 0;
-    return { cost, validTiles };
+    return { cost, validTiles, skippedProtected };
   }
 
   applyTool(toolId, tiles, free = false, opts = null) {
@@ -2562,7 +2591,8 @@ export class CitySimulation {
 
     const savedUnlock = this.unlockAll;
     if (free) this.unlockAll = true;
-    const { cost, validTiles } = this.estimateAction(toolId, tiles, opts);
+    const estOpts = free ? { ...(opts || {}), allowOverwrite: true } : opts;
+    const { cost, validTiles, skippedProtected } = this.estimateAction(toolId, tiles, estOpts);
     this.unlockAll = savedUnlock;
 
     if (validTiles.length === 0) {
@@ -2572,6 +2602,8 @@ export class CitySimulation {
         this.emitToast('☢️ 核裂变发电站必须建在河岸或海湾陆地上（2格内有冷却水）！');
       } else if (!free && toolId === 'seaport') {
         this.emitToast('🚢 深水集装箱海港必须建在海湾或深水河岸陆地上（2格内有水域）！');
+      } else if (!free && toolId === 'shipping_lane') {
+        this.emitToast('⚓ 海运航道需拖拽布设在深海或宽阔江面水域（水深 > 0.14m）！');
       } else if (!free && toolId === 'airport') {
         const apPrev = tiles && tiles[0] ? this.previewAirportFootprint(tiles[0].x, tiles[0].z, opts?.rot || 0) : null;
         this.emitToast(`✈️ ${apPrev?.reason || '国际机场后方需预留 5 格净空平坦跑道（点击旋转方向）！'}`);
@@ -2579,6 +2611,8 @@ export class CitySimulation {
         this.emitToast('✈️ 该地块位于国际机场 5 格跑道净空区内，严禁修建铁塔、道路或建筑！');
       } else if (!free && toolId === 'bus_stop') {
         this.emitToast('🚏 智能公交站必须建在普通地面街道或主干道上（不可建在隧道/大坝/匝道上）！');
+      } else if (!free && skippedProtected > 0) {
+        this.emitToast('🛡️ 已自动保护原有建筑与区划，未被覆盖（如需改建请先用【🚜 推土机】或【❌ 清除区划】）');
       }
       return { ok: false };
     }
@@ -2762,6 +2796,8 @@ export class CitySimulation {
         t.trees = 0;
       } else if (toolId === 'bus_stop') {
         t.busStop = true;
+      } else if (toolId === 'shipping_lane') {
+        t.shippingLane = true;
       } else if (toolId === 'road_elev') {
         t.roadElevated = 1;
         if (t.building && BUILDING_NAMES[t.building.type]) t.building = null;
@@ -2860,6 +2896,7 @@ export class CitySimulation {
           t.damHealth = 100;
           t.damStress = 0;
           t.pylon = false;
+          t.shippingLane = false;
           if (!t.building) t.zone = null;
           t.building = null;
         }
@@ -2950,11 +2987,11 @@ export class CitySimulation {
     this._suppressPromotions = prevSuppress;
     if (gradedAny) this.terrainDirty = true;
     if (
-      toolId.startsWith('road_') || toolId === 'bus_stop' || toolId === 'rail_track' || toolId === 'water_pipe' ||
-      toolId === 'metro_line' || toolId === 'power_line' || toolId === 'hydro_dam'
+      toolId.startsWith('road_') || toolId === 'bus_stop' || toolId === 'shipping_lane' || toolId === 'rail_track' ||
+      toolId === 'water_pipe' || toolId === 'metro_line' || toolId === 'power_pylon' || toolId === 'hydro_dam'
     ) {
       this.infraDirty = true;
-      this.forestDirty = true;
+      if (toolId !== 'shipping_lane') this.forestDirty = true;
       if (toolId === 'road_ramp') this.buildingDirty = true;
     } else if (toolId.startsWith('zone_') || toolId === 'dezone') {
       this.buildingDirty = true;
@@ -5800,6 +5837,9 @@ export class CitySimulation {
       for (let k = 2; k < portPylons.length - 1; k += 3) {
         this.applyTool('power_pylon', [portPylons[k]], true);
       }
+      // Paint clean default deep-water Maritime Shipping Channel from Seaport out to SE open sea (53, 51)!
+      const seaLanePath = this.computeLineOrLPath(Math.min(52, seaportPos.x + 2), Math.min(51, seaportPos.z + 2), 53, 51, true);
+      this.applyTool('shipping_lane', seaLanePath, true);
     }
 
     // 8. Balanced Zones (with Industrial well separated in South-East!)
@@ -5967,6 +6007,7 @@ export class CitySimulation {
         rd: (typeof t.roadDir === 'number' && t.roadDir >= 0) ? t.roadDir : undefined,
         bt: t.banTrucks ? 1 : undefined,
         bs: t.busStop ? 1 : undefined,
+        sl: t.shippingLane ? 1 : undefined,
         jm: t.junctionMode || undefined,
         rbp: t.roundaboutPaid ? 1 : undefined,
         re: t.roadElevated || undefined,
@@ -6072,6 +6113,7 @@ export class CitySimulation {
       t.roadDir = typeof s.rd === 'number' ? s.rd : -1;
       t.banTrucks = Boolean(s.bt);
       t.busStop = Boolean(s.bs);
+      t.shippingLane = Boolean(s.sl);
       t.junctionMode = s.jm || null;
       t.roundaboutPaid = Boolean(s.rbp || s.jm === 'roundabout');
       t.roadElevated = s.re || 0;

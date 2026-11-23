@@ -848,6 +848,7 @@ roadBridge: false, // true when roadGround 1/2 was built over water as an elevat
 roadDir: -1,       // -1 two-way, 0=N(-Z), 1=S(+Z), 2=W(-X), 3=E(+X) for one-way streets
 banTrucks: false,  // true when heavy trucks & garbage trucks are banned from this street
 busStop: false,    // true when a roadside EV bus shelter is built on this road tile
+shippingLane: false, // true when player paints a designated maritime shipping channel buoy lane
 junctionMode: 'signal', // 'signal' | 'yield' | 'roundabout' for road intersections
 roadElevated: 0,   // 0 none, 1 elevated highway overpass (+0.68m)
 ramp: false,       // connects roadGround <-> roadElevated
@@ -6359,6 +6360,10 @@ this.m.carEmeraldEV
 ];
 this.containerMats = [this.m.contRed, this.m.contBlue, this.m.contAmber, this.m.contTeal, this.m.contGreen];
 this.neonMats = [this.m.neonCyan, this.m.neonRose, this.m.neonGold, this.m.neonEmerald, this.m.neonViolet];
+this._busLineMats = new Map();
+for (const hex of ['#0ea5e9', '#10b981', '#f97316', '#a855f7', '#ef4444', '#eab308']) {
+this._getBusLineMat(hex);
+}
 }
 _getDustyGLBMat(origMat) {
 if (!origMat) return this.m.abandoned;
@@ -9038,6 +9043,7 @@ power_plant:   { id: 'power_plant',   name: '燃气热电厂', cost: 3200, upkee
 solar_plant:   { id: 'solar_plant',   name: '塔式熔盐光热电站', cost: 2800, upkeep: 58, powerOut: 340, unlockPop: 600, unlockLevel: 4, icon: '☀️', desc: '+340 MW 零污染光热发电塔与定日镜阵（夜间储热持续供电）' },
 nuclear_plant: { id: 'nuclear_plant', name: '核裂变发电站', cost: 9200, upkeep: 195, powerOut: 1650, unlockPop: 2200, unlockLevel: 9, icon: '☢️', desc: '+1,650 MW 零碳超级电源！必须建在水源岸边（2格内有水）抽取冷却水' },
 waste_plant:   { id: 'waste_plant',   name: '环保垃圾焚烧厂', cost: 2100, upkeep: 52, powerOut: 180, trashCap: 2600, unlockPop: 350, unlockLevel: 3, icon: '♻️', desc: '焚烧处理城市垃圾并产出 +180 MW 电力！缺乏垃圾处理会导致垃圾围城致病荒废' },
+shipping_lane:    { id: 'shipping_lane',    name: '海运航道规划', cost: 15, upkeep: 0, unlockPop: 0, unlockLevel: 1, icon: '⚓', desc: '在深海或宽阔江面拖拽布设航标航道！远洋货轮将优先沿您规划的航线分道航行，避开拥堵与岛屿' },
 seaport:          { id: 'seaport',          name: '深水集装箱海港', cost: 4200, upkeep: 92, unlockPop: 1100, unlockLevel: 8, icon: '🚢', desc: '必须建在海湾或深水河岸！远洋货轮靠泊出口工业品，工业与商业税收 +12%' },
 airport:          { id: 'airport',          name: '国际民航机场', cost: 6400, upkeep: 145, unlockPop: 1600, unlockLevel: 10, icon: '✈️', desc: '3.8单位全长发光跑道与宽体客机起降！吸引全球游客，商业与办公税收 +15%（后方需预留5格净空跑道，可按R旋转）' },
 zoo:              { id: 'zoo',              name: '野生动物园', cost: 3800, upkeep: 68, unlockPop: 700, unlockLevel: 5, icon: '🦁', desc: '3D 珍稀动物漫步园区（雄鹿/羊驼/赤狐/长颈鹿/大熊猫）！大幅拉升旅游收入、市民幸福度与科普教育' },
@@ -9822,6 +9828,7 @@ roadBridge: t.roadBridge,
 roadDir: typeof t.roadDir === 'number' ? t.roadDir : -1,
 banTrucks: Boolean(t.banTrucks),
 busStop: Boolean(t.busStop),
+shippingLane: Boolean(t.shippingLane),
 junctionMode: t.junctionMode || null,
 roundaboutPaid: Boolean(t.roundaboutPaid),
 roadElevated: t.roadElevated,
@@ -9873,6 +9880,7 @@ t.roadBridge = s.roadBridge;
 t.roadDir = s.roadDir;
 t.banTrucks = s.banTrucks;
 t.busStop = s.busStop;
+t.shippingLane = Boolean(s.shippingLane);
 t.junctionMode = s.junctionMode;
 t.roundaboutPaid = s.roundaboutPaid;
 t.roadElevated = s.roadElevated;
@@ -11218,13 +11226,15 @@ return dirs;
 }
 estimateAction(toolId, tiles, opts = null) {
 let cost = 0;
+let skippedProtected = 0;
 const validTiles = [];
+const allowOverwrite = Boolean(opts && opts.allowOverwrite);
 if (!this.isToolUnlocked(toolId)) {
-return { cost: 0, validTiles: [], lockedLevel: CATALOG[toolId]?.unlockLevel || 1 };
+return { cost: 0, validTiles: [], skippedProtected: 0, lockedLevel: CATALOG[toolId]?.unlockLevel || 1 };
 }
 if ((toolId === 'interchange_diamond' || toolId === 'interchange_rbt') && tiles && tiles.length > 0) {
 const prev = this.previewInterchange(toolId, tiles[0].x, tiles[0].z, opts?.rot || 0);
-return { cost: prev.valid ? prev.cost : 0, validTiles: prev.valid ? prev.tiles : [] };
+return { cost: prev.valid ? prev.cost : 0, validTiles: prev.valid ? prev.tiles : [], skippedProtected: 0 };
 }
 const oneWayDirs = toolId === 'road_oneway' ? this._inferOneWayDirs(tiles, opts) : null;
 for (let k = 0; k < tiles.length; k++) {
@@ -11238,14 +11248,23 @@ if (toolId === 'road_1' || toolId === 'road_2') {
 const target = toolId === 'road_1' ? 1 : 2;
 if (onRunway || t.roadGround === 3 || t.dam) continue;
 if (slope > 0.72 && !wet) continue;
-if (t.building && !BUILDING_NAMES[t.building.type]) continue;
+if (t.building && !BUILDING_NAMES[t.building.type]) { skippedProtected++; continue; }
+if (!allowOverwrite) {
+if (t.building && !t.building.abandoned) { skippedProtected++; continue; }
+if (t.pylon) { skippedProtected++; continue; }
+if (toolId === 'road_1' && (t.roadGround === 2 || (t.roadGround === 1 && typeof t.roadDir === 'number' && t.roadDir >= 0))) {
+skippedProtected++;
+continue;
+}
+}
 if (t.roadGround === target && (typeof t.roadDir !== 'number' || t.roadDir < 0) && (!wet || t.roadBridge)) continue;
 cost += wet ? CATALOG[toolId].bridgeCost : CATALOG[toolId].cost;
 validTiles.push(pos);
 } else if (toolId === 'road_oneway') {
 if (onRunway || t.roadGround === 3 || t.dam) continue;
 if (slope > 0.72 && !wet) continue;
-if (t.building && !BUILDING_NAMES[t.building.type]) continue;
+if (t.building && !BUILDING_NAMES[t.building.type]) { skippedProtected++; continue; }
+if (!allowOverwrite && ((t.building && !t.building.abandoned) || t.pylon)) { skippedProtected++; continue; }
 const targetDir = oneWayDirs[k];
 if (t.roadGround === 1 && t.roadDir === targetDir && (!wet || t.roadBridge)) continue;
 cost += wet ? CATALOG.road_oneway.bridgeCost : CATALOG.road_oneway.cost;
@@ -11254,17 +11273,24 @@ validTiles.push({ x: pos.x, z: pos.z, dir: targetDir });
 if (t.roadGround < 1 || t.roadGround === 3 || t.roadGround === 4 || t.dam || t.ramp || t.busStop) continue;
 cost += CATALOG.bus_stop.cost;
 validTiles.push(pos);
+} else if (toolId === 'shipping_lane') {
+if (this.waterDepth[idx(pos.x, pos.z)] <= 0.14 || t.dam || t.building || t.shippingLane) continue;
+cost += CATALOG.shipping_lane.cost;
+validTiles.push(pos);
 } else if (toolId === 'road_elev') {
 if (onRunway || t.roadElevated === 1 || t.dam) continue;
-if (t.building && !BUILDING_NAMES[t.building.type]) continue;
+if (t.building && !BUILDING_NAMES[t.building.type]) { skippedProtected++; continue; }
+if (!allowOverwrite && ((t.building && !t.building.abandoned) || t.pylon)) { skippedProtected++; continue; }
 cost += CATALOG.road_elev.cost;
 validTiles.push(pos);
 } else if (toolId === 'road_ramp') {
-if (onRunway || t.ramp || t.dam || wet || t.roadGround === 3 || t.rail > 0 || (t.building && !BUILDING_NAMES[t.building.type])) continue;
+if (onRunway || t.ramp || t.dam || wet || t.roadGround === 3 || t.rail > 0 || (t.building && !BUILDING_NAMES[t.building.type])) { skippedProtected++; continue; }
+if (!allowOverwrite && ((t.building && !t.building.abandoned) || t.pylon)) { skippedProtected++; continue; }
 cost += CATALOG.road_ramp.cost;
 validTiles.push(pos);
 } else if (toolId === 'road_tunnel') {
 if (wet || t.dam || t.roadGround === 4) continue;
+if (!allowOverwrite && (t.roadGround > 0 || t.building || t.pylon)) { skippedProtected++; continue; }
 cost += CATALOG.road_tunnel.cost;
 validTiles.push(pos);
 } else if (toolId === 'metro_line') {
@@ -11273,7 +11299,8 @@ cost += CATALOG.metro_line.cost;
 validTiles.push(pos);
 } else if (toolId === 'rail_track') {
 if (onRunway || t.rail >= 1 || t.dam) continue;
-if (t.building && t.building.type !== 'hsr_station') continue;
+if (t.building && t.building.type !== 'hsr_station') { skippedProtected++; continue; }
+if (!allowOverwrite && t.pylon) { skippedProtected++; continue; }
 cost += wet ? CATALOG.rail_track.bridgeCost : CATALOG.rail_track.cost;
 validTiles.push(pos);
 } else if (toolId === 'water_pipe') {
@@ -11282,6 +11309,7 @@ cost += CATALOG.water_pipe.cost;
 validTiles.push(pos);
 } else if (toolId === 'hydro_dam') {
 if (onRunway || t.roadGround === 3 || t.rail === 2) continue;
+if (!allowOverwrite && (t.building || t.rail > 0 || t.pylon)) { skippedProtected++; continue; }
 cost += CATALOG.hydro_dam.cost;
 validTiles.push(pos);
 } else if (toolId === 'power_pylon') {
@@ -11292,15 +11320,19 @@ validTiles.push(pos);
 const zType = toolId.slice(5);
 if (onRunway || wet || slope > 0.62 || t.roadGround > 0 || t.roadElevated > 0 || t.ramp || t.rail > 0 || t.dam || t.pylon) continue;
 if (this._isBlockedByMidSlipFlank(pos.x, pos.z)) continue;
-if (t.building && !BUILDING_NAMES[t.building.type]) continue;
+if (t.building && !BUILDING_NAMES[t.building.type]) { skippedProtected++; continue; }
 if (t.zone === zType && (!t.building || !t.building.abandoned)) continue;
+if (!allowOverwrite && ((t.zone && t.zone !== zType && (!t.building || !t.building.abandoned)) || (t.building && !t.building.abandoned))) {
+skippedProtected++;
+continue;
+}
 cost += CATALOG[toolId].cost;
 validTiles.push(pos);
 } else if (toolId === 'dezone') {
 if (t.zone) validTiles.push(pos);
 } else if (toolId === 'bulldoze') {
 if (t.roadGround === 3 || t.rail === 2) continue;
-if (t.roadGround > 0 || t.roadElevated > 0 || t.ramp || t.rail > 0 || t.dam || t.pylon || t.building || t.zone || t.busStop) {
+if (t.roadGround > 0 || t.roadElevated > 0 || t.ramp || t.rail > 0 || t.dam || t.pylon || t.building || t.zone || t.busStop || t.shippingLane) {
 cost += CATALOG.bulldoze.cost;
 validTiles.push(pos);
 }
@@ -11330,7 +11362,7 @@ validTiles.push(pos);
 }
 }
 if (this.difficulty === 'sandbox') cost = 0;
-return { cost, validTiles };
+return { cost, validTiles, skippedProtected };
 }
 applyTool(toolId, tiles, free = false, opts = null) {
 if ((toolId === 'interchange_diamond' || toolId === 'interchange_rbt') && tiles && tiles.length > 0) {
@@ -11343,7 +11375,8 @@ return { ok: false };
 }
 const savedUnlock = this.unlockAll;
 if (free) this.unlockAll = true;
-const { cost, validTiles } = this.estimateAction(toolId, tiles, opts);
+const estOpts = free ? { ...(opts || {}), allowOverwrite: true } : opts;
+const { cost, validTiles, skippedProtected } = this.estimateAction(toolId, tiles, estOpts);
 this.unlockAll = savedUnlock;
 if (validTiles.length === 0) {
 if (!free && (toolId === 'water_pump' || toolId === 'sewage_out')) {
@@ -11352,6 +11385,8 @@ this.emitToast('💧 抽水站与排污口必须建在河岸或海边（2格内�
 this.emitToast('☢️ 核裂变发电站必须建在河岸或海湾陆地上（2格内有冷却水）！');
 } else if (!free && toolId === 'seaport') {
 this.emitToast('🚢 深水集装箱海港必须建在海湾或深水河岸陆地上（2格内有水域）！');
+} else if (!free && toolId === 'shipping_lane') {
+this.emitToast('⚓ 海运航道需拖拽布设在深海或宽阔江面水域（水深 > 0.14m）！');
 } else if (!free && toolId === 'airport') {
 const apPrev = tiles && tiles[0] ? this.previewAirportFootprint(tiles[0].x, tiles[0].z, opts?.rot || 0) : null;
 this.emitToast(`✈️ ${apPrev?.reason || '国际机场后方需预留 5 格净空平坦跑道（点击旋转方向）！'}`);
@@ -11359,6 +11394,8 @@ this.emitToast(`✈️ ${apPrev?.reason || '国际机场后方需预留 5 格净
 this.emitToast('✈️ 该地块位于国际机场 5 格跑道净空区内，严禁修建铁塔、道路或建筑！');
 } else if (!free && toolId === 'bus_stop') {
 this.emitToast('🚏 智能公交站必须建在普通地面街道或主干道上（不可建在隧道/大坝/匝道上）！');
+} else if (!free && skippedProtected > 0) {
+this.emitToast('🛡️ 已自动保护原有建筑与区划，未被覆盖（如需改建请先用【🚜 推土机】或【❌ 清除区划】）');
 }
 return { ok: false };
 }
@@ -11520,6 +11557,8 @@ t.pylon = false;
 t.trees = 0;
 } else if (toolId === 'bus_stop') {
 t.busStop = true;
+} else if (toolId === 'shipping_lane') {
+t.shippingLane = true;
 } else if (toolId === 'road_elev') {
 t.roadElevated = 1;
 if (t.building && BUILDING_NAMES[t.building.type]) t.building = null;
@@ -11615,6 +11654,7 @@ t.damOutputMW = 0;
 t.damHealth = 100;
 t.damStress = 0;
 t.pylon = false;
+t.shippingLane = false;
 if (!t.building) t.zone = null;
 t.building = null;
 }
@@ -11701,11 +11741,11 @@ this.recomputeNetworksAndFields();
 this._suppressPromotions = prevSuppress;
 if (gradedAny) this.terrainDirty = true;
 if (
-toolId.startsWith('road_') || toolId === 'bus_stop' || toolId === 'rail_track' || toolId === 'water_pipe' ||
-toolId === 'metro_line' || toolId === 'power_line' || toolId === 'hydro_dam'
+toolId.startsWith('road_') || toolId === 'bus_stop' || toolId === 'shipping_lane' || toolId === 'rail_track' ||
+toolId === 'water_pipe' || toolId === 'metro_line' || toolId === 'power_pylon' || toolId === 'hydro_dam'
 ) {
 this.infraDirty = true;
-this.forestDirty = true;
+if (toolId !== 'shipping_lane') this.forestDirty = true;
 if (toolId === 'road_ramp') this.buildingDirty = true;
 } else if (toolId.startsWith('zone_') || toolId === 'dezone') {
 this.buildingDirty = true;
@@ -14257,6 +14297,8 @@ const portPylons = this.computeLineOrLPath(38, 48, seaportPos.x, seaportPos.z, t
 for (let k = 2; k < portPylons.length - 1; k += 3) {
 this.applyTool('power_pylon', [portPylons[k]], true);
 }
+const seaLanePath = this.computeLineOrLPath(Math.min(52, seaportPos.x + 2), Math.min(51, seaportPos.z + 2), 53, 51, true);
+this.applyTool('shipping_lane', seaLanePath, true);
 }
 this.applyTool('zone_CH', this.computeRectTiles(18, 33, 26, 37), true);
 this.applyTool('zone_O',  this.computeRectTiles(13, 33, 16, 37), true);
@@ -14409,6 +14451,7 @@ rb: t.roadBridge ? 1 : undefined,
 rd: (typeof t.roadDir === 'number' && t.roadDir >= 0) ? t.roadDir : undefined,
 bt: t.banTrucks ? 1 : undefined,
 bs: t.busStop ? 1 : undefined,
+sl: t.shippingLane ? 1 : undefined,
 jm: t.junctionMode || undefined,
 rbp: t.roundaboutPaid ? 1 : undefined,
 re: t.roadElevated || undefined,
@@ -14511,6 +14554,7 @@ t.roadBridge = s.rb !== undefined ? Boolean(s.rb) : (Boolean(s.rg === 1 || s.rg 
 t.roadDir = typeof s.rd === 'number' ? s.rd : -1;
 t.banTrucks = Boolean(s.bt);
 t.busStop = Boolean(s.bs);
+t.shippingLane = Boolean(s.sl);
 t.junctionMode = s.jm || null;
 t.roundaboutPaid = Boolean(s.rbp || s.jm === 'roundabout');
 t.roadElevated = s.re || 0;
@@ -14647,6 +14691,9 @@ this.busStops.length = 0;
 this.pedestrians.length = 0;
 this._pedRoadPool.length = 0;
 this._pedSpawnTimer = 0;
+this.spawnTimer = 0;
+this.fireTimer = 0;
+this.trainTimer = 0;
 this.aircraftTimer = 0;
 this.shipTimer = 2.0;
 this._boatSpawnTimer = 1.0;
@@ -14896,6 +14943,7 @@ h = Math.imul(h, 16777619) >>> 0;
 return h;
 }
 ensureRampGraphFresh() {
+if (this._inUpdateTick) return;
 if (!this.sim.grid || !this.sim.grid.length) return;
 const sig = this.computeRoadSignature();
 if (sig !== this.lastGraphSignature) {
@@ -15431,7 +15479,8 @@ return false;
 };
 const dx = ship.dirX || 0;
 const dz = ship.dirZ || 0;
-if ((dx !== 0 || dz !== 0) && ship.leg !== 'berth' && !(ship.dwell > 0)) {
+const inBerthOrDepart = ship.leg === 'berth' || (ship.dwell > 0) || ((ship.departGrace || 0) > 0);
+if ((dx !== 0 || dz !== 0) && !inBerthOrDepart) {
 if (!this.isNavigableShipPoint(ship.wx - dx * 0.55, ship.wz - dz * 0.55)) return false;
 if (!this.isNavigableShipPoint(ship.wx + dx * 0.65, ship.wz + dz * 0.65)) {
 return tryRerouteShip();
@@ -15550,11 +15599,17 @@ refreshRoadGraph(precomputedSig = null) {
 const sig = precomputedSig !== null ? precomputedSig : this.computeRoadSignature();
 this.lastGraphSignature = sig;
 this.buildRampAndDegreeGraph();
+const prevTick = this._inUpdateTick;
+this._inUpdateTick = true;
+try {
 if (sig !== this.lastRoadSignature || this.sim.meshDirty) {
 this.lastRoadSignature = sig;
 this.revalidateActiveTransport();
 }
 this.refreshModalSplitDemand();
+} finally {
+this._inUpdateTick = prevTick;
+}
 }
 groundStepCost(nt, ni) {
 let cost = 1.18;
@@ -15944,6 +15999,19 @@ this.syncVehicleTransform(v, 0);
 this.vehicles.push(v);
 this.refreshActiveModalCounts();
 }
+_hasSpawnClearance(wx, wz, layer = 0, minDist = 0.68) {
+const minSq = minDist * minDist;
+for (let i = 0; i < this.vehicles.length; i++) {
+const o = this.vehicles[i];
+if (!o || o.inTunnel) continue;
+const oCur = o.path && o.path[o.seg];
+if (oCur && (oCur.layer || 0) !== layer) continue;
+const dx = o.wx - wx;
+const dz = o.wz - wz;
+if (dx * dx + dz * dz < minSq) return false;
+}
+return true;
+}
 trySpawnVehicle() {
 this.ensureRampGraphFresh();
 if (this.modalSplit.rawCarDemand === 0) {
@@ -15976,6 +16044,7 @@ const stopB = line.stops[nextIdx];
 const busPath = this.findRoadPath(stopA.x, stopA.z, stopB.x, stopB.z, false, 0, false);
 if (busPath && busPath.length >= 2) {
 const w0 = tileToWorld(busPath[0].x, busPath[0].z);
+if (!this._hasSpawnClearance(w0.wx, w0.wz, busPath[0].layer || 0, 0.72)) continue;
 const maxSpeed = 1.72;
 const bv = {
 id: this._nextVehId++,
@@ -16235,6 +16304,7 @@ else if (kind === 'truck') { color = [0.90, 0.46, 0.16]; length = 0.35; width = 
 else if (kind === 'garbagetruck') { color = [0.22, 0.74, 0.38]; length = 0.36; width = 0.15; height = 0.15; maxSpeed = 1.50; }
 else if (kind === 'bus') { color = [0.18, 0.58, 0.92]; length = 0.40; width = 0.15; height = 0.15; maxSpeed = 1.65; }
 const w0 = tileToWorld(path[0].x, path[0].z);
+if (!this._hasSpawnClearance(w0.wx, w0.wz, path[0].layer || 0, 0.68)) return;
 const v = {
 id: this._nextVehId++,
 variantIdx: (Math.random() * 12) | 0,
@@ -16407,9 +16477,17 @@ if (this.tileOccupancy[ci] < 250) this.tileOccupancy[ci]++;
 }
 update(dt) {
 const sig = this.computeRoadSignature();
-if (this.sim.meshDirty || sig !== this.lastRoadSignature) {
+if (this.sim.meshDirty || sig !== this.lastRoadSignature || sig !== this.lastGraphSignature) {
 this.refreshRoadGraph(sig);
 }
+this._inUpdateTick = true;
+try {
+this._updateBody(dt);
+} finally {
+this._inUpdateTick = false;
+}
+}
+_updateBody(dt) {
 if (this.sim.speed === 0) {
 this.revalidateActiveTransport();
 this.refreshActiveModalCounts();
@@ -16508,6 +16586,8 @@ isOneWaySeg ||
 const allowOvertake = isMultiLane && !curTile.ramp && !nxtTile.ramp;
 const roadBoost = isElevated ? 1.55 : (onRampSeg ? 1.32 : (nxtTile.roadGround >= 2 ? 1.25 : (isOneWaySeg ? 1.12 : 1.0)));
 let targetSpeed = v.maxSpeed * roadBoost * weatherRoadMult;
+let blockedBySignal = false;
+let blockedByVehicle = false;
 if (!isElevated && !nxt.onRamp) {
 const nxtIdx = idx(nxt.x, nxt.z);
 const nxtDeg = this.roadDegree[nxtIdx];
@@ -16523,11 +16603,13 @@ const moveVertical = Math.abs(nxt.z - cur.z) > 0;
 if (jMode === 'roundabout') {
 if (v.t > 0.25 && v.t < 0.58 && !inRoundaboutHub && this.tileOccupancy[nxtIdx] >= 4) {
 targetSpeed = 0;
+blockedBySignal = true;
 }
 } else if (jMode === 'yield') {
 const isMajor = this.isMajorYieldApproach(curTile, nxt.x, nxt.z, moveVertical);
 if (!isMajor && v.t > 0.25 && v.t < 0.58 && this.tileOccupancy[nxtIdx] >= 2) {
 targetSpeed = 0;
+blockedBySignal = true;
 }
 } else {
 if (v.t > 0.25 && v.t < 0.58 && this.isSignalRed(nxt.x, nxt.z, moveVertical)) {
@@ -16535,12 +16617,13 @@ if (this.isTurningRightAtNext(v) && this.tileOccupancy[nxtIdx] < 2) {
 targetSpeed = Math.min(targetSpeed, v.maxSpeed * 0.78);
 } else {
 targetSpeed = 0;
+blockedBySignal = true;
 }
 }
 }
 }
 }
-const latLimit = isMultiLane ? 0.10 : 0.14;
+const latLimit = isMultiLane ? 0.145 : 0.175;
 for (let j = 0; j < this.vehicles.length; j++) {
 if (i === j) continue;
 const o = this.vehicles[j];
@@ -16553,13 +16636,14 @@ if (Math.abs((v.wy || 0) - (o.wy || 0)) > 0.22) continue;
 const rvx = o.wx - v.wx;
 const rvz = o.wz - v.wz;
 const distSq = rvx * rvx + rvz * rvz;
-if (distSq > 0.36) continue; // > 0.60 units away
+if (distSq > 0.56) continue; // > 0.75 units away
 const sameDir = v.dirX * o.dirX + v.dirZ * o.dirZ;
-if (sameDir < 0.45) continue;
 const fwdDist = rvx * v.dirX + rvz * v.dirZ;
 const latDist = Math.abs(-rvx * v.dirZ + rvz * v.dirX);
-const safeGap = (v.length + o.length) * 0.58 + 0.09;
-if (fwdDist > 0.01 && fwdDist < safeGap && latDist < latLimit) {
+const safeGap = (v.length + o.length) * 0.62 + 0.12;
+if (sameDir >= 0.45) {
+if (fwdDist > 0.01 && fwdDist < safeGap * 1.45 && latDist < latLimit) {
+if (fwdDist < safeGap) {
 if (allowOvertake && targetSpeed > 0 && o.speed < v.maxSpeed * 0.85 && !(v.laneChangeCooldown > 0)) {
 const altSlot = v.laneSlot === 1 ? 0 : 1;
 if (this.canSwitchParallelLane(v, i, altSlot, safeGap)) {
@@ -16569,19 +16653,43 @@ continue;
 }
 }
 targetSpeed = 0;
+blockedByVehicle = true;
+break;
+} else {
+targetSpeed = Math.min(targetSpeed, Math.max(0.15, o.speed * 0.92));
+}
+}
+} else if (sameDir > -0.75) {
+if (fwdDist > 0.03 && fwdDist < 0.48 && latDist < 0.28) {
+const oFwdToV = (-rvx) * o.dirX + (-rvz) * o.dirZ;
+const oAlreadyInside = oFwdToV < 0.12 || o.speed > v.speed + 0.22;
+const yieldToCross = oAlreadyInside || ((v.id || i) > (o.id || j));
+if (yieldToCross) {
+targetSpeed = 0;
+blockedByVehicle = true;
 break;
 }
 }
-const accel = targetSpeed < v.speed ? 8.0 : 3.4;
+}
+}
+const accel = targetSpeed < v.speed ? 8.5 : 3.4;
 v.speed += (targetSpeed - v.speed) * Math.min(1, effDt * accel);
 if (v.speed < 0.01 && targetSpeed === 0) v.speed = 0;
 v.stuckTimer = v.stuckTimer || 0;
 if (v.speed < 0.06) {
+if (blockedBySignal && !blockedByVehicle && v.maxSpeed > 0.1) {
+v.stuckTimer += effDt * 0.10;
+} else {
 v.stuckTimer += effDt;
+}
 } else if (v.speed > 0.18) {
-v.stuckTimer = Math.max(0, v.stuckTimer - effDt * 2);
+v.stuckTimer = Math.max(0, v.stuckTimer - effDt * 2.5);
 }
 if (v.stuckTimer >= 12.0) {
+if (v.maxSpeed > 0.1 && !v._reroutedOnce && this.tryRerouteVehicle(v)) {
+v._reroutedOnce = true;
+v.stuckTimer = 3.0;
+} else {
 const oldIdx = idx(cur.x, cur.z);
 if (cur.layer === 0 && !cur.onRamp && this.tileOccupancy[oldIdx] > 0) {
 this.tileOccupancy[oldIdx]--;
@@ -16597,6 +16705,7 @@ gridlockTiles.add(oldIdx);
 this.sim.onTripGridlockTimeout?.(v);
 this.vehicles.splice(i, 1);
 continue;
+}
 }
 const prevSeg = v.seg;
 const segWorldLen = Math.hypot(nxt.x - cur.x, nxt.z - cur.z) || 1.0;
@@ -17093,7 +17202,8 @@ if (wd[idx(cx + dx, cz)] <= 0.12 || wd[idx(cx, cz + dz)] <= 0.12) continue;
 }
 const shallowPenalty = wd[ni] < 0.26 ? 0.9 : 0;
 const bridgePenalty = grid[ni].roadGround > 0 ? 2.5 : 0;
-const nd = bestD + baseCost + shallowPenalty + bridgePenalty;
+const laneMult = grid[ni].shippingLane ? 0.36 : 1.0;
+const nd = bestD + baseCost * laneMult + shallowPenalty + bridgePenalty;
 if (nd < dist[ni]) {
 dist[ni] = nd;
 prev[ni] = cur;
@@ -17168,12 +17278,16 @@ if (dx === 0 && dz === 0) continue;
 const nx = port.x + dx, nz = port.z + dz;
 if (!inBounds(nx, nz)) continue;
 const ni = idx(nx, nz);
-if (wd[ni] > 0.12 && !this.sim.grid[ni].dam) {
-berths.push({ x: nx, z: nz, depth: wd[ni], d2: dx * dx + dz * dz });
+if (wd[ni] > 0.14 && !this.sim.grid[ni].dam) {
+let wetNeighbors = 0;
+for (const [ox, oz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+if (inBounds(nx + ox, nz + oz) && wd[idx(nx + ox, nz + oz)] > 0.14) wetNeighbors++;
+}
+berths.push({ x: nx, z: nz, depth: wd[ni], d2: dx * dx + dz * dz, wetNeighbors });
 }
 }
 }
-berths.sort((a, b) => (a.d2 - b.d2) || (b.depth - a.depth));
+berths.sort((a, b) => (b.wetNeighbors - a.wetNeighbors) || (a.d2 - b.d2) || (b.depth - a.depth));
 for (const berth of berths) {
 const path = this.findSeaOriginForBerth(berth.x, berth.z);
 if (!path) continue;
@@ -17195,6 +17309,9 @@ seg: 0,
 t: 0,
 leg: 'inbound',
 dwell: 0,
+departGrace: 0,
+stuckTimer: 0,
+scale: 0.2,
 speed: 0.55,
 maxSpeed: 0.92 + Math.random() * 0.16,
 wx: p0.wx,
@@ -17269,6 +17386,8 @@ continue;
 }
 if (ship.dwell > 0) {
 ship.speed = 0;
+ship.stuckTimer = 0;
+ship.scale = 1.0;
 ship.dwell -= effDt;
 const lastWp = ship.waypoints[ship.waypoints.length - 1];
 const surf = this.sim.getTileElev(lastWp.x, lastWp.z) + this.sim.waterDepth[idx(lastWp.x, lastWp.z)];
@@ -17277,11 +17396,23 @@ ship.roll = Math.sin(this.signalClock * 1.2 + ship.bobPhase) * 0.015;
 if (ship.dwell <= 0) {
 ship.dwell = 0;
 ship.leg = 'outbound';
+ship.departGrace = 3.6;
 ship.waypoints = ship.waypoints.slice().reverse();
 ship.seg = 0;
 ship.t = 0;
+if (ship.waypoints.length >= 2) {
+const ddx = ship.waypoints[1].wx - ship.waypoints[0].wx;
+const ddz = ship.waypoints[1].wz - ship.waypoints[0].wz;
+const dLen = Math.hypot(ddx, ddz) || 1;
+ship.yaw = Math.atan2(ddx / dLen, ddz / dLen);
+ship.dirX = Math.sin(ship.yaw);
+ship.dirZ = Math.cos(ship.yaw);
+}
 }
 continue;
+}
+if ((ship.departGrace || 0) > 0) {
+ship.departGrace = Math.max(0, ship.departGrace - effDt);
 }
 const wps = ship.waypoints;
 if (!wps || ship.seg >= wps.length - 1) {
@@ -17297,12 +17428,20 @@ const distFromBerth = shipDistFromBerth(ship);
 const nearBerth =
 (ship.leg === 'inbound' && ship.seg >= wps.length - 2) ||
 (ship.leg === 'outbound' && ship.seg === 0);
-let targetSpeed = nearBerth ? ship.maxSpeed * 0.55 : ship.maxSpeed;
+let targetSpeed = nearBerth ? ship.maxSpeed * 0.62 : ship.maxSpeed;
+let holdingForPort = false;
 const pKey = `${ship.portX},${ship.portZ}`;
 const owner = portOwner.get(pKey);
-if (ship.leg === 'inbound' && owner && owner.ship !== ship && distFromBerth <= 5.4) {
+if (ship.leg === 'inbound' && owner && owner.ship !== ship && distFromBerth <= 5.6 && distFromBerth >= 2.2) {
 targetSpeed = 0;
+holdingForPort = true;
 }
+const shipRank = (s) => (s.leg === 'outbound' ? 3 : ((s.leg === 'berth' || s.dwell > 0) ? 2 : 1));
+const hasRightOfWay = (a, b) => {
+const ra = shipRank(a), rb = shipRank(b);
+if (ra !== rb) return ra > rb;
+return (a.id || 0) < (b.id || 0);
+};
 let extraStarboardAvoid = 0;
 for (let j = 0; j < this.ships.length; j++) {
 if (i === j) continue;
@@ -17310,29 +17449,39 @@ const o = this.ships[j];
 const rx = o.wx - ship.wx;
 const rz = o.wz - ship.wz;
 const d = Math.hypot(rx, rz);
-if (d < 2.65) {
+if (d < 3.4) {
 const fwd = rx * ship.dirX + rz * ship.dirZ;
 const lat = Math.abs(-rx * ship.dirZ + rz * ship.dirX);
 const headingDot = ship.dirX * o.dirX + ship.dirZ * o.dirZ;
-if (headingDot < -0.25 && d < 2.65) {
-extraStarboardAvoid = Math.max(extraStarboardAvoid, 0.24);
+const iYield = !hasRightOfWay(ship, o) || (o.dwell > 0 || o.leg === 'berth');
+if (headingDot < 0.15) {
+extraStarboardAvoid = Math.max(extraStarboardAvoid, 0.42);
 }
-const mustYield =
-(ship.leg === 'inbound' && o.leg !== 'inbound') ||
-(o.dwell > 0 || o.leg === 'berth') ||
-(fwd > 0.15 && headingDot > 0.25) ||
-(ship.leg === o.leg && (ship.id || i) > (o.id || j));
-if (d < 1.55) {
-if (mustYield || fwd > -0.25) {
+if (iYield) {
+if (d < 1.95 && fwd > -0.15 && lat < 1.25) {
 targetSpeed = 0;
 break;
+} else if (d < 2.8 && fwd > 0.10 && lat < 1.15) {
+targetSpeed = Math.min(targetSpeed, ship.maxSpeed * 0.25);
 }
-} else if (fwd > -0.20 && lat < 1.05 && mustYield) {
-targetSpeed = d < 2.0 ? 0 : Math.min(targetSpeed, ship.maxSpeed * 0.28);
+} else {
+if (headingDot > 0.55 && fwd > 0.20 && d < 1.75 && lat < 0.90) {
+targetSpeed = Math.min(targetSpeed, Math.max(0.15, o.speed * 0.85));
 }
 }
 }
-ship.speed += (targetSpeed - ship.speed) * Math.min(1, effDt * 3.2);
+}
+ship.stuckTimer = ship.stuckTimer || 0;
+if (ship.speed < 0.08 && !holdingForPort) {
+ship.stuckTimer += effDt;
+if (ship.stuckTimer > 4.2) {
+targetSpeed = Math.max(targetSpeed, ship.maxSpeed * 0.55);
+extraStarboardAvoid = Math.max(extraStarboardAvoid, 0.65);
+}
+} else {
+ship.stuckTimer = Math.max(0, ship.stuckTimer - effDt * 2.0);
+}
+ship.speed += (targetSpeed - ship.speed) * Math.min(1, effDt * 3.4);
 if (ship.speed < 0.015 && targetSpeed === 0) ship.speed = 0;
 ship.t += (ship.speed / segLen) * effDt;
 while (ship.t >= 1.0) {
@@ -17348,6 +17497,7 @@ ship.wz = berthWp.wz;
 ship.dwell = 3.0;
 ship.leg = 'berth';
 ship.speed = 0;
+ship.stuckTimer = 0;
 if (!this.isValidShipState(ship)) {
 this.ships.splice(i, 1);
 }
@@ -17363,19 +17513,19 @@ const vx = c1.wx - c0.wx;
 const vz = c1.wz - c0.wz;
 const vLen = Math.hypot(vx, vz) || 1;
 const targetYaw = Math.atan2(vx / vLen, vz / vLen);
-ship.yaw = lerpAngle(ship.yaw, targetYaw, Math.min(1, effDt * 3.4));
+ship.yaw = lerpAngle(ship.yaw, targetYaw, Math.min(1, effDt * 3.6));
 ship.dirX = Math.sin(ship.yaw);
 ship.dirZ = Math.cos(ship.yaw);
 const updatedDistFromBerth = shipDistFromBerth(ship);
-const laneTaper = Math.min(1, Math.max(0, (updatedDistFromBerth - 0.5) / 1.4));
+const laneTaper = Math.min(1, Math.max(0, (updatedDistFromBerth - 0.55) / 1.4));
 const rightX = -ship.dirZ;
 const rightZ = ship.dirX;
-const desiredOff = (0.42 + extraStarboardAvoid) * laneTaper;
+const desiredOff = (0.62 + extraStarboardAvoid) * laneTaper;
 const baseWx = c0.wx + vx * ship.t;
 const baseWz = c0.wz + vz * ship.t;
 let nextWx = baseWx;
 let nextWz = baseWz;
-for (const frac of [1.0, 0.68, 0.38]) {
+for (const frac of [1.0, 0.72, 0.42, 0.18]) {
 const candX = baseWx + rightX * (desiredOff * frac);
 const candZ = baseWz + rightZ * (desiredOff * frac);
 const offTile = worldToTile(candX, candZ);
@@ -17393,7 +17543,7 @@ if (i === j) continue;
 const o = this.ships[j];
 const curD = Math.hypot(o.wx - ship.wx, o.wz - ship.wz);
 const nextD = Math.hypot(o.wx - nextWx, o.wz - nextWz);
-if (nextD < 1.08 && nextD < curD + 0.02) {
+if (nextD < 1.15 && nextD < curD + 0.01 && !hasRightOfWay(ship, o) && (ship.stuckTimer || 0) <= 4.2) {
 wouldClip = true;
 break;
 }
@@ -17408,6 +17558,13 @@ if (!this.isValidShipState(ship)) {
 this.ships.splice(i, 1);
 continue;
 }
+const prog = ship.seg + ship.t;
+const rem = (wps.length - 1) - prog;
+if (ship.leg === 'inbound') {
+ship.scale = Math.min(1.0, Math.max(0.15, prog / 0.85));
+} else {
+ship.scale = Math.min(1.0, Math.max(0.15, rem / 0.85));
+}
 const s0 = this.sim.getTileElev(c0.x, c0.z) + this.sim.waterDepth[idx(c0.x, c0.z)];
 const s1 = this.sim.getTileElev(c1.x, c1.z) + this.sim.waterDepth[idx(c1.x, c1.z)];
 ship.wy = s0 + (s1 - s0) * ship.t + Math.sin(this.signalClock * 1.8 + ship.bobPhase) * 0.012;
@@ -17420,17 +17577,20 @@ const tile = worldToTile(wx, wz);
 if (!inBounds(tile.x, tile.z)) return false;
 const ti = idx(tile.x, tile.z);
 const t = this.sim.grid[ti];
-if (!t || t.dam || t.roadGround > 0 || t.roadElevated > 0 || t.rail > 0 || t.building) return false;
+if (!t || t.dam || t.roadGround > 0 || t.roadElevated > 0 || t.rail > 0 || t.building || t.shippingLane) return false;
 return this.sim.waterDepth[ti] > 0.28;
 };
 this._boatSpawnTimer -= effDt;
 if (this.leisureBoats.length < 3 && this._boatSpawnTimer <= 0) {
 this._boatSpawnTimer = 2.6;
 const cands = [
-{ tx: 46, tz: 49, r: 2.1, v: 0 },
-{ tx: 49, tz: 45, r: 1.9, v: 1 },
-{ tx: 43, tz: 50, r: 1.7, v: 0 },
-{ tx: 50, tz: 50, r: 1.8, v: 1 }
+{ tx: 49, tz: 44, r: 1.7, v: 0 },
+{ tx: 51, tz: 46, r: 1.5, v: 1 },
+{ tx: 46, tz: 52, r: 1.5, v: 0 },
+{ tx: 43, tz: 51, r: 1.5, v: 1 },
+{ tx: 52, tz: 43, r: 1.4, v: 0 },
+{ tx: 49, tz: 53, r: 1.3, v: 1 },
+{ tx: 46, tz: 49, r: 1.6, v: 0 }
 ];
 for (let k = 0; k < cands.length && this.leisureBoats.length < 3; k++) {
 const c = cands[(this._nextBoatId + k) % cands.length];
@@ -17474,7 +17634,7 @@ const b = this.leisureBoats[i];
 let yieldToShip = false;
 for (let j = 0; j < this.ships.length; j++) {
 const s = this.ships[j];
-if (Math.hypot(s.wx - b.wx, s.wz - b.wz) < 2.4) {
+if (Math.hypot(s.wx - b.wx, s.wz - b.wz) < 3.2) {
 yieldToShip = true;
 break;
 }
@@ -18581,6 +18741,20 @@ tower.castShadow = this.qualityMode !== 'eco';
 tower.receiveShadow = true;
 this.infraGroup.add(tower);
 }
+if (!isUnder && t.shippingLane) {
+const wd = this.sim.waterDepth[idx(x, z)] || 0;
+if (wd > 0.10) {
+const surfY = avgH + wd;
+const showRibbon = this.overlayMode === 'transit' || this.showShippingLaneRibbon;
+if ((x + z) % 2 === 0) {
+this._addBoxTo(this.infraGroup, wx - 0.36, surfY + 0.045, wz - 0.36, 0.06, 0.11, 0.06, this.mats.redCross, false);
+this._addBoxTo(this.infraGroup, wx + 0.36, surfY + 0.045, wz + 0.36, 0.06, 0.11, 0.06, this.mats.tunnelPortalOk, false);
+}
+if (showRibbon) {
+this._addBoxTo(this.infraGroup, wx, surfY + 0.055, wz, 0.42, 0.03, 0.42, this.mats.cyanGlow, false);
+}
+}
+}
 }
 }
 for (let i = 0; i < pylonPts.length; i++) {
@@ -19290,6 +19464,12 @@ this._vehActiveMap.set(v, entry);
 }
 const obj = entry.obj;
 obj.visible = true;
+let vScale = 1.0;
+if (!v.busLineId && v.path && v.path.length >= 2) {
+if (v.seg === 0 && v.t < 0.22) vScale = 0.35 + (v.t / 0.22) * 0.65;
+else if (v.seg >= v.path.length - 2 && v.t > 0.78) vScale = 0.35 + ((1.0 - v.t) / 0.22) * 0.65;
+}
+obj.scale.setScalar(Math.max(0.35, Math.min(1.0, vScale)));
 this.vehiclePool.push({ kind: v.kind, obj, vehicle: v });
 if (isUnder) {
 const tx = Math.floor(v.wx + HALF_GRID);
@@ -19420,6 +19600,8 @@ const sh = entry.obj;
 sh.visible = true;
 sh.position.set(s.wx, s.wy, s.wz);
 sh.rotation.set(-(s.pitch || 0), s.yaw || 0, s.roll || 0);
+const sScale = Math.max(0.15, Math.min(1.0, s.scale !== undefined ? s.scale : 1.0));
+sh.scale.setScalar(sScale);
 this.shipPool.push(sh);
 }
 const boats = isUnder ? [] : (this.traffic.leisureBoats || []);
@@ -19953,7 +20135,7 @@ const { saveStorage } = __M;
 const TOOL_GROUPS = {
 terrain:  ['ter_raise', 'ter_lower', 'ter_flatten', 'ter_spring'],
 road:     ['road_1', 'road_2', 'road_oneway', 'road_elev', 'road_ramp', 'road_tunnel', 'interchange_diamond', 'interchange_rbt'],
-rail:     ['bus_stop', 'metro_line', 'metro_station', 'rail_track', 'hsr_station', 'seaport', 'airport'],
+rail:     ['bus_stop', 'metro_line', 'metro_station', 'rail_track', 'hsr_station', 'seaport', 'shipping_lane', 'airport'],
 zones:    ['zone_RL', 'zone_RH', 'zone_CL', 'zone_CH', 'zone_I', 'zone_O', 'dezone'],
 water:    ['water_pipe', 'water_pump', 'sewage_out', 'water_treat', 'waste_plant'],
 power:    ['hydro_dam', 'power_pylon', 'power_wind', 'power_plant', 'solar_plant', 'nuclear_plant'],
@@ -20287,6 +20469,112 @@ document.getElementById('inspector-card').classList.remove('open');
 document.getElementById('modal-backdrop').addEventListener('click', (e) => {
 if (e.target.id === 'modal-backdrop') this.closeModal();
 });
+const bindHorizWheel = (wheelTarget, scrollBox) => {
+if (!wheelTarget || !scrollBox) return;
+wheelTarget.addEventListener('wheel', (e) => {
+const delta = Math.abs(e.deltaY) >= Math.abs(e.deltaX) ? e.deltaY : e.deltaX;
+if (delta !== 0) {
+e.preventDefault();
+e.stopPropagation();
+scrollBox.scrollLeft += delta * 0.95;
+this._updateSubScrollButtons();
+}
+}, { passive: false });
+};
+const subWrap = document.getElementById('sub-toolbar-wrap');
+const subBar = document.getElementById('sub-toolbar');
+const bottomDock = document.getElementById('bottom-dock');
+bindHorizWheel(subWrap || subBar, subBar);
+bindHorizWheel(bottomDock, bottomDock);
+if (subBar) {
+subBar.addEventListener('scroll', () => this._updateSubScrollButtons(), { passive: true });
+}
+const btnScrollL = document.getElementById('sub-scroll-left');
+const btnScrollR = document.getElementById('sub-scroll-right');
+if (btnScrollL && subBar) {
+btnScrollL.addEventListener('click', () => {
+this.sfx.tap();
+if (typeof subBar.scrollBy === 'function') subBar.scrollBy({ left: -240, behavior: 'smooth' });
+else subBar.scrollLeft = Math.max(0, (subBar.scrollLeft || 0) - 240);
+setTimeout(() => this._updateSubScrollButtons(), 180);
+});
+}
+if (btnScrollR && subBar) {
+btnScrollR.addEventListener('click', () => {
+this.sfx.tap();
+if (typeof subBar.scrollBy === 'function') subBar.scrollBy({ left: 240, behavior: 'smooth' });
+else subBar.scrollLeft = (subBar.scrollLeft || 0) + 240;
+setTimeout(() => this._updateSubScrollButtons(), 180);
+});
+}
+if (typeof window !== 'undefined' && window.addEventListener) {
+window.addEventListener('resize', () => {
+this.syncLayoutOffsets();
+this._updateSubScrollButtons();
+});
+}
+if (typeof ResizeObserver !== 'undefined') {
+this._layoutObserver = new ResizeObserver(() => {
+this.syncLayoutOffsets();
+this._updateSubScrollButtons();
+});
+for (const id of ['top-hud', 'chirper-pill', 'sub-toolbar-wrap', 'bottom-dock']) {
+const el = document.getElementById(id);
+if (el) this._layoutObserver.observe(el);
+}
+}
+this.syncLayoutOffsets();
+}
+_updateSubScrollButtons() {
+const subBar = document.getElementById('sub-toolbar');
+const btnL = document.getElementById('sub-scroll-left');
+const btnR = document.getElementById('sub-scroll-right');
+if (!subBar || !btnL || !btnR) return;
+const isOpen = subBar.classList.contains('open');
+const scrollW = subBar.scrollWidth || 0;
+const clientW = subBar.clientWidth || 0;
+const scrollL = subBar.scrollLeft || 0;
+const overflows = isOpen && scrollW > clientW + 4;
+btnL.classList.toggle('visible', overflows && scrollL > 4);
+btnR.classList.toggle('visible', overflows && scrollL < scrollW - clientW - 4);
+}
+syncLayoutOffsets() {
+const rootStyle = document.documentElement && document.documentElement.style;
+if (!rootStyle || typeof rootStyle.setProperty !== 'function') return;
+const topHud = document.getElementById('top-hud');
+const chirper = document.getElementById('chirper-pill');
+const subWrap = document.getElementById('sub-toolbar-wrap');
+const subBar = document.getElementById('sub-toolbar');
+const dock = document.getElementById('bottom-dock');
+const topRect = topHud && typeof topHud.getBoundingClientRect === 'function' ? topHud.getBoundingClientRect() : null;
+const hudBottom = topRect && topRect.height > 10 ? Math.ceil(topRect.bottom) : 60;
+const chirperRect = chirper && typeof chirper.getBoundingClientRect === 'function' ? chirper.getBoundingClientRect() : null;
+const chirperH = chirperRect && chirperRect.height > 8 ? Math.ceil(chirperRect.height) : 30;
+const vw = (typeof window !== 'undefined' && window.innerWidth) || 1280;
+const vh = (typeof window !== 'undefined' && window.innerHeight) || 720;
+const chirperTop = hudBottom + 8;
+const leftStackTop = vw < 860 ? (chirperTop + chirperH + 8) : (hudBottom + 8);
+const toolHintTop = chirperTop + chirperH + 8;
+const toastTop = toolHintTop + 38;
+let bottomStackH = 74;
+const subOpen = Boolean(subBar && subBar.classList.contains('open'));
+const activeBottomEl = subOpen ? (subWrap || subBar) : dock;
+if (activeBottomEl && typeof activeBottomEl.getBoundingClientRect === 'function') {
+const br = activeBottomEl.getBoundingClientRect();
+if (br && br.height > 10 && br.top > 0 && br.top < vh) {
+bottomStackH = Math.max(70, Math.ceil(vh - br.top));
+} else if (subOpen) {
+bottomStackH = 148;
+}
+} else if (subOpen) {
+bottomStackH = 148;
+}
+rootStyle.setProperty('--hud-bottom', `${hudBottom}px`);
+rootStyle.setProperty('--chirper-top', `${chirperTop}px`);
+rootStyle.setProperty('--left-stack-top', `${leftStackTop}px`);
+rootStyle.setProperty('--tool-hint-top', `${toolHintTop}px`);
+rootStyle.setProperty('--toast-top', `${toastTop}px`);
+rootStyle.setProperty('--bottom-stack-h', `${bottomStackH}px`);
 }
 openSubToolbar(itemIds, defaultToolId, categoryKey) {
 this.openCategory = categoryKey;
@@ -20330,7 +20618,14 @@ this.openBusLinesModal();
 sub.appendChild(busMgrBtn);
 }
 sub.classList.add('open');
+const subWrap = document.getElementById('sub-toolbar-wrap');
+if (subWrap) subWrap.classList.add('open');
+sub.scrollLeft = 0;
 this.selectTool(defaultToolId, categoryKey, true);
+requestAnimationFrame(() => {
+this._updateSubScrollButtons();
+this.syncLayoutOffsets();
+});
 }
 refreshSubToolbarUnlocks() {
 const sub = document.getElementById('sub-toolbar');
@@ -20463,9 +20758,19 @@ this.renderer.overlayMode = 'none';
 this.autoOverlayActive = false;
 this.updateOverlayLegend();
 }
+const prevShipRibbon = Boolean(this.renderer.showShippingLaneRibbon);
+const nextShipRibbon = toolId === 'shipping_lane';
+if (prevShipRibbon !== nextShipRibbon) {
+this.renderer.showShippingLaneRibbon = nextShipRibbon;
+this.sim.infraDirty = true;
+}
 if (!keepSubOpen && !categoryKey) {
 this.openCategory = null;
 document.getElementById('sub-toolbar').classList.remove('open');
+const subWrap = document.getElementById('sub-toolbar-wrap');
+if (subWrap) subWrap.classList.remove('open');
+this._updateSubScrollButtons();
+this.syncLayoutOffsets();
 } else {
 document.querySelectorAll('#sub-toolbar .sub-item').forEach((el) => {
 el.classList.toggle('active', el.dataset.toolId === toolId);
@@ -20535,7 +20840,7 @@ underground: `<strong>🔵 地下透视蓝图视图</strong><br>青蓝管线 = �
 power: `<strong>⚡ 高压电网覆盖视图</strong><br>蓝色地块 = 已通电区域 | 远距离电厂/大坝请架设【高压输电铁塔】接力`,
 landValue: `<strong>💎 地价热力视图</strong><br>翠绿 = 高地价核心区（可长出 48~64 层摩天大楼）`,
 traffic: `<strong>🚦 交通拥堵热力视图</strong><br>红橙色道路 = 严重堵车（会导致商店缺货！建议架二层高架、设单行道或修公交/地铁）`,
-transit: `<strong>🚌 城市公交线路网视图</strong><br>彩色立体光带 = 已开通的自定义公交专线 | 青色圆点 = 🚏智能公交站 | 紫色 = 地铁/高铁/机场枢纽`,
+transit: `<strong>🚌 城市公交与海运航道网视图</strong><br>彩色立体光带 = 自定义公交专线 | 青色圆点 = 🚏智能公交站 | ⚓ 青蓝水标 = 规划海运航道`,
 pollution: `<strong>☣️ 空气与水体污染视图</strong><br>紫红色 = 重工业/污水高污染区（远离居民区与抽水站，可用【环保减排法】大幅降低）`,
 education: `<strong>🎓 教育与市政覆盖视图</strong><br>金青色 = 高学历与高市政覆盖区（驱动高新写字楼与清洁科技工业增产！）`,
 noise: `<strong>🔊 城市交通与工业噪音视图</strong><br>品红/橙色 = 噪音扰民区（点击住宅街道开启【🚫 禁行重型货车】或种树建公园降噪！）`
@@ -20556,7 +20861,7 @@ return t === 'ter_raise' || t === 'ter_lower' || t === 'ter_flatten';
 _isLinePathTool(t) {
 return (
 t === 'road_1' || t === 'road_2' || t === 'road_oneway' || t === 'road_elev' || t === 'road_ramp' || t === 'road_tunnel' ||
-t === 'metro_line' || t === 'rail_track' || t === 'water_pipe' || t === 'hydro_dam'
+t === 'metro_line' || t === 'rail_track' || t === 'shipping_lane' || t === 'water_pipe' || t === 'hydro_dam'
 );
 }
 _isRectTool(t) {
@@ -20693,7 +20998,13 @@ const reqTier = MAYOR_LEVELS[est.lockedLevel - 1] || { popReq: 0, xpReq: 0 };
 this.updateToolHint(`🔒 需升至 Lv.${est.lockedLevel} 解锁（👥需人口 ${reqTier.popReq.toLocaleString()} · ⭐需经验 ${reqTier.xpReq.toLocaleString()}）！`);
 } else if (est.validTiles.length === 0) {
 this.renderer.previewColor = [0.95, 0.25, 0.25];
+if ((est.skippedProtected || 0) > 0) {
+this.updateToolHint(`🛡️ 已保护 ${est.skippedProtected} 格原有建筑/区划不被覆盖（如需改建请先拆除或清除区划）`);
+} else if (this.activeTool === 'shipping_lane') {
+this.updateToolHint('⚓ 请在深海或宽阔江面水域（水深 > 0.14m）拖拽规划海运航道');
+} else {
 this.updateToolHint('⚠️ 当前地形坡度过陡或位置受阻（陡坡请用平整台地或穿山隧道）');
+}
 } else if (this.sim.difficulty !== 'sandbox' && !this.activeTool.startsWith('bulldoze') && est.cost > this.sim.money) {
 this.renderer.previewColor = [0.95, 0.25, 0.25];
 this.updateToolHint(`💰 资金不足：需 ¥${est.cost.toLocaleString()} (${est.validTiles.length}格)`);
@@ -20745,7 +21056,8 @@ this.updateToolHint(`🏔️ 穿山隧道 ${vTiles.length} 格 · 💡 提示：
 } else {
 this.renderer.previewColor = this.activeTool.startsWith('bulldoze') ? [0.98, 0.30, 0.30] : [0.25, 0.88, 1.0];
 const item = CATALOG[this.activeTool];
-this.updateToolHint(`${item.icon} 规划 ${est.validTiles.length} 格 · 造价 ¥${est.cost.toLocaleString()}（松手确认）`);
+const protNote = (est.skippedProtected || 0) > 0 ? ` · 🛡️已避让保护 ${est.skippedProtected} 格原有设施` : '';
+this.updateToolHint(`${item.icon} 规划 ${est.validTiles.length} 格 · 造价 ¥${est.cost.toLocaleString()}${protNote}（松手确认）`);
 }
 }
 _bindCanvasInput() {
@@ -21166,6 +21478,19 @@ gridEl.innerHTML = `
 ${extraTransitRow}
 `;
 hintEl.textContent = this.sim.getUpgradeHint(t);
+if (b.type === 'seaport' && actionsEl) {
+const laneTiles = this.sim.grid.reduce((acc, c) => acc + (c.shippingLane ? 1 : 0), 0);
+actionsEl.style.display = 'flex';
+actionsEl.innerHTML = `<button class="btn-primary" id="btn-plan-sea-lane" style="width:100%;font-size:12px;">⚓ 规划海运航道（当前 ${laneTiles} 格航标）</button>`;
+const seaBtn = document.getElementById('btn-plan-sea-lane');
+if (seaBtn) {
+seaBtn.addEventListener('click', () => {
+this.sfx.tap();
+this.openSubToolbar(TOOL_GROUPS.rail, 'shipping_lane', 'rail');
+this.showToast('⚓ 请在海湾深水区拖拽布设海运航道，货轮将优先沿航标分道航行！', 3200);
+});
+}
+}
 if (!b.abandoned && b.level < this.sim.getMaxLevelForZone(b.type) && !b.underConstruction && ['RL','RH','CL','CH','I','O'].includes(b.type)) {
 progWrap.style.display = 'block';
 progFill.style.width = `${Math.min(100, Math.round(b.upgradeProgress || 0))}%`;
@@ -21197,6 +21522,7 @@ ${deg >= 3 ? `<span class="badge ok">${jBadgeLabel}</span>` : ''}
 ${isOneWay ? `<span class="badge info">${dirArrows[t.roadDir] || '➡️ 单行道'}</span>` : ''}
 ${t.banTrucks ? `<span class="badge warn">🚫 禁行重卡</span>` : ''}
 ${t.busStop ? `<span class="badge ok">🚌 智能公交站</span>` : ''}
+${t.shippingLane ? `<span class="badge ok">⚓ 规划海运航道</span>` : ''}
 ${(t.roadGround > 0 || t.roadElevated > 0) && t.outsideConnected === false ? `<span class="badge warn">🚧 未连通城际高速</span>` : ''}
 ${wDepth > 0.08 ? `<span class="badge info">水深 ${wDepth.toFixed(2)}m</span>` : ''}
 ${t.pipe ? `<span class="badge ${t.pipeBroken ? 'warn' : 'ok'}">${t.pipeBroken ? '🔴 水管震裂' : '🔵 已铺地下水管'}</span>` : ''}
@@ -21433,6 +21759,7 @@ if (tt) tt.textContent = `批示：${ev.title}`;
 evPill.style.display = 'none';
 }
 }
+this.syncLayoutOffsets();
 }
 openCivicEventModal() {
 const ev = this.sim.activeEvent;

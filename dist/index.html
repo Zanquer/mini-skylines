@@ -39,6 +39,12 @@
   --safe-bottom: env(safe-area-inset-bottom, 0px);
   --safe-left: env(safe-area-inset-left, 0px);
   --safe-right: env(safe-area-inset-right, 0px);
+  --hud-bottom: calc(60px + var(--safe-top));
+  --chirper-top: calc(var(--hud-bottom) + 8px);
+  --left-stack-top: calc(var(--hud-bottom) + 8px);
+  --tool-hint-top: calc(var(--hud-bottom) + 44px);
+  --toast-top: calc(var(--hud-bottom) + 82px);
+  --bottom-stack-h: calc(74px + var(--safe-bottom));
 }
 
 * {
@@ -102,10 +108,11 @@ html, body {
   -webkit-backdrop-filter: blur(16px) saturate(145%);
   border: 1px solid var(--border-glass);
   border-radius: 15px;
-  padding: 6px 12px;
+  padding: 5px 10px;
   display: flex;
   align-items: center;
-  gap: 11px;
+  gap: 8px;
+  max-width: 100%;
   box-shadow: var(--shadow-soft);
   transition: border-color 0.2s var(--ease-out-nordic), box-shadow 0.2s var(--ease-out-nordic);
 }
@@ -144,14 +151,14 @@ html, body {
 .stats-row {
   display: flex;
   align-items: center;
-  gap: 11px;
+  gap: 8px;
   flex-wrap: wrap;
 }
 
 .stat-pill {
   display: flex;
   flex-direction: column;
-  min-width: 52px;
+  min-width: 48px;
 }
 
 .stat-label {
@@ -247,7 +254,8 @@ html, body {
 .quick-actions {
   display: flex;
   align-items: center;
-  gap: 5px;
+  flex-wrap: wrap;
+  gap: 4px;
 }
 
 .icon-btn {
@@ -255,10 +263,11 @@ html, body {
   border: 1px solid rgba(186, 214, 255, 0.15);
   color: var(--text-main);
   border-radius: 10px;
-  padding: 6px 10px;
-  font-size: 12px;
+  padding: 5px 8px;
+  font-size: 11.5px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
   cursor: pointer;
   display: inline-flex;
   align-items: center;
@@ -287,9 +296,9 @@ html, body {
 /* ==================== Citizen Chirper Compact News Ticker Pill ==================== */
 #chirper-pill {
   position: fixed;
-  top: calc(60px + var(--safe-top));
+  top: var(--chirper-top);
   right: calc(10px + var(--safe-right));
-  max-width: min(355px, calc(100vw - 20px));
+  max-width: min(355px, calc(100vw - 24px));
   background: linear-gradient(135deg, rgba(14, 27, 48, 0.88) 0%, rgba(9, 18, 34, 0.92) 100%);
   backdrop-filter: blur(14px) saturate(150%);
   -webkit-backdrop-filter: blur(14px) saturate(150%);
@@ -433,12 +442,54 @@ html, body {
 }
 
 /* ==================== Submenu / Category Drawer above Bottom Toolbar ==================== */
-#sub-toolbar {
+#sub-toolbar-wrap {
   position: fixed;
   bottom: calc(76px + var(--safe-bottom));
   left: 50%;
   transform: translateX(-50%);
   max-width: calc(100vw - 16px);
+  display: none;
+  align-items: center;
+  gap: 5px;
+  z-index: 22;
+  animation: subDrawerIn 0.18s var(--ease-out-nordic);
+}
+
+#sub-toolbar-wrap.open {
+  display: flex;
+}
+
+.sub-scroll-btn {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 54px;
+  border-radius: 12px;
+  border: 1px solid rgba(56, 189, 248, 0.50);
+  background: linear-gradient(180deg, rgba(16, 30, 54, 0.94), rgba(9, 17, 32, 0.96));
+  color: #bae6fd;
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 6px 18px rgba(2, 6, 18, 0.55);
+  transition: all 0.15s ease;
+}
+
+.sub-scroll-btn.visible {
+  display: inline-flex;
+}
+
+.sub-scroll-btn:hover {
+  background: linear-gradient(180deg, rgba(14, 165, 233, 0.42), rgba(37, 99, 235, 0.36));
+  border-color: #7dd3fc;
+  color: #ffffff;
+}
+
+#sub-toolbar {
+  position: relative;
+  max-width: calc(100vw - 84px);
   background: var(--bg-dock-grad);
   backdrop-filter: blur(18px) saturate(150%);
   -webkit-backdrop-filter: blur(18px) saturate(150%);
@@ -448,16 +499,24 @@ html, body {
   display: none;
   gap: 7px;
   overflow-x: auto;
-  scrollbar-width: none;
-  -ms-overflow-style: none;
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(56, 189, 248, 0.45) transparent;
   -webkit-overflow-scrolling: touch;
-  z-index: 22;
   box-shadow: var(--shadow-luxury);
-  animation: subDrawerIn 0.18s var(--ease-out-nordic);
 }
 
 #sub-toolbar::-webkit-scrollbar {
-  display: none;
+  height: 5px;
+}
+
+#sub-toolbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+#sub-toolbar::-webkit-scrollbar-thumb {
+  background: rgba(56, 189, 248, 0.45);
+  border-radius: 999px;
 }
 
 #sub-toolbar.open {
@@ -618,9 +677,10 @@ html, body {
 /* ==================== Active Tool Banner / Drag Cost Hint ==================== */
 #tool-hint {
   position: fixed;
-  top: calc(68px + var(--safe-top));
+  top: var(--tool-hint-top);
   left: 50%;
   transform: translateX(-50%);
+  max-width: calc(100vw - 24px);
   background: linear-gradient(180deg, rgba(15, 26, 46, 0.92) 0%, rgba(9, 16, 30, 0.95) 100%);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
@@ -636,6 +696,8 @@ html, body {
   gap: 10px;
   z-index: 19;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   box-shadow: 0 6px 20px rgba(2, 6, 18, 0.45), 0 0 12px rgba(56, 189, 248, 0.16);
 }
 
@@ -664,7 +726,7 @@ html, body {
 #inspector-card {
   position: fixed;
   left: calc(10px + var(--safe-left));
-  bottom: calc(78px + var(--safe-bottom));
+  bottom: calc(var(--bottom-stack-h) + 8px);
   width: min(296px, calc(100vw - 20px));
   background: var(--bg-dock-grad);
   backdrop-filter: blur(18px) saturate(150%);
@@ -1085,7 +1147,7 @@ html, body {
 /* ==================== Toast Notification & Overlay Legend ==================== */
 #toast-container {
   position: fixed;
-  top: calc(104px + var(--safe-top));
+  top: var(--toast-top);
   left: 50%;
   transform: translateX(-50%);
   display: flex;
@@ -1241,7 +1303,7 @@ html, body {
 #left-float-stack {
   position: fixed;
   left: calc(10px + var(--safe-left));
-  top: calc(64px + var(--safe-top));
+  top: var(--left-stack-top);
   display: flex;
   flex-direction: column;
   align-items: flex-start;
@@ -1579,23 +1641,22 @@ html, body {
 
 /* ==================== Mobile & Compact Viewport Adjustments ==================== */
 @media (max-width: 640px) {
-  .hud-card { padding: 5px 8px; gap: 7px; border-radius: 13px; }
+  .hud-card { padding: 5px 8px; gap: 6px; border-radius: 13px; }
   .stat-pill { min-width: 44px; }
   .stat-val { font-size: 12px; }
   .city-name-row { font-size: 13px; }
   .mayor-badge { min-width: 84px; padding: 3px 7px; }
   #chirper-pill {
-    top: calc(96px + var(--safe-top));
     right: calc(8px + var(--safe-right));
     max-width: calc(100vw - 16px);
     font-size: 11px;
     padding: 4px 10px 4px 7px;
   }
-  #left-float-stack { top: calc(128px + var(--safe-top)); }
   #guide-card { width: min(268px, calc(100vw - 16px)); padding: 8px 10px; }
-  #tool-hint { top: calc(130px + var(--safe-top)); font-size: 11px; }
-  #toast-container { top: calc(162px + var(--safe-top)); }
+  #tool-hint { font-size: 11px; }
   .dock-btn { min-width: 48px; height: 48px; padding: 3px 6px; }
+  .sub-scroll-btn { width: 24px; height: 46px; }
+  #sub-toolbar { max-width: calc(100vw - 68px); }
 }
 
 /* ==================== Flagship iOS PWA Boot Splash & Cache Manager ==================== */
@@ -1792,7 +1853,7 @@ html, body {
 #place-confirm-bar {
   position: fixed;
   left: 50%;
-  bottom: calc(134px + var(--safe-bottom));
+  bottom: calc(var(--bottom-stack-h) + 10px);
   transform: translateX(-50%);
   display: none;
   flex-direction: column;
@@ -1992,7 +2053,7 @@ html, body {
   <div id="boot-splash">
     <div class="boot-logo-ring">🏙️</div>
     <div class="boot-title">山河天际线 Pro 3D</div>
-    <div class="boot-subtitle">旗舰 PBR 离线立体都市模拟器 v8.0</div>
+    <div class="boot-subtitle">旗舰 PBR 离线立体都市模拟器 v8.1</div>
     <div class="boot-bar-track"><div class="boot-bar-fill" id="boot-bar-fill"></div></div>
     <div class="boot-status" id="boot-status">正在初始化三维引擎...</div>
   </div>
@@ -2183,8 +2244,12 @@ html, body {
     </div>
   </div>
 
-  <!-- Category Sub-Toolbar -->
-  <div id="sub-toolbar"></div>
+  <!-- Category Sub-Toolbar with Horizontal Wheel & Chevron Scroll Controls -->
+  <div id="sub-toolbar-wrap">
+    <button class="sub-scroll-btn" id="sub-scroll-left" title="向左滚动更多建筑（支持鼠标滚轮横滑）">◀</button>
+    <div id="sub-toolbar"></div>
+    <button class="sub-scroll-btn" id="sub-scroll-right" title="向右滚动更多建筑（支持鼠标滚轮横滑）">▶</button>
+  </div>
 
   <!-- Bottom 9-Category Skylines Dock -->
   <nav id="bottom-dock">

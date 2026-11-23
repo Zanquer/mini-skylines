@@ -1332,6 +1332,11 @@ export class ArchitectureLibrary {
     ];
     this.containerMats = [this.m.contRed, this.m.contBlue, this.m.contAmber, this.m.contTeal, this.m.contGreen];
     this.neonMats = [this.m.neonCyan, this.m.neonRose, this.m.neonGold, this.m.neonEmerald, this.m.neonViolet];
+    // Pre-cache standard custom bus route liveries so runtime spawning allocates ZERO materials!
+    this._busLineMats = new Map();
+    for (const hex of ['#0ea5e9', '#10b981', '#f97316', '#a855f7', '#ef4444', '#eab308']) {
+      this._getBusLineMat(hex);
+    }
   }
 
   _getDustyGLBMat(origMat) {

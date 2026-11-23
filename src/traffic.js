@@ -89,6 +89,9 @@ export class TrafficManager {
     this.pedestrians.length = 0;
     this._pedRoadPool.length = 0;
     this._pedSpawnTimer = 0;
+    this.spawnTimer = 0;
+    this.fireTimer = 0;
+    this.trainTimer = 0;
     this.aircraftTimer = 0;
     this.shipTimer = 2.0;
     this._boatSpawnTimer = 1.0;
@@ -364,6 +367,7 @@ export class TrafficManager {
   }
 
   ensureRampGraphFresh() {
+    if (this._inUpdateTick) return;
     if (!this.sim.grid || !this.sim.grid.length) return;
     const sig = this.computeRoadSignature();
     if (sig !== this.lastGraphSignature) {
@@ -961,7 +965,8 @@ export class TrafficManager {
 
     const dx = ship.dirX || 0;
     const dz = ship.dirZ || 0;
-    if ((dx !== 0 || dz !== 0) && ship.leg !== 'berth' && !(ship.dwell > 0)) {
+    const inBerthOrDepart = ship.leg === 'berth' || (ship.dwell > 0) || ((ship.departGrace || 0) > 0);
+    if ((dx !== 0 || dz !== 0) && !inBerthOrDepart) {
       if (!this.isNavigableShipPoint(ship.wx - dx * 0.55, ship.wz - dz * 0.55)) return false;
       if (!this.isNavigableShipPoint(ship.wx + dx * 0.65, ship.wz + dz * 0.65)) {
         return tryRerouteShip();
@@ -1094,11 +1099,17 @@ export class TrafficManager {
     this.lastGraphSignature = sig;
     this.buildRampAndDegreeGraph();
 
-    if (sig !== this.lastRoadSignature || this.sim.meshDirty) {
-      this.lastRoadSignature = sig;
-      this.revalidateActiveTransport();
+    const prevTick = this._inUpdateTick;
+    this._inUpdateTick = true;
+    try {
+      if (sig !== this.lastRoadSignature || this.sim.meshDirty) {
+        this.lastRoadSignature = sig;
+        this.revalidateActiveTransport();
+      }
+      this.refreshModalSplitDemand();
+    } finally {
+      this._inUpdateTick = prevTick;
     }
-    this.refreshModalSplitDemand();
   }
 
   groundStepCost(nt, ni) {
@@ -1548,6 +1559,20 @@ export class TrafficManager {
     this.refreshActiveModalCounts();
   }
 
+  _hasSpawnClearance(wx, wz, layer = 0, minDist = 0.68) {
+    const minSq = minDist * minDist;
+    for (let i = 0; i < this.vehicles.length; i++) {
+      const o = this.vehicles[i];
+      if (!o || o.inTunnel) continue;
+      const oCur = o.path && o.path[o.seg];
+      if (oCur && (oCur.layer || 0) !== layer) continue;
+      const dx = o.wx - wx;
+      const dz = o.wz - wz;
+      if (dx * dx + dz * dz < minSq) return false;
+    }
+    return true;
+  }
+
   trySpawnVehicle() {
     this.ensureRampGraphFresh();
     if (this.modalSplit.rawCarDemand === 0) {
@@ -1585,6 +1610,7 @@ export class TrafficManager {
         const busPath = this.findRoadPath(stopA.x, stopA.z, stopB.x, stopB.z, false, 0, false);
         if (busPath && busPath.length >= 2) {
           const w0 = tileToWorld(busPath[0].x, busPath[0].z);
+          if (!this._hasSpawnClearance(w0.wx, w0.wz, busPath[0].layer || 0, 0.72)) continue;
           const maxSpeed = 1.72;
           const bv = {
             id: this._nextVehId++,
@@ -1865,6 +1891,7 @@ export class TrafficManager {
     else if (kind === 'bus') { color = [0.18, 0.58, 0.92]; length = 0.40; width = 0.15; height = 0.15; maxSpeed = 1.65; }
 
     const w0 = tileToWorld(path[0].x, path[0].z);
+    if (!this._hasSpawnClearance(w0.wx, w0.wz, path[0].layer || 0, 0.68)) return;
     const v = {
       id: this._nextVehId++,
       variantIdx: (Math.random() * 12) | 0,
@@ -2053,9 +2080,18 @@ export class TrafficManager {
 
   update(dt) {
     const sig = this.computeRoadSignature();
-    if (this.sim.meshDirty || sig !== this.lastRoadSignature) {
+    if (this.sim.meshDirty || sig !== this.lastRoadSignature || sig !== this.lastGraphSignature) {
       this.refreshRoadGraph(sig);
     }
+    this._inUpdateTick = true;
+    try {
+      this._updateBody(dt);
+    } finally {
+      this._inUpdateTick = false;
+    }
+  }
+
+  _updateBody(dt) {
     if (this.sim.speed === 0) {
       this.revalidateActiveTransport();
       this.refreshActiveModalCounts();
@@ -2173,6 +2209,8 @@ export class TrafficManager {
 
       const roadBoost = isElevated ? 1.55 : (onRampSeg ? 1.32 : (nxtTile.roadGround >= 2 ? 1.25 : (isOneWaySeg ? 1.12 : 1.0)));
       let targetSpeed = v.maxSpeed * roadBoost * weatherRoadMult;
+      let blockedBySignal = false;
+      let blockedByVehicle = false;
 
       // Ground Intersection Control: 'signal' | 'yield' | 'roundabout' (never halts mid-ramp!)
       if (!isElevated && !nxt.onRamp) {
@@ -2194,12 +2232,14 @@ export class TrafficManager {
             // ZERO red-light stop! Enter roundabout whenever hub occupancy < 4
             if (v.t > 0.25 && v.t < 0.58 && !inRoundaboutHub && this.tileOccupancy[nxtIdx] >= 4) {
               targetSpeed = 0;
+              blockedBySignal = true;
             }
           } else if (jMode === 'yield') {
             // Major road has ZERO signal stop; minor road yields only if intersection occupancy >= 2
             const isMajor = this.isMajorYieldApproach(curTile, nxt.x, nxt.z, moveVertical);
             if (!isMajor && v.t > 0.25 && v.t < 0.58 && this.tileOccupancy[nxtIdx] >= 2) {
               targetSpeed = 0;
+              blockedBySignal = true;
             }
           } else {
             // 'signal' mode with Right-Turn-On-Red when intersection occupancy < 2
@@ -2208,14 +2248,15 @@ export class TrafficManager {
                 targetSpeed = Math.min(targetSpeed, v.maxSpeed * 0.78);
               } else {
                 targetSpeed = 0;
+                blockedBySignal = true;
               }
             }
           }
         }
       }
 
-      // Real 3D Bumper-to-Bumper Collision Avoidance + 4-Lane Parallel Overtaking!
-      const latLimit = isMultiLane ? 0.10 : 0.14;
+      // Full 360° 3D Bumper-to-Bumper, Intersection Cross-Traffic & 4-Lane Parallel Overtaking Avoidance!
+      const latLimit = isMultiLane ? 0.145 : 0.175;
       for (let j = 0; j < this.vehicles.length; j++) {
         if (i === j) continue;
         const o = this.vehicles[j];
@@ -2229,58 +2270,86 @@ export class TrafficManager {
         const rvx = o.wx - v.wx;
         const rvz = o.wz - v.wz;
         const distSq = rvx * rvx + rvz * rvz;
-        if (distSq > 0.36) continue; // > 0.60 units away
+        if (distSq > 0.56) continue; // > 0.75 units away
 
-        // Same general heading check
         const sameDir = v.dirX * o.dirX + v.dirZ * o.dirZ;
-        if (sameDir < 0.45) continue;
-
         const fwdDist = rvx * v.dirX + rvz * v.dirZ;
         const latDist = Math.abs(-rvx * v.dirZ + rvz * v.dirX);
-        const safeGap = (v.length + o.length) * 0.58 + 0.09;
-        if (fwdDist > 0.01 && fwdDist < safeGap && latDist < latLimit) {
-          // Attempt parallel lane-change overtake on 4-lane avenues / elevated expressways!
-          if (allowOvertake && targetSpeed > 0 && o.speed < v.maxSpeed * 0.85 && !(v.laneChangeCooldown > 0)) {
-            const altSlot = v.laneSlot === 1 ? 0 : 1;
-            if (this.canSwitchParallelLane(v, i, altSlot, safeGap)) {
-              v.laneSlot = altSlot;
-              v.laneChangeCooldown = 1.2;
-              continue;
+        const safeGap = (v.length + o.length) * 0.62 + 0.12;
+
+        if (sameDir >= 0.45) {
+          // 1. Same-lane car-following & smooth speed matching + 4-lane parallel overtake
+          if (fwdDist > 0.01 && fwdDist < safeGap * 1.45 && latDist < latLimit) {
+            if (fwdDist < safeGap) {
+              if (allowOvertake && targetSpeed > 0 && o.speed < v.maxSpeed * 0.85 && !(v.laneChangeCooldown > 0)) {
+                const altSlot = v.laneSlot === 1 ? 0 : 1;
+                if (this.canSwitchParallelLane(v, i, altSlot, safeGap)) {
+                  v.laneSlot = altSlot;
+                  v.laneChangeCooldown = 1.2;
+                  continue;
+                }
+              }
+              targetSpeed = 0;
+              blockedByVehicle = true;
+              break;
+            } else {
+              // Gentle proportional follow deceleration before hard stop
+              targetSpeed = Math.min(targetSpeed, Math.max(0.15, o.speed * 0.92));
             }
           }
-          targetSpeed = 0;
-          break;
+        } else if (sameDir > -0.75) {
+          // 2. Perpendicular / Turning / Roundabout cross-traffic guard (asymmetric priority -> ZERO intersection pileups or deadlocks!)
+          if (fwdDist > 0.03 && fwdDist < 0.48 && latDist < 0.28) {
+            const oFwdToV = (-rvx) * o.dirX + (-rvz) * o.dirZ;
+            const oAlreadyInside = oFwdToV < 0.12 || o.speed > v.speed + 0.22;
+            const yieldToCross = oAlreadyInside || ((v.id || i) > (o.id || j));
+            if (yieldToCross) {
+              targetSpeed = 0;
+              blockedByVehicle = true;
+              break;
+            }
+          }
         }
       }
 
-      const accel = targetSpeed < v.speed ? 8.0 : 3.4;
+      const accel = targetSpeed < v.speed ? 8.5 : 3.4;
       v.speed += (targetSpeed - v.speed) * Math.min(1, effDt * accel);
       if (v.speed < 0.01 && targetSpeed === 0) v.speed = 0;
 
-      // 12-Second Gridlock Anti-Deadlock Timer (prevents permanent 4-way freezes & penalizes supply chain)
+      // Smart Anti-Deadlock Timer: waiting cleanly at a red light NEVER deletes cars mid-road; genuine traffic jams reroute once then clear at 12s!
       v.stuckTimer = v.stuckTimer || 0;
       if (v.speed < 0.06) {
-        v.stuckTimer += effDt;
+        if (blockedBySignal && !blockedByVehicle && v.maxSpeed > 0.1) {
+          v.stuckTimer += effDt * 0.10;
+        } else {
+          v.stuckTimer += effDt;
+        }
       } else if (v.speed > 0.18) {
-        v.stuckTimer = Math.max(0, v.stuckTimer - effDt * 2);
+        v.stuckTimer = Math.max(0, v.stuckTimer - effDt * 2.5);
       }
 
       if (v.stuckTimer >= 12.0) {
-        const oldIdx = idx(cur.x, cur.z);
-        if (cur.layer === 0 && !cur.onRamp && this.tileOccupancy[oldIdx] > 0) {
-          this.tileOccupancy[oldIdx]--;
+        // Attempt one live detour around the jam before giving up (real jams with maxSpeed=0 or blocked exits still fire gridlockTimeouts!)
+        if (v.maxSpeed > 0.1 && !v._reroutedOnce && this.tryRerouteVehicle(v)) {
+          v._reroutedOnce = true;
+          v.stuckTimer = 3.0;
+        } else {
+          const oldIdx = idx(cur.x, cur.z);
+          if (cur.layer === 0 && !cur.onRamp && this.tileOccupancy[oldIdx] > 0) {
+            this.tileOccupancy[oldIdx]--;
+          }
+          this.modalSplit.gridlockTimeouts++;
+          if (cur.layer === 1) {
+            curTile.elevCongestion = 1.0;
+          } else if (curTile.roadGround > 0) {
+            curTile.congestion = 1.0;
+            if (!gridlockTiles) gridlockTiles = new Set();
+            gridlockTiles.add(oldIdx);
+          }
+          this.sim.onTripGridlockTimeout?.(v);
+          this.vehicles.splice(i, 1);
+          continue;
         }
-        this.modalSplit.gridlockTimeouts++;
-        if (cur.layer === 1) {
-          curTile.elevCongestion = 1.0;
-        } else if (curTile.roadGround > 0) {
-          curTile.congestion = 1.0;
-          if (!gridlockTiles) gridlockTiles = new Set();
-          gridlockTiles.add(oldIdx);
-        }
-        this.sim.onTripGridlockTimeout?.(v);
-        this.vehicles.splice(i, 1);
-        continue;
       }
 
       const prevSeg = v.seg;
@@ -2845,7 +2914,9 @@ export class TrafficManager {
 
         const shallowPenalty = wd[ni] < 0.26 ? 0.9 : 0;
         const bridgePenalty = grid[ni].roadGround > 0 ? 2.5 : 0;
-        const nd = bestD + baseCost + shallowPenalty + bridgePenalty;
+        // Strongly follow player-planned Maritime Shipping Lanes (⚓ 海运航道)!
+        const laneMult = grid[ni].shippingLane ? 0.36 : 1.0;
+        const nd = bestD + baseCost * laneMult + shallowPenalty + bridgePenalty;
         if (nd < dist[ni]) {
           dist[ni] = nd;
           prev[ni] = cur;
@@ -2931,12 +3002,16 @@ export class TrafficManager {
         const nx = port.x + dx, nz = port.z + dz;
         if (!inBounds(nx, nz)) continue;
         const ni = idx(nx, nz);
-        if (wd[ni] > 0.12 && !this.sim.grid[ni].dam) {
-          berths.push({ x: nx, z: nz, depth: wd[ni], d2: dx * dx + dz * dz });
+        if (wd[ni] > 0.14 && !this.sim.grid[ni].dam) {
+          let wetNeighbors = 0;
+          for (const [ox, oz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+            if (inBounds(nx + ox, nz + oz) && wd[idx(nx + ox, nz + oz)] > 0.14) wetNeighbors++;
+          }
+          berths.push({ x: nx, z: nz, depth: wd[ni], d2: dx * dx + dz * dz, wetNeighbors });
         }
       }
     }
-    berths.sort((a, b) => (a.d2 - b.d2) || (b.depth - a.depth));
+    berths.sort((a, b) => (b.wetNeighbors - a.wetNeighbors) || (a.d2 - b.d2) || (b.depth - a.depth));
 
     for (const berth of berths) {
       const path = this.findSeaOriginForBerth(berth.x, berth.z);
@@ -2963,6 +3038,9 @@ export class TrafficManager {
         t: 0,
         leg: 'inbound',
         dwell: 0,
+        departGrace: 0,
+        stuckTimer: 0,
+        scale: 0.2,
         speed: 0.55,
         maxSpeed: 0.92 + Math.random() * 0.16,
         wx: p0.wx,
@@ -3045,9 +3123,11 @@ export class TrafficManager {
         continue;
       }
 
-      // 3s pause at berth to load/unload cargo containers
+      // 3s pause at berth to load/unload cargo containers, then smoothly turn & sail out to open sea!
       if (ship.dwell > 0) {
         ship.speed = 0;
+        ship.stuckTimer = 0;
+        ship.scale = 1.0;
         ship.dwell -= effDt;
         const lastWp = ship.waypoints[ship.waypoints.length - 1];
         const surf = this.sim.getTileElev(lastWp.x, lastWp.z) + this.sim.waterDepth[idx(lastWp.x, lastWp.z)];
@@ -3056,11 +3136,25 @@ export class TrafficManager {
         if (ship.dwell <= 0) {
           ship.dwell = 0;
           ship.leg = 'outbound';
+          ship.departGrace = 3.6;
           ship.waypoints = ship.waypoints.slice().reverse();
           ship.seg = 0;
           ship.t = 0;
+          // Immediately orient heading along outbound channel so bow/stern NEVER poke shore on cast-off!
+          if (ship.waypoints.length >= 2) {
+            const ddx = ship.waypoints[1].wx - ship.waypoints[0].wx;
+            const ddz = ship.waypoints[1].wz - ship.waypoints[0].wz;
+            const dLen = Math.hypot(ddx, ddz) || 1;
+            ship.yaw = Math.atan2(ddx / dLen, ddz / dLen);
+            ship.dirX = Math.sin(ship.yaw);
+            ship.dirZ = Math.cos(ship.yaw);
+          }
         }
         continue;
+      }
+
+      if ((ship.departGrace || 0) > 0) {
+        ship.departGrace = Math.max(0, ship.departGrace - effDt);
       }
 
       const wps = ship.waypoints;
@@ -3079,16 +3173,26 @@ export class TrafficManager {
       const nearBerth =
         (ship.leg === 'inbound' && ship.seg >= wps.length - 2) ||
         (ship.leg === 'outbound' && ship.seg === 0);
-      let targetSpeed = nearBerth ? ship.maxSpeed * 0.55 : ship.maxSpeed;
+      let targetSpeed = nearBerth ? ship.maxSpeed * 0.62 : ship.maxSpeed;
+      let holdingForPort = false;
 
-      // 1. Harbor Anchorage Hold: if another vessel owns this seaport's inner channel, hold politely offshore (>= 4.6 tiles out)!
+      // 1. Harbor Anchorage Hold: if an outbound/berthed ship owns inner harbor, incoming ships wait politely offshore!
       const pKey = `${ship.portX},${ship.portZ}`;
       const owner = portOwner.get(pKey);
-      if (ship.leg === 'inbound' && owner && owner.ship !== ship && distFromBerth <= 5.4) {
+      if (ship.leg === 'inbound' && owner && owner.ship !== ship && distFromBerth <= 5.6 && distFromBerth >= 2.2) {
         targetSpeed = 0;
+        holdingForPort = true;
       }
 
-      // 2. Full 360° Maritime Anti-Collision (following, crossing, AND head-on opposing vessels!)
+      // Strict Asymmetric Total-Order Maritime Right-of-Way (Outbound > Berth > Inbound, tie-break by id -> ZERO mutual deadlocks!)
+      const shipRank = (s) => (s.leg === 'outbound' ? 3 : ((s.leg === 'berth' || s.dwell > 0) ? 2 : 1));
+      const hasRightOfWay = (a, b) => {
+        const ra = shipRank(a), rb = shipRank(b);
+        if (ra !== rb) return ra > rb;
+        return (a.id || 0) < (b.id || 0);
+      };
+
+      // 2. Full 360° Separated-Lane Maritime Anti-Collision (ONLY lower-priority vessel yields; higher-priority vessel keeps steaming!)
       let extraStarboardAvoid = 0;
       for (let j = 0; j < this.ships.length; j++) {
         if (i === j) continue;
@@ -3096,35 +3200,47 @@ export class TrafficManager {
         const rx = o.wx - ship.wx;
         const rz = o.wz - ship.wz;
         const d = Math.hypot(rx, rz);
-        if (d < 2.65) {
+        if (d < 3.4) {
           const fwd = rx * ship.dirX + rz * ship.dirZ;
           const lat = Math.abs(-rx * ship.dirZ + rz * ship.dirX);
           const headingDot = ship.dirX * o.dirX + ship.dirZ * o.dirZ;
+          const iYield = !hasRightOfWay(ship, o) || (o.dwell > 0 || o.leg === 'berth');
 
-          // Steer wider to starboard whenever passing an opposing ship in open channel
-          if (headingDot < -0.25 && d < 2.65) {
-            extraStarboardAvoid = Math.max(extraStarboardAvoid, 0.24);
+          // Both ships widen starboard passing separation when approaching head-on/beam-on
+          if (headingDot < 0.15) {
+            extraStarboardAvoid = Math.max(extraStarboardAvoid, 0.42);
           }
 
-          // Yield rule: outbound always has right-of-way over inbound; otherwise trailing or higher-id vessel yields!
-          const mustYield =
-            (ship.leg === 'inbound' && o.leg !== 'inbound') ||
-            (o.dwell > 0 || o.leg === 'berth') ||
-            (fwd > 0.15 && headingDot > 0.25) ||
-            (ship.leg === o.leg && (ship.id || i) > (o.id || j));
-
-          if (d < 1.55) {
-            if (mustYield || fwd > -0.25) {
+          if (iYield) {
+            // Yielding vessel slows/holds cleanly well before hulls get close
+            if (d < 1.95 && fwd > -0.15 && lat < 1.25) {
               targetSpeed = 0;
               break;
+            } else if (d < 2.8 && fwd > 0.10 && lat < 1.15) {
+              targetSpeed = Math.min(targetSpeed, ship.maxSpeed * 0.25);
             }
-          } else if (fwd > -0.20 && lat < 1.05 && mustYield) {
-            targetSpeed = d < 2.0 ? 0 : Math.min(targetSpeed, ship.maxSpeed * 0.28);
+          } else {
+            // Higher-priority vessel NEVER deadlocks for a yielding vessel; only slows if following directly behind same-way ship!
+            if (headingDot > 0.55 && fwd > 0.20 && d < 1.75 && lat < 0.90) {
+              targetSpeed = Math.min(targetSpeed, Math.max(0.15, o.speed * 0.85));
+            }
           }
         }
       }
 
-      ship.speed += (targetSpeed - ship.speed) * Math.min(1, effDt * 3.2);
+      // 3. Anti-Stuck Recovery: if a non-holding ship ever gets wedged (< 0.08 speed for > 4.2s), steer wide starboard & creep clear!
+      ship.stuckTimer = ship.stuckTimer || 0;
+      if (ship.speed < 0.08 && !holdingForPort) {
+        ship.stuckTimer += effDt;
+        if (ship.stuckTimer > 4.2) {
+          targetSpeed = Math.max(targetSpeed, ship.maxSpeed * 0.55);
+          extraStarboardAvoid = Math.max(extraStarboardAvoid, 0.65);
+        }
+      } else {
+        ship.stuckTimer = Math.max(0, ship.stuckTimer - effDt * 2.0);
+      }
+
+      ship.speed += (targetSpeed - ship.speed) * Math.min(1, effDt * 3.4);
       if (ship.speed < 0.015 && targetSpeed === 0) ship.speed = 0;
       ship.t += (ship.speed / segLen) * effDt;
 
@@ -3142,6 +3258,7 @@ export class TrafficManager {
           ship.dwell = 3.0;
           ship.leg = 'berth';
           ship.speed = 0;
+          ship.stuckTimer = 0;
           if (!this.isValidShipState(ship)) {
             this.ships.splice(i, 1);
           }
@@ -3159,23 +3276,22 @@ export class TrafficManager {
       const vLen = Math.hypot(vx, vz) || 1;
       const targetYaw = Math.atan2(vx / vLen, vz / vLen);
 
-      ship.yaw = lerpAngle(ship.yaw, targetYaw, Math.min(1, effDt * 3.4));
+      ship.yaw = lerpAngle(ship.yaw, targetYaw, Math.min(1, effDt * 3.6));
       ship.dirX = Math.sin(ship.yaw);
       ship.dirZ = Math.cos(ship.yaw);
 
-      // Wide Starboard Channel Separation (0.42m base + 0.24m passing margin) so inbound & outbound hulls pass cleanly port-to-port!
+      // Wide Two-Way Starboard Channel Separation (0.62m base + 0.42m passing margin -> >= 1.6m port-to-port gap!)
       const updatedDistFromBerth = shipDistFromBerth(ship);
-      const laneTaper = Math.min(1, Math.max(0, (updatedDistFromBerth - 0.5) / 1.4));
+      const laneTaper = Math.min(1, Math.max(0, (updatedDistFromBerth - 0.55) / 1.4));
       const rightX = -ship.dirZ;
       const rightZ = ship.dirX;
-      const desiredOff = (0.42 + extraStarboardAvoid) * laneTaper;
+      const desiredOff = (0.62 + extraStarboardAvoid) * laneTaper;
 
       const baseWx = c0.wx + vx * ship.t;
       const baseWz = c0.wz + vz * ship.t;
       let nextWx = baseWx;
       let nextWz = baseWz;
-      // Progressive safe-water fallback (full starboard -> 65% -> 35% -> center) so ships never snap all the way into opposing hull!
-      for (const frac of [1.0, 0.68, 0.38]) {
+      for (const frac of [1.0, 0.72, 0.42, 0.18]) {
         const candX = baseWx + rightX * (desiredOff * frac);
         const candZ = baseWz + rightZ * (desiredOff * frac);
         const offTile = worldToTile(candX, candZ);
@@ -3188,14 +3304,14 @@ export class TrafficManager {
         }
       }
 
-      // Final hard physical hull-clearance guard: refuse any step that brings two hulls closer than 1.05m!
+      // Asymmetric hull-clearance guard: ONLY the yielding vessel halts if too close; higher-priority ship steams through cleanly!
       let wouldClip = false;
       for (let j = 0; j < this.ships.length; j++) {
         if (i === j) continue;
         const o = this.ships[j];
         const curD = Math.hypot(o.wx - ship.wx, o.wz - ship.wz);
         const nextD = Math.hypot(o.wx - nextWx, o.wz - nextWz);
-        if (nextD < 1.08 && nextD < curD + 0.02) {
+        if (nextD < 1.15 && nextD < curD + 0.01 && !hasRightOfWay(ship, o) && (ship.stuckTimer || 0) <= 4.2) {
           wouldClip = true;
           break;
         }
@@ -3212,6 +3328,15 @@ export class TrafficManager {
         continue;
       }
 
+      // Smooth horizon scale-in / scale-out ONLY at the outer sea edge so ships never abruptly pop in/out!
+      const prog = ship.seg + ship.t;
+      const rem = (wps.length - 1) - prog;
+      if (ship.leg === 'inbound') {
+        ship.scale = Math.min(1.0, Math.max(0.15, prog / 0.85));
+      } else {
+        ship.scale = Math.min(1.0, Math.max(0.15, rem / 0.85));
+      }
+
       const s0 = this.sim.getTileElev(c0.x, c0.z) + this.sim.waterDepth[idx(c0.x, c0.z)];
       const s1 = this.sim.getTileElev(c1.x, c1.z) + this.sim.waterDepth[idx(c1.x, c1.z)];
       ship.wy = s0 + (s1 - s0) * ship.t + Math.sin(this.signalClock * 1.8 + ship.bobPhase) * 0.012;
@@ -3219,26 +3344,29 @@ export class TrafficManager {
     }
   }
 
-  // Scenic CC0 Coastal Sailboats & Fishing Boats gently cruising deep open bay water (strictly yielding to cargo ships!)
+  // Scenic CC0 Coastal Sailboats & Fishing Boats gently cruising deep open bay water (strictly clear of shipping lanes & cargo ships!)
   updateLeisureBoats(effDt) {
     const isSafeBoatWater = (wx, wz) => {
       const tile = worldToTile(wx, wz);
       if (!inBounds(tile.x, tile.z)) return false;
       const ti = idx(tile.x, tile.z);
       const t = this.sim.grid[ti];
-      if (!t || t.dam || t.roadGround > 0 || t.roadElevated > 0 || t.rail > 0 || t.building) return false;
+      if (!t || t.dam || t.roadGround > 0 || t.roadElevated > 0 || t.rail > 0 || t.building || t.shippingLane) return false;
       return this.sim.waterDepth[ti] > 0.28;
     };
 
     this._boatSpawnTimer -= effDt;
     if (this.leisureBoats.length < 3 && this._boatSpawnTimer <= 0) {
       this._boatSpawnTimer = 2.6;
-      // Search deep coastal bay tiles (SE sea bay) for open circular cruise centers
+      // Search deep coastal bay tiles (SE sea bay) for open circular cruise centers cleanly flanking shipping lanes
       const cands = [
-        { tx: 46, tz: 49, r: 2.1, v: 0 },
-        { tx: 49, tz: 45, r: 1.9, v: 1 },
-        { tx: 43, tz: 50, r: 1.7, v: 0 },
-        { tx: 50, tz: 50, r: 1.8, v: 1 }
+        { tx: 49, tz: 44, r: 1.7, v: 0 },
+        { tx: 51, tz: 46, r: 1.5, v: 1 },
+        { tx: 46, tz: 52, r: 1.5, v: 0 },
+        { tx: 43, tz: 51, r: 1.5, v: 1 },
+        { tx: 52, tz: 43, r: 1.4, v: 0 },
+        { tx: 49, tz: 53, r: 1.3, v: 1 },
+        { tx: 46, tz: 49, r: 1.6, v: 0 }
       ];
       for (let k = 0; k < cands.length && this.leisureBoats.length < 3; k++) {
         const c = cands[(this._nextBoatId + k) % cands.length];
@@ -3281,11 +3409,11 @@ export class TrafficManager {
 
     for (let i = this.leisureBoats.length - 1; i >= 0; i--) {
       const b = this.leisureBoats[i];
-      // Yield politely if any large container ship is nearby (< 2.4m)
+      // Yield politely if any large container ship is nearby (< 3.2m)
       let yieldToShip = false;
       for (let j = 0; j < this.ships.length; j++) {
         const s = this.ships[j];
-        if (Math.hypot(s.wx - b.wx, s.wz - b.wz) < 2.4) {
+        if (Math.hypot(s.wx - b.wx, s.wz - b.wz) < 3.2) {
           yieldToShip = true;
           break;
         }

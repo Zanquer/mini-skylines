@@ -103,6 +103,7 @@ export function createEmptyTile(x, z) {
     roadDir: -1,       // -1 two-way, 0=N(-Z), 1=S(+Z), 2=W(-X), 3=E(+X) for one-way streets
     banTrucks: false,  // true when heavy trucks & garbage trucks are banned from this street
     busStop: false,    // true when a roadside EV bus shelter is built on this road tile
+    shippingLane: false, // true when player paints a designated maritime shipping channel buoy lane
     junctionMode: 'signal', // 'signal' | 'yield' | 'roundabout' for road intersections
     roadElevated: 0,   // 0 none, 1 elevated highway overpass (+0.68m)
     ramp: false,       // connects roadGround <-> roadElevated

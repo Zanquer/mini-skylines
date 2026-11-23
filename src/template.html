@@ -91,7 +91,7 @@
   <div id="boot-splash">
     <div class="boot-logo-ring">🏙️</div>
     <div class="boot-title">山河天际线 Pro 3D</div>
-    <div class="boot-subtitle">旗舰 PBR 离线立体都市模拟器 v8.0</div>
+    <div class="boot-subtitle">旗舰 PBR 离线立体都市模拟器 v8.1</div>
     <div class="boot-bar-track"><div class="boot-bar-fill" id="boot-bar-fill"></div></div>
     <div class="boot-status" id="boot-status">正在初始化三维引擎...</div>
   </div>
@@ -282,8 +282,12 @@
     </div>
   </div>
 
-  <!-- Category Sub-Toolbar -->
-  <div id="sub-toolbar"></div>
+  <!-- Category Sub-Toolbar with Horizontal Wheel & Chevron Scroll Controls -->
+  <div id="sub-toolbar-wrap">
+    <button class="sub-scroll-btn" id="sub-scroll-left" title="向左滚动更多建筑（支持鼠标滚轮横滑）">◀</button>
+    <div id="sub-toolbar"></div>
+    <button class="sub-scroll-btn" id="sub-scroll-right" title="向右滚动更多建筑（支持鼠标滚轮横滑）">▶</button>
+  </div>
 
   <!-- Bottom 9-Category Skylines Dock -->
   <nav id="bottom-dock">

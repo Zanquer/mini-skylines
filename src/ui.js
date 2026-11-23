@@ -5,7 +5,7 @@ import { saveStorage } from './asset_loader.js';
 const TOOL_GROUPS = {
   terrain:  ['ter_raise', 'ter_lower', 'ter_flatten', 'ter_spring'],
   road:     ['road_1', 'road_2', 'road_oneway', 'road_elev', 'road_ramp', 'road_tunnel', 'interchange_diamond', 'interchange_rbt'],
-  rail:     ['bus_stop', 'metro_line', 'metro_station', 'rail_track', 'hsr_station', 'seaport', 'airport'],
+  rail:     ['bus_stop', 'metro_line', 'metro_station', 'rail_track', 'hsr_station', 'seaport', 'shipping_lane', 'airport'],
   zones:    ['zone_RL', 'zone_RH', 'zone_CL', 'zone_CH', 'zone_I', 'zone_O', 'dezone'],
   water:    ['water_pipe', 'water_pump', 'sewage_out', 'water_treat', 'waste_plant'],
   power:    ['hydro_dam', 'power_pylon', 'power_wind', 'power_plant', 'solar_plant', 'nuclear_plant'],
@@ -369,6 +369,125 @@ export class GameUI {
     document.getElementById('modal-backdrop').addEventListener('click', (e) => {
       if (e.target.id === 'modal-backdrop') this.closeModal();
     });
+
+    // Horizontal Mouse-Wheel Scrolling + Left/Right Chevron Buttons for Sub-Toolbar & Bottom Dock
+    const bindHorizWheel = (wheelTarget, scrollBox) => {
+      if (!wheelTarget || !scrollBox) return;
+      wheelTarget.addEventListener('wheel', (e) => {
+        const delta = Math.abs(e.deltaY) >= Math.abs(e.deltaX) ? e.deltaY : e.deltaX;
+        if (delta !== 0) {
+          e.preventDefault();
+          e.stopPropagation();
+          scrollBox.scrollLeft += delta * 0.95;
+          this._updateSubScrollButtons();
+        }
+      }, { passive: false });
+    };
+    const subWrap = document.getElementById('sub-toolbar-wrap');
+    const subBar = document.getElementById('sub-toolbar');
+    const bottomDock = document.getElementById('bottom-dock');
+    bindHorizWheel(subWrap || subBar, subBar);
+    bindHorizWheel(bottomDock, bottomDock);
+
+    if (subBar) {
+      subBar.addEventListener('scroll', () => this._updateSubScrollButtons(), { passive: true });
+    }
+    const btnScrollL = document.getElementById('sub-scroll-left');
+    const btnScrollR = document.getElementById('sub-scroll-right');
+    if (btnScrollL && subBar) {
+      btnScrollL.addEventListener('click', () => {
+        this.sfx.tap();
+        if (typeof subBar.scrollBy === 'function') subBar.scrollBy({ left: -240, behavior: 'smooth' });
+        else subBar.scrollLeft = Math.max(0, (subBar.scrollLeft || 0) - 240);
+        setTimeout(() => this._updateSubScrollButtons(), 180);
+      });
+    }
+    if (btnScrollR && subBar) {
+      btnScrollR.addEventListener('click', () => {
+        this.sfx.tap();
+        if (typeof subBar.scrollBy === 'function') subBar.scrollBy({ left: 240, behavior: 'smooth' });
+        else subBar.scrollLeft = (subBar.scrollLeft || 0) + 240;
+        setTimeout(() => this._updateSubScrollButtons(), 180);
+      });
+    }
+
+    // Dynamic Zero-Overlap HUD Layout Sync (ResizeObserver + window.resize -> guarantees ZERO UI collision at any resolution!)
+    if (typeof window !== 'undefined' && window.addEventListener) {
+      window.addEventListener('resize', () => {
+        this.syncLayoutOffsets();
+        this._updateSubScrollButtons();
+      });
+    }
+    if (typeof ResizeObserver !== 'undefined') {
+      this._layoutObserver = new ResizeObserver(() => {
+        this.syncLayoutOffsets();
+        this._updateSubScrollButtons();
+      });
+      for (const id of ['top-hud', 'chirper-pill', 'sub-toolbar-wrap', 'bottom-dock']) {
+        const el = document.getElementById(id);
+        if (el) this._layoutObserver.observe(el);
+      }
+    }
+    this.syncLayoutOffsets();
+  }
+
+  _updateSubScrollButtons() {
+    const subBar = document.getElementById('sub-toolbar');
+    const btnL = document.getElementById('sub-scroll-left');
+    const btnR = document.getElementById('sub-scroll-right');
+    if (!subBar || !btnL || !btnR) return;
+    const isOpen = subBar.classList.contains('open');
+    const scrollW = subBar.scrollWidth || 0;
+    const clientW = subBar.clientWidth || 0;
+    const scrollL = subBar.scrollLeft || 0;
+    const overflows = isOpen && scrollW > clientW + 4;
+    btnL.classList.toggle('visible', overflows && scrollL > 4);
+    btnR.classList.toggle('visible', overflows && scrollL < scrollW - clientW - 4);
+  }
+
+  syncLayoutOffsets() {
+    const rootStyle = document.documentElement && document.documentElement.style;
+    if (!rootStyle || typeof rootStyle.setProperty !== 'function') return;
+    const topHud = document.getElementById('top-hud');
+    const chirper = document.getElementById('chirper-pill');
+    const subWrap = document.getElementById('sub-toolbar-wrap');
+    const subBar = document.getElementById('sub-toolbar');
+    const dock = document.getElementById('bottom-dock');
+
+    const topRect = topHud && typeof topHud.getBoundingClientRect === 'function' ? topHud.getBoundingClientRect() : null;
+    const hudBottom = topRect && topRect.height > 10 ? Math.ceil(topRect.bottom) : 60;
+    const chirperRect = chirper && typeof chirper.getBoundingClientRect === 'function' ? chirper.getBoundingClientRect() : null;
+    const chirperH = chirperRect && chirperRect.height > 8 ? Math.ceil(chirperRect.height) : 30;
+
+    const vw = (typeof window !== 'undefined' && window.innerWidth) || 1280;
+    const vh = (typeof window !== 'undefined' && window.innerHeight) || 720;
+
+    const chirperTop = hudBottom + 8;
+    // On narrow screens (< 860px), stack left float below Chirper so they NEVER collide horizontally!
+    const leftStackTop = vw < 860 ? (chirperTop + chirperH + 8) : (hudBottom + 8);
+    const toolHintTop = chirperTop + chirperH + 8;
+    const toastTop = toolHintTop + 38;
+
+    let bottomStackH = 74;
+    const subOpen = Boolean(subBar && subBar.classList.contains('open'));
+    const activeBottomEl = subOpen ? (subWrap || subBar) : dock;
+    if (activeBottomEl && typeof activeBottomEl.getBoundingClientRect === 'function') {
+      const br = activeBottomEl.getBoundingClientRect();
+      if (br && br.height > 10 && br.top > 0 && br.top < vh) {
+        bottomStackH = Math.max(70, Math.ceil(vh - br.top));
+      } else if (subOpen) {
+        bottomStackH = 148;
+      }
+    } else if (subOpen) {
+      bottomStackH = 148;
+    }
+
+    rootStyle.setProperty('--hud-bottom', `${hudBottom}px`);
+    rootStyle.setProperty('--chirper-top', `${chirperTop}px`);
+    rootStyle.setProperty('--left-stack-top', `${leftStackTop}px`);
+    rootStyle.setProperty('--tool-hint-top', `${toolHintTop}px`);
+    rootStyle.setProperty('--toast-top', `${toastTop}px`);
+    rootStyle.setProperty('--bottom-stack-h', `${bottomStackH}px`);
   }
 
   openSubToolbar(itemIds, defaultToolId, categoryKey) {
@@ -413,7 +532,14 @@ export class GameUI {
       sub.appendChild(busMgrBtn);
     }
     sub.classList.add('open');
+    const subWrap = document.getElementById('sub-toolbar-wrap');
+    if (subWrap) subWrap.classList.add('open');
+    sub.scrollLeft = 0;
     this.selectTool(defaultToolId, categoryKey, true);
+    requestAnimationFrame(() => {
+      this._updateSubScrollButtons();
+      this.syncLayoutOffsets();
+    });
   }
 
   refreshSubToolbarUnlocks() {
@@ -564,9 +690,20 @@ export class GameUI {
       this.updateOverlayLegend();
     }
 
+    const prevShipRibbon = Boolean(this.renderer.showShippingLaneRibbon);
+    const nextShipRibbon = toolId === 'shipping_lane';
+    if (prevShipRibbon !== nextShipRibbon) {
+      this.renderer.showShippingLaneRibbon = nextShipRibbon;
+      this.sim.infraDirty = true;
+    }
+
     if (!keepSubOpen && !categoryKey) {
       this.openCategory = null;
       document.getElementById('sub-toolbar').classList.remove('open');
+      const subWrap = document.getElementById('sub-toolbar-wrap');
+      if (subWrap) subWrap.classList.remove('open');
+      this._updateSubScrollButtons();
+      this.syncLayoutOffsets();
     } else {
       document.querySelectorAll('#sub-toolbar .sub-item').forEach((el) => {
         el.classList.toggle('active', el.dataset.toolId === toolId);
@@ -645,7 +782,7 @@ export class GameUI {
         power: `<strong>⚡ 高压电网覆盖视图</strong><br>蓝色地块 = 已通电区域 | 远距离电厂/大坝请架设【高压输电铁塔】接力`,
         landValue: `<strong>💎 地价热力视图</strong><br>翠绿 = 高地价核心区（可长出 48~64 层摩天大楼）`,
         traffic: `<strong>🚦 交通拥堵热力视图</strong><br>红橙色道路 = 严重堵车（会导致商店缺货！建议架二层高架、设单行道或修公交/地铁）`,
-        transit: `<strong>🚌 城市公交线路网视图</strong><br>彩色立体光带 = 已开通的自定义公交专线 | 青色圆点 = 🚏智能公交站 | 紫色 = 地铁/高铁/机场枢纽`,
+        transit: `<strong>🚌 城市公交与海运航道网视图</strong><br>彩色立体光带 = 自定义公交专线 | 青色圆点 = 🚏智能公交站 | ⚓ 青蓝水标 = 规划海运航道`,
         pollution: `<strong>☣️ 空气与水体污染视图</strong><br>紫红色 = 重工业/污水高污染区（远离居民区与抽水站，可用【环保减排法】大幅降低）`,
         education: `<strong>🎓 教育与市政覆盖视图</strong><br>金青色 = 高学历与高市政覆盖区（驱动高新写字楼与清洁科技工业增产！）`,
         noise: `<strong>🔊 城市交通与工业噪音视图</strong><br>品红/橙色 = 噪音扰民区（点击住宅街道开启【🚫 禁行重型货车】或种树建公园降噪！）`
@@ -669,7 +806,7 @@ export class GameUI {
   _isLinePathTool(t) {
     return (
       t === 'road_1' || t === 'road_2' || t === 'road_oneway' || t === 'road_elev' || t === 'road_ramp' || t === 'road_tunnel' ||
-      t === 'metro_line' || t === 'rail_track' || t === 'water_pipe' || t === 'hydro_dam'
+      t === 'metro_line' || t === 'rail_track' || t === 'shipping_lane' || t === 'water_pipe' || t === 'hydro_dam'
     );
   }
 
@@ -819,7 +956,13 @@ export class GameUI {
       this.updateToolHint(`🔒 需升至 Lv.${est.lockedLevel} 解锁（👥需人口 ${reqTier.popReq.toLocaleString()} · ⭐需经验 ${reqTier.xpReq.toLocaleString()}）！`);
     } else if (est.validTiles.length === 0) {
       this.renderer.previewColor = [0.95, 0.25, 0.25];
-      this.updateToolHint('⚠️ 当前地形坡度过陡或位置受阻（陡坡请用平整台地或穿山隧道）');
+      if ((est.skippedProtected || 0) > 0) {
+        this.updateToolHint(`🛡️ 已保护 ${est.skippedProtected} 格原有建筑/区划不被覆盖（如需改建请先拆除或清除区划）`);
+      } else if (this.activeTool === 'shipping_lane') {
+        this.updateToolHint('⚓ 请在深海或宽阔江面水域（水深 > 0.14m）拖拽规划海运航道');
+      } else {
+        this.updateToolHint('⚠️ 当前地形坡度过陡或位置受阻（陡坡请用平整台地或穿山隧道）');
+      }
     } else if (this.sim.difficulty !== 'sandbox' && !this.activeTool.startsWith('bulldoze') && est.cost > this.sim.money) {
       this.renderer.previewColor = [0.95, 0.25, 0.25];
       this.updateToolHint(`💰 资金不足：需 ¥${est.cost.toLocaleString()} (${est.validTiles.length}格)`);
@@ -873,7 +1016,8 @@ export class GameUI {
     } else {
       this.renderer.previewColor = this.activeTool.startsWith('bulldoze') ? [0.98, 0.30, 0.30] : [0.25, 0.88, 1.0];
       const item = CATALOG[this.activeTool];
-      this.updateToolHint(`${item.icon} 规划 ${est.validTiles.length} 格 · 造价 ¥${est.cost.toLocaleString()}（松手确认）`);
+      const protNote = (est.skippedProtected || 0) > 0 ? ` · 🛡️已避让保护 ${est.skippedProtected} 格原有设施` : '';
+      this.updateToolHint(`${item.icon} 规划 ${est.validTiles.length} 格 · 造价 ¥${est.cost.toLocaleString()}${protNote}（松手确认）`);
     }
   }
 
@@ -1334,6 +1478,20 @@ export class GameUI {
       `;
       hintEl.textContent = this.sim.getUpgradeHint(t);
 
+      if (b.type === 'seaport' && actionsEl) {
+        const laneTiles = this.sim.grid.reduce((acc, c) => acc + (c.shippingLane ? 1 : 0), 0);
+        actionsEl.style.display = 'flex';
+        actionsEl.innerHTML = `<button class="btn-primary" id="btn-plan-sea-lane" style="width:100%;font-size:12px;">⚓ 规划海运航道（当前 ${laneTiles} 格航标）</button>`;
+        const seaBtn = document.getElementById('btn-plan-sea-lane');
+        if (seaBtn) {
+          seaBtn.addEventListener('click', () => {
+            this.sfx.tap();
+            this.openSubToolbar(TOOL_GROUPS.rail, 'shipping_lane', 'rail');
+            this.showToast('⚓ 请在海湾深水区拖拽布设海运航道，货轮将优先沿航标分道航行！', 3200);
+          });
+        }
+      }
+
       if (!b.abandoned && b.level < this.sim.getMaxLevelForZone(b.type) && !b.underConstruction && ['RL','RH','CL','CH','I','O'].includes(b.type)) {
         progWrap.style.display = 'block';
         progFill.style.width = `${Math.min(100, Math.round(b.upgradeProgress || 0))}%`;
@@ -1369,6 +1527,7 @@ export class GameUI {
         ${isOneWay ? `<span class="badge info">${dirArrows[t.roadDir] || '➡️ 单行道'}</span>` : ''}
         ${t.banTrucks ? `<span class="badge warn">🚫 禁行重卡</span>` : ''}
         ${t.busStop ? `<span class="badge ok">🚌 智能公交站</span>` : ''}
+        ${t.shippingLane ? `<span class="badge ok">⚓ 规划海运航道</span>` : ''}
         ${(t.roadGround > 0 || t.roadElevated > 0) && t.outsideConnected === false ? `<span class="badge warn">🚧 未连通城际高速</span>` : ''}
         ${wDepth > 0.08 ? `<span class="badge info">水深 ${wDepth.toFixed(2)}m</span>` : ''}
         ${t.pipe ? `<span class="badge ${t.pipeBroken ? 'warn' : 'ok'}">${t.pipeBroken ? '🔴 水管震裂' : '🔵 已铺地下水管'}</span>` : ''}
@@ -1633,6 +1792,8 @@ export class GameUI {
         evPill.style.display = 'none';
       }
     }
+
+    this.syncLayoutOffsets();
   }
 
   openCivicEventModal() {

@@ -1227,6 +1227,23 @@ export class CityRenderer3D {
           tower.receiveShadow = true;
           this.infraGroup.add(tower);
         }
+
+        // Player-Planned Maritime Shipping Lane Navigation Buoys & Channel Markers (ZERO extra material allocations!)
+        if (!isUnder && t.shippingLane) {
+          const wd = this.sim.waterDepth[idx(x, z)] || 0;
+          if (wd > 0.10) {
+            const surfY = avgH + wd;
+            const showRibbon = this.overlayMode === 'transit' || this.showShippingLaneRibbon;
+            if ((x + z) % 2 === 0) {
+              // Port (red) & Starboard (green) floating channel marker buoys
+              this._addBoxTo(this.infraGroup, wx - 0.36, surfY + 0.045, wz - 0.36, 0.06, 0.11, 0.06, this.mats.redCross, false);
+              this._addBoxTo(this.infraGroup, wx + 0.36, surfY + 0.045, wz + 0.36, 0.06, 0.11, 0.06, this.mats.tunnelPortalOk, false);
+            }
+            if (showRibbon) {
+              this._addBoxTo(this.infraGroup, wx, surfY + 0.055, wz, 0.42, 0.03, 0.42, this.mats.cyanGlow, false);
+            }
+          }
+        }
       }
     }
 
@@ -2035,6 +2052,13 @@ export class CityRenderer3D {
 
       const obj = entry.obj;
       obj.visible = true;
+      // Smooth curb entry/exit scale easing on origin & final arrival tiles (prevents sudden visual pop-in/out!)
+      let vScale = 1.0;
+      if (!v.busLineId && v.path && v.path.length >= 2) {
+        if (v.seg === 0 && v.t < 0.22) vScale = 0.35 + (v.t / 0.22) * 0.65;
+        else if (v.seg >= v.path.length - 2 && v.t > 0.78) vScale = 0.35 + ((1.0 - v.t) / 0.22) * 0.65;
+      }
+      obj.scale.setScalar(Math.max(0.35, Math.min(1.0, vScale)));
       this.vehiclePool.push({ kind: v.kind, obj, vehicle: v });
 
       if (isUnder) {
@@ -2175,6 +2199,8 @@ export class CityRenderer3D {
       sh.visible = true;
       sh.position.set(s.wx, s.wy, s.wz);
       sh.rotation.set(-(s.pitch || 0), s.yaw || 0, s.roll || 0);
+      const sScale = Math.max(0.15, Math.min(1.0, s.scale !== undefined ? s.scale : 1.0));
+      sh.scale.setScalar(sScale);
       this.shipPool.push(sh);
     }
 
