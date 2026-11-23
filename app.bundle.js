@@ -207,6 +207,102 @@ for (let i = 0; i < concurrency; i++) workers.push(runWorker());
 await Promise.all(workers);
 return this.textures;
 }
+async loadGLBModels(THREE, { onProgress = null } = {}) {
+if (!THREE || !THREE.GLTFLoader || !this.isExternalSupported) {
+if (onProgress) onProgress(1, '内置模型已就绪');
+return this.glbs;
+}
+const manifest = await this.loadManifest();
+if (!manifest || !Array.isArray(manifest.models) || manifest.models.length === 0) {
+if (onProgress) onProgress(1, '模型就绪');
+return this.glbs;
+}
+const loader = new THREE.GLTFLoader();
+const list = manifest.models;
+const total = list.length;
+let done = 0;
+let cursor = 0;
+const normalizeProto = (rawScene) => {
+rawScene.updateMatrixWorld(true);
+const wrap = new THREE.Group();
+const meshes = [];
+rawScene.traverse((n) => {
+if (!n.isMesh || !n.geometry) return;
+meshes.push(n);
+});
+const invRoot = new THREE.Matrix4().copy(rawScene.matrixWorld).invert();
+for (const n of meshes) {
+const geo = n.geometry.clone();
+const relMat = new THREE.Matrix4().multiplyMatrices(invRoot, n.matrixWorld);
+geo.applyMatrix4(relMat);
+if (!geo.attributes.normal) geo.computeVertexNormals();
+const matSrc = n.material;
+const fixMat = (mt) => {
+if (!mt) return mt;
+if (mt.map) {
+mt.map.colorSpace = THREE.SRGBColorSpace;
+mt.map.anisotropy = 4;
+}
+if (mt.roughness !== undefined && mt.roughness > 0.92) mt.roughness = 0.72;
+if (mt.metalness !== undefined && mt.metalness > 0.85) mt.metalness = 0.35;
+return mt;
+};
+const mat = Array.isArray(matSrc) ? matSrc.map(fixMat) : fixMat(matSrc);
+const m = new THREE.Mesh(geo, mat);
+m.castShadow = true;
+m.receiveShadow = true;
+wrap.add(m);
+}
+wrap.updateMatrixWorld(true);
+const box = new THREE.Box3().setFromObject(wrap);
+const size = new THREE.Vector3();
+const center = new THREE.Vector3();
+if (isFinite(box.min.y) && isFinite(box.max.y)) {
+box.getSize(size);
+box.getCenter(center);
+for (const ch of wrap.children) {
+ch.position.x -= center.x;
+ch.position.y -= box.min.y;
+ch.position.z -= center.z;
+}
+}
+wrap.userData.origSize = { x: size.x || 1, y: size.y || 1, z: size.z || 1 };
+return wrap;
+};
+const runWorker = async () => {
+while (cursor < total) {
+const entry = list[cursor++];
+if (this.glbs[entry.key]) {
+done++;
+if (onProgress) onProgress(done / total, `加载 3D 资产 (${done}/${total})`);
+continue;
+}
+await new Promise((resolve) => {
+loader.load(
+this.baseUrl + entry.url,
+(gltf) => {
+try {
+this.glbs[entry.key] = normalizeProto(gltf.scene);
+} catch {}
+done++;
+if (onProgress) onProgress(done / total, `加载 3D 精品模型 (${done}/${total})`);
+resolve();
+},
+undefined,
+() => {
+done++;
+if (onProgress) onProgress(done / total, `加载模型 (${done}/${total})`);
+resolve();
+}
+);
+});
+}
+};
+const workers = [];
+for (let i = 0; i < 4; i++) workers.push(runWorker());
+await Promise.all(workers);
+return this.glbs;
+}
 getCacheName() {
 const ver = (this.manifest && this.manifest.version) || 'v7.0';
 return `mini-skylines-${ver}`;
@@ -316,6 +412,8 @@ this._masterGain = null;
 this._windGain = null;
 this._waterGain = null;
 this._cityGain = null;
+this._rainGain = null;
+this._thunderAccum = 8.0;
 this._bgmAccum = 0;
 this._bgmStep = 0;
 this._chirpAccum = 3.5;
@@ -360,6 +458,7 @@ const now = this.ctx.currentTime;
 this._rampParam(this._windGain.gain, 0.0001, now, 0.15);
 this._rampParam(this._waterGain.gain, 0.0001, now, 0.15);
 this._rampParam(this._cityGain.gain, 0.0001, now, 0.15);
+if (this._rainGain) this._rampParam(this._rainGain.gain, 0.0001, now, 0.15);
 }
 }
 setBgmEnabled(v) {
@@ -460,10 +559,12 @@ return { flt, g };
 const wind = makeLayer('bandpass', 420, 0.7);
 const water = makeLayer('bandpass', 920, 0.9);
 const city = makeLayer('lowpass', 240, 0.8);
+const rain = makeLayer('bandpass', 1850, 0.55);
 this._windFilter = wind.flt;
 this._windGain = wind.g;
 this._waterGain = water.g;
 this._cityGain = city.g;
+this._rainGain = rain.g;
 this._ambientReady = true;
 } catch {}
 }
@@ -486,13 +587,24 @@ const cityTarget = Math.max(0.0001, cityFactor * 0.048);
 this._rampParam(this._windGain.gain, windTarget, now, 0.25);
 this._rampParam(this._waterGain.gain, Math.max(0.0001, waterTarget), now, 0.22);
 this._rampParam(this._cityGain.gain, cityTarget, now, 0.28);
+const rainLevel = Math.max(0, Math.min(1, state.rainIntensity || 0));
+if (this._rainGain) {
+this._rampParam(this._rainGain.gain, Math.max(0.0001, rainLevel * 0.072), now, 0.35);
+}
 if (this._windFilter) {
-this._rampParam(this._windFilter.frequency, 340 + Math.sin(now * 0.35) * 90 + elev * 80, now, 0.4);
+this._rampParam(this._windFilter.frequency, 340 + Math.sin(now * 0.35) * 90 + elev * 80 + rainLevel * 140, now, 0.4);
+}
+if (state.weatherState === 'storm' && !state.disasterActive) {
+this._thunderAccum -= dt;
+if (this._thunderAccum <= 0) {
+this._thunderAccum = 9.0 + Math.random() * 14.0;
+this._playThunder();
+}
 }
 this._chirpAccum -= dt;
 if (this._chirpAccum <= 0) {
 this._chirpAccum = 6.5 + Math.random() * 9.0;
-if (night < 0.35 && camDist < 28 && !state.disasterActive) {
+if (night < 0.35 && camDist < 28 && rainLevel < 0.2 && state.weatherState !== 'snow' && !state.disasterActive) {
 this._playBirdChirp();
 }
 }
@@ -500,6 +612,7 @@ this._playBirdChirp();
 this._rampParam(this._windGain.gain, 0.0001, now, 0.15);
 this._rampParam(this._waterGain.gain, 0.0001, now, 0.15);
 this._rampParam(this._cityGain.gain, 0.0001, now, 0.15);
+if (this._rainGain) this._rampParam(this._rainGain.gain, 0.0001, now, 0.15);
 }
 }
 if (this.bgmEnabled && (!state || !state.disasterActive)) {
@@ -515,6 +628,11 @@ if (!this.ctx || !this._masterGain) return;
 const base = 2100 + Math.random() * 750;
 this.tone(base, base * 1.24, 0.065, 'sine', 0.011, 0);
 this.tone(base * 1.18, base * 0.96, 0.07, 'sine', 0.009, 0.085);
+}
+_playThunder() {
+if (!this.ctx || !this._masterGain) return;
+this.tone(76, 34, 1.45, 'triangle', 0.042, 0);
+this.tone(54, 28, 1.85, 'sine', 0.038, 0.18);
 }
 _playNextBgmBeat(night) {
 if (!this.ctx || !this._masterGain) return;
@@ -2414,6 +2532,14 @@ or = 0.20 + cv * 0.76;
 og = 0.84 - cv * 0.64;
 ob = 0.24 - cv * 0.12;
 oWeight = 0.86;
+}
+} else if (activeOverlay === 'transit') {
+if (tile.busStop) {
+or = 0.10; og = 0.88; ob = 0.96; oWeight = 0.88;
+} else if (tile.building && (tile.building.type === 'metro_station' || tile.building.type === 'hsr_station' || tile.building.type === 'airport' || tile.building.type === 'seaport')) {
+or = 0.88; og = 0.34; ob = 0.98; oWeight = 0.88;
+} else if (tile.roadGround > 0) {
+or = 0.34; og = 0.42; ob = 0.54; oWeight = 0.78;
 }
 } else if (activeOverlay === 'fire' || activeOverlay === 'fireSafety' || activeOverlay === 'fire_safety') {
 const fv = clamp01(tile.fireSafety * fireScale);
@@ -4374,7 +4500,7 @@ cGirder[0], cGirder[1], cGirder[2]
 if (!groundCableSpanMask[i]) {
 const cx = x0 + 0.5;
 const cz = z0 + 0.5;
-const bedY = cellElev[i] - 0.18;
+const bedY = Math.min(cellElev[i] - 0.36, -1.25);
 const topY = avgDeckY - 0.07;
 if (!isJunctionOrTurn) {
 const runEW = hasEW && !hasNS;
@@ -4992,7 +5118,7 @@ if (isViaduct) {
 const cx = x - HALF_GRID + 0.5;
 const cz = z - HALF_GRID + 0.5;
 const soffitY = avgRailY - slabDown;
-const groundY = cellElev[i] - 0.16;
+const groundY = waterDepth[i] > 0.06 ? Math.min(cellElev[i] - 0.36, -1.25) : (cellElev[i] - 0.22);
 if ((t.roadGround >= 1 && t.roadGround <= 3) || t.ramp) {
 const spanAlongX = (hasN || hasS) && !(hasW && hasE && !hasN && !hasS);
 const ox = spanAlongX ? 0.44 : 0;
@@ -7056,6 +7182,46 @@ if (ry !== 0) inst.rotation.y = ry;
 grp.add(inst);
 return true;
 }
+_placeFittedGLB(grp, key, px, py, pz, targetW, targetH, targetD, ab = false, ry = 0) {
+const proto = this.glbProtos && this.glbProtos[key];
+if (!proto) return null;
+const os = (proto.userData && proto.userData.origSize) || { x: 1, y: 1, z: 1 };
+const sx = targetW / Math.max(0.01, os.x);
+const sy = targetH / Math.max(0.01, os.y);
+const sz = targetD / Math.max(0.01, os.z);
+const u = Math.min(sx, sy, sz);
+const inst = proto.clone();
+if (ab) {
+inst.traverse((ch) => {
+if (ch.isMesh && ch.material) {
+ch.material = Array.isArray(ch.material)
+? ch.material.map((mt) => this._getDustyGLBMat(mt))
+: this._getDustyGLBMat(ch.material);
+}
+});
+}
+inst.position.set(px, py, pz);
+inst.scale.set(u, u, u);
+if (ry !== 0) inst.rotation.y = ry;
+grp.add(inst);
+return inst;
+}
+_getBusLineMat(colorHex) {
+if (!colorHex) return this.m.busTurquoise;
+if (!this._busLineMats) this._busLineMats = new Map();
+let mat = this._busLineMats.get(colorHex);
+if (!mat) {
+mat = new this.THREE.MeshStandardMaterial({
+color: colorHex,
+roughness: 0.28,
+metalness: 0.25,
+emissive: colorHex,
+emissiveIntensity: 0.16
+});
+this._busLineMats.set(colorHex, mat);
+}
+return mat;
+}
 buildBuilding(b, x, z, y0, rotRad = 0, hooks = {}) {
 const THREE = this.THREE;
 const grp = new THREE.Group();
@@ -7067,8 +7233,12 @@ const ab = Boolean(b.abandoned);
 const type = b.type || 'RL';
 if (type === 'stadium') {
 this._addContactAO(grp, 1.34, 1.14, 0.002);
-} else if (type === 'landmark' || type === 'amusement_park' || type === 'nuclear_plant' || type === 'solar_plant' || type === 'seaport') {
-this._addContactAO(grp, 1.16, 1.16, 0.002);
+} else if (
+type === 'landmark' || type === 'amusement_park' || type === 'nuclear_plant' ||
+type === 'solar_plant' || type === 'seaport' || type === 'zoo' ||
+type === 'botanical_garden' || type === 'museum' || type === 'tv_tower'
+) {
+this._addContactAO(grp, 1.18, 1.18, 0.002);
 } else if (type === 'airport') {
 this._addContactAO(grp, 1.72, 1.12, 0.002);
 } else if (type === 'power_wind') {
@@ -7095,6 +7265,18 @@ this._buildIndustrialI(grp, lv, v, ab, x, y0, z, rotRad, hooks);
 break;
 case 'landmark':
 this._buildLandmarkObelisk(grp, ab, x, y0, z, rotRad, hooks);
+break;
+case 'zoo':
+this._buildZoo(grp, ab, hooks);
+break;
+case 'botanical_garden':
+this._buildBotanicalGarden(grp, ab);
+break;
+case 'museum':
+this._buildMuseum(grp, ab);
+break;
+case 'tv_tower':
+this._buildTvTower(grp, ab, x, y0, z, rotRad, hooks);
 break;
 case 'stadium':
 this._buildOlympicStadium(grp, ab);
@@ -7167,6 +7349,15 @@ this._addMesh(grp, this.geos.box, lawnMat, 0, 0.022, -0.14, 0.80, 0.012, 0.54, f
 this._addMesh(grp, this.geos.box, hedgeMat, 0, 0.052, -0.42, 0.84, 0.06, 0.04, true);
 this._addMesh(grp, this.geos.box, hedgeMat, -0.42, 0.052, -0.05, 0.04, 0.06, 0.72, true);
 this._addMesh(grp, this.geos.box, hedgeMat, 0.42, 0.052, -0.05, 0.04, 0.06, 0.72, true);
+if (lv <= 2 && !ab && (v % 2 === 0)) {
+const cc0Keys = ['cc0_villa_a', 'cc0_villa_b', 'cc0_villa_c', 'cc0_villa_d'];
+const key = cc0Keys[(v >> 1) % cc0Keys.length];
+if (this._placeFittedGLB(grp, key, 0, 0.024, 0.03, 0.68, lv === 2 ? 0.56 : 0.46, 0.62, false, 0)) {
+this._addTinyTree(grp, -0.30, 0.024, -0.30, 0.62);
+this._addTinyTree(grp, 0.30, 0.024, -0.28, 0.56);
+return;
+}
+}
 const baseY = 0.024;
 const mainH = lv >= 3 ? 0.51 : 0.34;
 const wingH = 0.34;
@@ -7747,6 +7938,7 @@ this._addMesh(grp, this.geos.box, this.m.ledLinearCyan, ax, 0.046, rwZ, 0.024, 0
 }
 }
 _buildSeaport(grp, ab, x, y0, z, rotRad, hooks) {
+this._addMesh(grp, this.geos.box, ab ? this.m.abandoned : this.m.damConcrete, 0, -0.32, -0.02, 1.08, 0.68, 0.96, false);
 this._addMesh(grp, this.geos.box, ab ? this.m.abandoned : this.m.roofConcrete, 0, 0.03, -0.02, 1.08, 0.18, 0.96, true);
 if (!ab) {
 this._addMesh(grp, this.geos.box, this.m.craneYellow, 0, 0.125, 0.44, 1.06, 0.018, 0.035, false);
@@ -7960,6 +8152,176 @@ for (const [tx, tz] of [[-0.31, -0.31], [0.31, -0.31], [-0.31, 0.31], [0.31, 0.3
 this._addTinyTree(grp, tx, 0.02, tz, 0.82);
 }
 }
+_buildZoo(grp, ab, hooks) {
+const THREE = this.THREE;
+const lawnMat = ab ? this.m.abandonedRust : this.m.lawn;
+const woodMat = ab ? this.m.abandoned : this.m.teakDeck;
+const stoneMat = ab ? this.m.abandoned : this.m.parapetStone;
+this._addMesh(grp, this.geos.box, lawnMat, 0, 0.016, 0, 1.08, 0.032, 1.08, false);
+this._addMesh(grp, this.geos.box, stoneMat, 0, 0.030, 0.38, 0.86, 0.014, 0.24, false);
+this._addMesh(grp, this.geos.box, woodMat, 0, 0.034, 0.02, 0.14, 0.016, 0.72, false);
+this._addMesh(grp, this.geos.cyl24, ab ? this.m.abandoned : this.m.poolWater, -0.24, 0.032, -0.18, 0.34, 0.014, 0.28, false);
+this._addMesh(grp, this.geos.cyl24, stoneMat, -0.24, 0.028, -0.18, 0.40, 0.014, 0.34, false);
+this._addMesh(grp, this.geos.cyl16, woodMat, -0.24, 0.16, 0.46, 0.045, 0.28, 0.045, true);
+this._addMesh(grp, this.geos.cyl16, woodMat, 0.24, 0.16, 0.46, 0.045, 0.28, 0.045, true);
+this._addMesh(grp, this.geos.box, woodMat, 0, 0.29, 0.46, 0.56, 0.045, 0.06, true);
+if (!ab) {
+this._addMesh(grp, this.geos.box, this.m.neonGold, 0, 0.30, 0.495, 0.34, 0.035, 0.015, false);
+}
+for (const [fx, fz, fsx, fsz] of [
+[-0.51, 0, 0.024, 1.02], [0.51, 0, 0.024, 1.02], [0, -0.51, 1.02, 0.024]
+]) {
+this._addMesh(grp, this.geos.box, woodMat, fx, 0.075, fz, fsx, 0.016, fsz, false);
+this._addMesh(grp, this.geos.box, woodMat, fx, 0.048, fz, fsx, 0.014, fsz, false);
+}
+this._addMesh(grp, this.geos.cyl16, woodMat, 0.30, 0.12, -0.32, 0.035, 0.18, 0.035, true);
+this._addMesh(grp, this.geos.cone8, ab ? this.m.abandonedRust : this.m.terracottaRoof, 0.30, 0.25, -0.32, 0.24, 0.12, 0.24, true);
+for (const [tx, tz, sc] of [[-0.40, -0.38, 0.78], [0.40, -0.02, 0.72], [-0.42, 0.18, 0.65]]) {
+this._addTinyTree(grp, tx, 0.028, tz, sc);
+}
+if (ab) return;
+const registerWalker = (animalGrp, cx, cz, radius, speed, phase) => {
+animalGrp.position.set(cx, 0.032, cz);
+grp.add(animalGrp);
+if (hooks && Array.isArray(hooks.zooAnimals)) {
+hooks.zooAnimals.push({ obj: animalGrp, cx, cz, radius, speed, phase, baseY: 0.032 });
+}
+};
+const makeGiraffe = () => {
+const g = new THREE.Group();
+this._addMesh(g, this.geos.box, this.m.craneYellow, 0, 0.11, 0, 0.055, 0.065, 0.11, true);
+this._addMesh(g, this.geos.cyl16, this.m.craneYellow, 0, 0.21, 0.045, 0.026, 0.17, 0.026, true);
+this._addMesh(g, this.geos.box, this.m.craneYellow, 0, 0.295, 0.065, 0.032, 0.028, 0.055, true);
+this._addMesh(g, this.geos.box, this.m.teakDeck, 0, 0.12, 0.02, 0.058, 0.024, 0.032, false);
+this._addMesh(g, this.geos.box, this.m.teakDeck, 0, 0.21, 0.045, 0.029, 0.022, 0.029, false);
+for (const [lx, lz] of [[-0.018, 0.036], [0.018, 0.036], [-0.018, -0.036], [0.018, -0.036]]) {
+this._addMesh(g, this.geos.cyl16, this.m.craneYellow, lx, 0.045, lz, 0.014, 0.09, 0.014, false);
+}
+return g;
+};
+const makePanda = () => {
+const g = new THREE.Group();
+this._addMesh(g, this.geos.sphere16, this.m.whiteComposite, 0, 0.062, 0, 0.092, 0.078, 0.115, true);
+this._addMesh(g, this.geos.sphere16, this.m.whiteComposite, 0, 0.098, 0.055, 0.068, 0.064, 0.068, true);
+this._addMesh(g, this.geos.sphere16, this.m.asphalt, -0.025, 0.132, 0.045, 0.026, 0.026, 0.020, false);
+this._addMesh(g, this.geos.sphere16, this.m.asphalt, 0.025, 0.132, 0.045, 0.026, 0.026, 0.020, false);
+this._addMesh(g, this.geos.box, this.m.asphalt, 0, 0.058, 0.022, 0.095, 0.045, 0.038, false);
+for (const [lx, lz] of [[-0.032, 0.032], [0.032, 0.032], [-0.032, -0.032], [0.032, -0.032]]) {
+this._addMesh(g, this.geos.cyl16, this.m.asphalt, lx, 0.022, lz, 0.026, 0.044, 0.026, false);
+}
+return g;
+};
+const a1 = new THREE.Group();
+if (!this._placeFittedGLB(a1, 'zoo_stag', 0, 0, 0, 0.22, 0.24, 0.22, false, 0)) {
+a1.add(makeGiraffe());
+}
+registerWalker(a1, 0.26, 0.08, 0.14, 0.55, 0.4);
+const a2 = new THREE.Group();
+if (!this._placeFittedGLB(a2, 'zoo_alpaca', 0, 0, 0, 0.18, 0.20, 0.18, false, 0)) {
+a2.add(makePanda());
+}
+registerWalker(a2, -0.22, 0.16, 0.12, 0.48, 2.1);
+const a3 = new THREE.Group();
+if (!this._placeFittedGLB(a3, 'zoo_fox', 0, 0, 0, 0.14, 0.12, 0.15, false, 0)) {
+a3.add(makeGiraffe());
+}
+registerWalker(a3, 0.22, -0.14, 0.12, 0.72, 4.0);
+registerWalker(makeGiraffe(), -0.04, -0.32, 0.11, 0.38, 1.2);
+registerWalker(makePanda(), 0.34, 0.24, 0.07, 0.32, 5.2);
+}
+_buildBotanicalGarden(grp, ab) {
+const stoneMat = ab ? this.m.abandoned : this.m.parapetStone;
+const whiteMat = ab ? this.m.abandoned : this.m.whiteComposite;
+const glassMat = ab ? this.m.dustyCBD : this.m.atriumGlass;
+const lawnMat = ab ? this.m.abandonedRust : this.m.lawn;
+this._addMesh(grp, this.geos.box, ab ? this.m.pavingPlazaDusty : this.m.pavingPlaza, 0, 0.016, 0, 1.08, 0.032, 1.08, false);
+this._addMesh(grp, this.geos.box, lawnMat, -0.30, 0.032, 0.26, 0.34, 0.012, 0.34, false);
+this._addMesh(grp, this.geos.box, lawnMat, 0.30, 0.032, 0.26, 0.34, 0.012, 0.34, false);
+if (!ab) {
+this._addMesh(grp, this.geos.box, this.m.craneRed, -0.30, 0.044, 0.26, 0.20, 0.018, 0.20, false);
+this._addMesh(grp, this.geos.box, this.m.neonGold, 0.30, 0.044, 0.26, 0.20, 0.018, 0.20, false);
+this._addMesh(grp, this.geos.box, this.m.neonViolet, -0.34, 0.044, -0.34, 0.18, 0.018, 0.18, false);
+this._addMesh(grp, this.geos.box, this.m.neonMagenta, 0.34, 0.044, -0.34, 0.18, 0.018, 0.18, false);
+}
+const cz = -0.08;
+this._addMesh(grp, this.geos.cyl24, stoneMat, 0, 0.07, cz, 0.56, 0.08, 0.56, true);
+this._addMesh(grp, this.geos.cyl24, glassMat, 0, 0.22, cz, 0.50, 0.22, 0.50, false);
+this._addMesh(grp, this.geos.hemiDome, glassMat, 0, 0.33, cz, 0.52, 0.34, 0.52, true);
+for (let r = 0; r < 4; r++) {
+this._addMesh(grp, this.geos.box, whiteMat, 0, 0.34, cz, 0.535, 0.016, 0.016, false, (r * Math.PI) / 4);
+this._addMesh(grp, this.geos.box, whiteMat, 0, 0.22, cz, 0.515, 0.22, 0.016, false, (r * Math.PI) / 4);
+}
+this._addMesh(grp, this.geos.cyl16, whiteMat, 0, 0.67, cz, 0.09, 0.08, 0.09, true);
+this._addMesh(grp, this.geos.cone8, this.m.brushedSilver, 0, 0.74, cz, 0.06, 0.08, 0.06, true);
+this._addMesh(grp, this.geos.box, glassMat, -0.34, 0.15, cz, 0.26, 0.18, 0.22, false);
+this._addMesh(grp, this.geos.box, glassMat, 0.34, 0.15, cz, 0.26, 0.18, 0.22, false);
+this._addMesh(grp, this.geos.box, whiteMat, -0.34, 0.245, cz, 0.28, 0.018, 0.24, true);
+this._addMesh(grp, this.geos.box, whiteMat, 0.34, 0.245, cz, 0.28, 0.018, 0.24, true);
+if (!ab) {
+this._addTinyTree(grp, 0, 0.08, cz, 1.05);
+}
+this._addMesh(grp, this.geos.cyl24, ab ? this.m.abandoned : this.m.poolWater, 0, 0.036, 0.32, 0.26, 0.014, 0.20, false);
+this._addMesh(grp, this.geos.box, whiteMat, 0, 0.056, 0.32, 0.08, 0.018, 0.24, true);
+for (const [tx, tz, pink] of [[-0.44, 0.40, true], [0.44, 0.40, true], [-0.44, -0.44, false], [0.44, -0.44, false]]) {
+this._addMesh(grp, this.geos.cyl16, this.m.teakDeck, tx, 0.07, tz, 0.025, 0.09, 0.025, false);
+this._addMesh(grp, this.geos.treeCrown, ab ? this.m.abandonedRust : (pink ? this.m.neonMagenta : this.m.lawn), tx, 0.15, tz, 0.68, 0.68, 0.68, true);
+}
+}
+_buildMuseum(grp, ab) {
+const stoneMat = ab ? this.m.abandoned : this.m.parapetStone;
+const whiteMat = ab ? this.m.abandoned : this.m.whiteComposite;
+const glassMat = ab ? this.m.dustyCBD : this.m.cbdSlateSilver;
+this._addMesh(grp, this.geos.box, ab ? this.m.pavingPlazaDusty : this.m.pavingPlaza, 0, 0.016, 0, 1.04, 0.032, 1.04, false);
+this._addMesh(grp, this.geos.box, stoneMat, 0, 0.052, -0.06, 0.90, 0.044, 0.72, true);
+this._addMesh(grp, this.geos.box, ab ? this.m.abandoned : this.m.poolWater, 0, 0.036, 0.36, 0.62, 0.014, 0.18, false);
+if (!ab) {
+const sculp = this._addMesh(grp, this.geos.oct, this.m.neonGold, 0, 0.14, 0.36, 0.09, 0.16, 0.09, true);
+sculp.rotation.set(0.35, 0.6, 0.25);
+}
+this._addMesh(grp, this.geos.box, glassMat, 0, 0.24, -0.08, 0.76, 0.34, 0.48, true);
+for (let cx = -0.34; cx <= 0.35; cx += 0.17) {
+this._addMesh(grp, this.geos.cyl16, whiteMat, cx, 0.24, 0.19, 0.036, 0.34, 0.036, true);
+}
+this._addMesh(grp, this.geos.box, whiteMat, 0, 0.47, -0.04, 0.90, 0.16, 0.62, true);
+this._addMesh(grp, this.geos.box, glassMat, 0, 0.47, 0.275, 0.74, 0.10, 0.015, false);
+this._addMesh(grp, this.geos.box, ab ? this.m.abandoned : this.m.atriumGlass, 0, 0.585, -0.04, 0.56, 0.07, 0.34, false);
+this._addMesh(grp, this.geos.parapetFrame, stoneMat, 0, 0.57, -0.04, 0.91, 0.05, 0.63, true);
+}
+_buildTvTower(grp, ab, x, y0, z, rotRad, hooks) {
+const whiteMat = ab ? this.m.abandoned : this.m.whiteComposite;
+const silverMat = ab ? this.m.abandoned : this.m.brushedSilver;
+const glassMat = ab ? this.m.dustyCBD : this.m.cbdIceBlue;
+const accentCyan = ab ? this.m.abandoned : this.m.neonCyan;
+const accentMag = ab ? this.m.abandoned : this.m.neonMagenta;
+const accentGold = ab ? this.m.abandoned : this.m.neonGold;
+this._addMesh(grp, this.geos.cyl24, ab ? this.m.pavingPlazaDusty : this.m.pavingPlaza, 0, 0.02, 0, 1.06, 0.04, 1.06, false);
+this._addMesh(grp, this.geos.oct, glassMat, 0, 0.16, 0, 0.64, 0.24, 0.64, true);
+this._addMesh(grp, this.geos.cyl24, silverMat, 0, 0.29, 0, 0.68, 0.03, 0.68, true);
+this._addMesh(grp, this.geos.cyl16, silverMat, 0, 1.95, 0, 0.13, 3.65, 0.13, true);
+for (let k = 0; k < 3; k++) {
+const ang = (k * Math.PI * 2) / 3;
+const leg = this._addMesh(grp, this.geos.cyl16, whiteMat, Math.cos(ang) * 0.24, 1.05, Math.sin(ang) * 0.24, 0.095, 1.85, 0.095, true);
+leg.rotation.z = Math.cos(ang) * 0.18;
+leg.rotation.x = -Math.sin(ang) * 0.18;
+this._addMesh(grp, this.geos.cyl16, whiteMat, Math.cos(ang) * 0.11, 2.48, Math.sin(ang) * 0.11, 0.055, 1.65, 0.055, true);
+}
+this._addMesh(grp, this.geos.sphere16, glassMat, 0, 1.68, 0, 0.42, 0.42, 0.42, true);
+if (!ab) {
+this._addMesh(grp, this.geos.cyl24, accentCyan, 0, 1.68, 0, 0.44, 0.035, 0.44, false);
+this._addMesh(grp, this.geos.cyl24, accentMag, 0, 1.54, 0, 0.36, 0.025, 0.36, false);
+}
+this._addMesh(grp, this.geos.sphere16, glassMat, 0, 3.28, 0, 0.34, 0.34, 0.34, true);
+this._addMesh(grp, this.geos.cyl24, silverMat, 0, 3.32, 0, 0.38, 0.04, 0.38, true);
+if (!ab) {
+this._addMesh(grp, this.geos.cyl24, accentMag, 0, 3.28, 0, 0.36, 0.032, 0.36, false);
+this._addMesh(grp, this.geos.cyl24, accentGold, 0, 3.44, 0, 0.28, 0.024, 0.28, false);
+}
+this._addMesh(grp, this.geos.sphere16, silverMat, 0, 4.18, 0, 0.18, 0.18, 0.18, true);
+if (!ab) this._addMesh(grp, this.geos.cyl24, accentCyan, 0, 4.18, 0, 0.195, 0.022, 0.195, false);
+this._addMesh(grp, this.geos.cyl16, whiteMat, 0, 4.65, 0, 0.042, 0.85, 0.056, true);
+this._addMesh(grp, this.geos.cyl16, ab ? this.m.abandonedRust : this.m.craneRed, 0, 5.15, 0, 0.020, 0.55, 0.034, false);
+this._addBeacon(grp, hooks, 0, 5.46, 0, x, y0, z, rotRad, ab);
+}
 _buildMetroStation(grp, ab) {
 this._addMesh(grp, this.geos.box, ab ? this.m.pavingPlazaDusty : this.m.pavingPlaza, 0, 0.015, 0, 0.90, 0.03, 0.90, false);
 const vault = this._addMesh(grp, this.geos.capsule, ab ? this.m.dustyCBD : this.m.atriumGlass, 0, 0.14, 0, 1.25, 0.82, 0.72, true);
@@ -7992,15 +8354,16 @@ const signMesh = this._addMesh(grp, this.geos.busStopSign, this.m.busSign, 0, 0,
 signMesh.name = 'busSign';
 return grp;
 }
-createRealisticVehicleObject(kind = 'car', variantIdx = 0) {
+createRealisticVehicleObject(kind = 'car', variantIdx = 0, lineColorHex = null) {
 const THREE = this.THREE;
 const grp = new THREE.Group();
 grp.rotation.order = 'YXZ';
 const v = Math.abs(variantIdx | 0);
 const k = String(kind || 'car').toLowerCase();
 if (k === 'bus') {
+const stripeMat = this._getBusLineMat(lineColorHex);
 this._addMesh(grp, this.geos.vehBusBody, this.m.carPearlWhite, 0, 0, 0, 1, 1, 1, true);
-this._addMesh(grp, this.geos.vehBusStripe, this.m.busTurquoise, 0, 0, 0, 1, 1, 1, false);
+this._addMesh(grp, this.geos.vehBusStripe, stripeMat, 0, 0, 0, 1, 1, 1, false);
 this._addMesh(grp, this.geos.vehBusDark, this.m.cockpitGlass, 0, 0, 0, 1, 1, 1, false);
 this._addMesh(grp, this.geos.vehBusWheels, this.m.tireRubber, 0, 0, 0, 1, 1, 1, true);
 this._addMesh(grp, this.geos.vehBusHL, this.m.vehHeadlight, 0, 0, 0, 1, 1, 1, false);
@@ -8008,6 +8371,11 @@ this._addMesh(grp, this.geos.vehBusTL, this.m.vehTaillight, 0, 0, 0, 1, 1, 1, fa
 return grp;
 }
 if (k === 'firetruck') {
+if (this._placeFittedGLB(grp, 'cc0_firetruck', 0, 0, 0, 0.19, 0.22, 0.44, false, 0)) {
+const strobe = this._addMesh(grp, this.geos.box, this.m.beaconRed, 0, 0.205, 0.14, 0.11, 0.018, 0.028, false);
+strobe.name = 'strobe';
+return grp;
+}
 this._addMesh(grp, this.geos.vehFireBody, this.m.craneRed, 0, 0, 0, 1, 1, 1, true);
 this._addMesh(grp, this.geos.vehFireSilver, this.m.brushedSilver, 0, 0, 0, 1, 1, 1, true);
 this._addMesh(grp, this.geos.vehTruckGlass, this.m.cockpitGlass, 0, 0, 0, 1, 1, 1, false);
@@ -8019,6 +8387,9 @@ strobe.name = 'strobe';
 return grp;
 }
 if (k === 'garbagetruck') {
+if (this._placeFittedGLB(grp, 'cc0_garbage', 0, 0, 0, 0.19, 0.22, 0.44, false, 0)) {
+return grp;
+}
 this._addMesh(grp, this.geos.vehTruckCab, this.m.carPearlWhite, 0, 0, 0, 1, 1, 1, true);
 this._addMesh(grp, this.geos.vehGarbageHopper, this.m.garbageGreen, 0, 0, 0, 1, 1, 1, true);
 this._addMesh(grp, this.geos.vehTruckGlass, this.m.cockpitGlass, 0, 0, 0, 1, 1, 1, false);
@@ -8138,6 +8509,20 @@ this._addMesh(grp, this.geos.box, mat, cols[cIdx], 0.25 + t * 0.082, bz, 0.118, 
 }
 return grp;
 }
+createLeisureBoatObject(variant = 0) {
+const THREE = this.THREE;
+const grp = new THREE.Group();
+grp.rotation.order = 'YXZ';
+const key = (variant & 1) === 0 ? 'cc0_sailboat' : 'cc0_fishingboat';
+if (this._placeFittedGLB(grp, key, 0, 0, 0, 0.34, 0.62, 0.56, false, 0)) {
+return grp;
+}
+this._addMesh(grp, this.geos.box, this.m.whiteComposite, 0, 0.045, 0, 0.16, 0.07, 0.44, true);
+this._addMesh(grp, this.geos.box, this.m.airlineBlue, 0, 0.02, 0, 0.15, 0.03, 0.42, false);
+this._addMesh(grp, this.geos.cyl16, this.m.brushedSilver, 0, 0.26, 0.02, 0.014, 0.42, 0.014, false);
+this._addMesh(grp, this.geos.box, this.m.whiteComposite, 0, 0.28, -0.06, 0.012, 0.32, 0.18, true);
+return grp;
+}
 createSkyDome() {
 const THREE = this.THREE;
 const geo = new THREE.SphereGeometry(145, 32, 20);
@@ -8145,6 +8530,8 @@ const uniforms = {
 uTime: { value: 0.0 },
 uNight: { value: 0.0 },
 uSunset: { value: 0.0 },
+uCloudCover: { value: 0.0 },
+uOvercast: { value: 0.0 },
 uSunDir: { value: new THREE.Vector3(0.45, 0.75, 0.48).normalize() }
 };
 const vertexShader = `
@@ -8159,6 +8546,8 @@ const fragmentShader = `
 uniform float uTime;
 uniform float uNight;
 uniform float uSunset;
+uniform float uCloudCover;
+uniform float uOvercast;
 uniform vec3 uSunDir;
 varying vec3 vDir;
 float hash21(vec2 p) {
@@ -8245,16 +8634,21 @@ if (d.y > 0.015) {
 vec2 cloudUV = d.xz / (d.y + 0.20);
 float cBase = fbm(cloudUV * 1.05 + vec2(uTime * 0.011, uTime * 0.006));
 float cirrus = noise2D(cloudUV * vec2(2.6, 0.75) - vec2(uTime * 0.018, 0.0));
-float cumulusMask = smoothstep(0.50, 0.78, cBase);
-float cirrusMask = smoothstep(0.62, 0.88, cirrus) * 0.35;
-float cloudAlpha = clamp(cumulusMask * 0.78 + cirrusMask, 0.0, 0.86) * smoothstep(0.015, 0.20, d.y);
+float covShift = uCloudCover * 0.34;
+float cumulusMask = smoothstep(0.50 - covShift, 0.78 - covShift * 0.65, cBase);
+float cirrusMask = smoothstep(0.62 - covShift * 0.5, 0.88, cirrus) * 0.35;
+float cloudAlpha = clamp(cumulusMask * (0.78 + uCloudCover * 0.22) + cirrusMask, 0.0, 0.94) * smoothstep(0.015, 0.20, d.y);
 vec3 cloudDay = mix(vec3(0.76, 0.84, 0.94), vec3(1.0, 0.99, 0.98), smoothstep(0.48, 0.76, cBase));
+vec3 cloudStorm = mix(vec3(0.28, 0.33, 0.40), vec3(0.52, 0.58, 0.66), smoothstep(0.35, 0.72, cBase));
+cloudDay = mix(cloudDay, cloudStorm, uOvercast);
 vec3 cloudSunset = mix(vec3(0.52, 0.34, 0.48), vec3(1.0, 0.64, 0.38), smoothstep(0.45, 0.74, cBase));
 vec3 cloudNight = vec3(0.07, 0.11, 0.20);
-vec3 cloudCol = mix(cloudDay, cloudSunset, uSunset * 0.82);
+vec3 cloudCol = mix(cloudDay, cloudSunset, uSunset * 0.82 * (1.0 - uOvercast * 0.75));
 cloudCol = mix(cloudCol, cloudNight, uNight * 0.88);
 sky = mix(sky, cloudCol, cloudAlpha * (1.0 - uNight * 0.42));
 }
+vec3 overcastBase = mix(vec3(0.52, 0.60, 0.68), vec3(0.05, 0.07, 0.11), uNight);
+sky = mix(sky, overcastBase, uOvercast * 0.45);
 if (d.y < 0.0) {
 vec3 abyss = mix(vec3(0.56, 0.74, 0.90), vec3(0.03, 0.05, 0.10), uNight);
 sky = mix(sky, abyss, smoothstep(0.0, -0.22, d.y));
@@ -8275,7 +8669,7 @@ mesh.renderOrder = -1000;
 mesh.frustumCulled = false;
 let elapsed = 0;
 let lastStamp = typeof performance !== 'undefined' ? performance.now() : 0;
-const update = (dayProgress = 0.35, night, sunDir) => {
+const update = (dayProgress = 0.35, night, sunDir, weatherState = 'clear', weatherIntensity = 0) => {
 const now = typeof performance !== 'undefined' ? performance.now() : lastStamp + 16;
 const dt = Math.min(0.1, Math.max(0.001, (now - lastStamp) * 0.001));
 lastStamp = now;
@@ -8288,6 +8682,11 @@ const calcNight = night !== undefined
 : Math.max(0, Math.min(1, (-sunElev + 0.16) / 0.42));
 uniforms.uNight.value = calcNight;
 uniforms.uSunset.value = Math.max(0, 1 - Math.abs(sunElev - 0.06) / 0.30);
+const wi = Math.max(0, Math.min(1, weatherIntensity || 0));
+const targetCloud = weatherState === 'storm' ? 1.0 : (weatherState === 'rain' ? 0.88 : (weatherState === 'snow' ? 0.78 : (weatherState === 'fog' ? 0.65 : (weatherState === 'cloudy' ? 0.55 : 0.0))));
+const targetOver = weatherState === 'storm' ? 0.92 : (weatherState === 'rain' ? 0.72 : (weatherState === 'fog' ? 0.68 : (weatherState === 'snow' ? 0.52 : (weatherState === 'cloudy' ? 0.25 : 0.0))));
+uniforms.uCloudCover.value = targetCloud * Math.max(0.4, wi);
+uniforms.uOvercast.value = targetOver * Math.max(0.4, wi);
 if (sunDir) {
 if (typeof sunDir.x === 'number') {
 uniforms.uSunDir.value.set(sunDir.x, sunDir.y, sunDir.z).normalize();
@@ -8639,10 +9038,14 @@ power_plant:   { id: 'power_plant',   name: '燃气热电厂', cost: 3200, upkee
 solar_plant:   { id: 'solar_plant',   name: '塔式熔盐光热电站', cost: 2800, upkeep: 58, powerOut: 340, unlockPop: 600, unlockLevel: 4, icon: '☀️', desc: '+340 MW 零污染光热发电塔与定日镜阵（夜间储热持续供电）' },
 nuclear_plant: { id: 'nuclear_plant', name: '核裂变发电站', cost: 9200, upkeep: 195, powerOut: 1650, unlockPop: 2200, unlockLevel: 9, icon: '☢️', desc: '+1,650 MW 零碳超级电源！必须建在水源岸边（2格内有水）抽取冷却水' },
 waste_plant:   { id: 'waste_plant',   name: '环保垃圾焚烧厂', cost: 2100, upkeep: 52, powerOut: 180, trashCap: 2600, unlockPop: 350, unlockLevel: 3, icon: '♻️', desc: '焚烧处理城市垃圾并产出 +180 MW 电力！缺乏垃圾处理会导致垃圾围城致病荒废' },
-seaport:        { id: 'seaport',        name: '深水集装箱海港', cost: 4200, upkeep: 92, unlockPop: 1100, unlockLevel: 8, icon: '🚢', desc: '必须建在海湾或深水河岸！远洋货轮靠泊出口工业品，工业与商业税收 +12%' },
-airport:        { id: 'airport',        name: '国际民航机场', cost: 6400, upkeep: 145, unlockPop: 1600, unlockLevel: 10, icon: '✈️', desc: '宽体客机起降！吸引全球商务客与游客，全城商业与办公税收 +15%' },
-amusement_park: { id: 'amusement_park', name: '滨海摩天轮乐园', cost: 3600, upkeep: 72, unlockPop: 900, unlockLevel: 6, icon: '🎡', desc: '巨型动态摩天轮游乐园，大幅拉升周边豪宅与商业地价及市民幸福度' },
-stadium:        { id: 'stadium',        name: '奥林匹克体育中心', cost: 5200, upkeep: 105, unlockPop: 1100, unlockLevel: 7, icon: '🏟️', desc: '定期举办大型球赛与演唱会，比赛日发放巨额门票分红并引爆全城幸福感！' },
+seaport:          { id: 'seaport',          name: '深水集装箱海港', cost: 4200, upkeep: 92, unlockPop: 1100, unlockLevel: 8, icon: '🚢', desc: '必须建在海湾或深水河岸！远洋货轮靠泊出口工业品，工业与商业税收 +12%' },
+airport:          { id: 'airport',          name: '国际民航机场', cost: 6400, upkeep: 145, unlockPop: 1600, unlockLevel: 10, icon: '✈️', desc: '3.8单位全长发光跑道与宽体客机起降！吸引全球游客，商业与办公税收 +15%（后方需预留5格净空跑道，可按R旋转）' },
+zoo:              { id: 'zoo',              name: '野生动物园', cost: 3800, upkeep: 68, unlockPop: 700, unlockLevel: 5, icon: '🦁', desc: '3D 珍稀动物漫步园区（雄鹿/羊驼/赤狐/长颈鹿/大熊猫）！大幅拉升旅游收入、市民幸福度与科普教育' },
+botanical_garden: { id: 'botanical_garden', name: '皇家植物园', cost: 3400, upkeep: 58, unlockPop: 500, unlockLevel: 4, icon: '🌺', desc: '维多利亚水晶玻璃温室穹顶与樱花锦鲤园！强力净化周边空气污染与交通噪音，极高地价与旅游加成' },
+museum:           { id: 'museum',           name: '城市艺术博物馆', cost: 3200, upkeep: 62, unlockPop: 700, unlockLevel: 5, icon: '🏛️', desc: '现代石材玻璃文化殿堂与水景雕塑广场，强力提升全城教育素养、旅游客流与周边地价' },
+tv_tower:         { id: 'tv_tower',         name: '东方观光电视塔', cost: 7200, upkeep: 135, unlockPop: 1400, unlockLevel: 8, icon: '🗼', desc: '超高层发光观光球体地标塔！全城旅游客流暴涨、商办税收 +10%，夜间绽放城市霓虹灯光秀' },
+amusement_park:   { id: 'amusement_park',   name: '滨海摩天轮乐园', cost: 3600, upkeep: 72, unlockPop: 900, unlockLevel: 6, icon: '🎡', desc: '巨型动态摩天轮游乐园，大幅拉升周边豪宅与商业地价、旅游客流及市民幸福度' },
+stadium:          { id: 'stadium',          name: '奥林匹克体育中心', cost: 5200, upkeep: 105, unlockPop: 1100, unlockLevel: 7, icon: '🏟️', desc: '定期举办大型球赛与演唱会，比赛日发放巨额门票分红并引爆全城幸福感！' },
 fire_station:   { id: 'fire_station',   name: '消防总署', cost: 1500, upkeep: 48, unlockPop: 150, unlockLevel: 2, icon: '🚒', desc: '派出消防车扑灭火灾；无消防覆盖的街区极易起火烧毁！' },
 police_station: { id: 'police_station', name: '警察总局', cost: 1550, upkeep: 48, unlockPop: 150, unlockLevel: 2, icon: '🚓', desc: '压制犯罪率！治安恶化会导致商业与住宅成片废弃' },
 hospital:       { id: 'hospital',       name: '大型综合医院', cost: 2600, upkeep: 78, unlockPop: 350, unlockLevel: 3, icon: '🏥', desc: '救治污染病患、提升健康度，高密城区必备' },
@@ -9172,8 +9575,24 @@ this.hasSeaport = false;
 this.hasAirport = false;
 this.hasAmusementPark = false;
 this.hasStadium = false;
+this.hasZoo = false;
+this.hasBotanicalGarden = false;
+this.hasMuseum = false;
+this.hasTvTower = false;
+this.tourists = 0;
+this.tourismIncome = 0;
 this.stadiumTimer = 0;
 this.matchDayBoostTimer = 0;
+this.weather = {
+state: 'clear',
+mode: 'auto', // 'auto' or forced weather state
+intensity: 0,
+timer: 42,
+tempC: 22,
+lightningFlash: 0
+};
+this.busLines = [];
+this._nextBusLineId = 1;
 this.chirpTimer = 0;
 this.latestChirp = {
 user: '@市民小张',
@@ -10398,6 +10817,10 @@ case 'O':  return { pop: 0, jobs: [0, 32, 72, 145, 250][lv] || 70, power: lv * 3
 case 'landmark': return { pop: 0, jobs: 480, power: 48, water: 40 };
 case 'airport': return { pop: 0, jobs: 140, power: 36, water: 24 };
 case 'seaport': return { pop: 0, jobs: 95, power: 22, water: 14 };
+case 'zoo': return { pop: 0, jobs: 64, power: 16, water: 18 };
+case 'botanical_garden': return { pop: 0, jobs: 44, power: 14, water: 16 };
+case 'museum': return { pop: 0, jobs: 52, power: 18, water: 10 };
+case 'tv_tower': return { pop: 0, jobs: 120, power: 38, water: 18 };
 case 'stadium': return { pop: 0, jobs: 75, power: 28, water: 20 };
 case 'amusement_park': return { pop: 0, jobs: 48, power: 18, water: 12 };
 case 'hsr_station': return { pop: 0, jobs: 80, power: 26, water: 18 };
@@ -10508,6 +10931,259 @@ if ((this.getTile(nt.x - 1, nt.z)?.roadElevated || 0) > 0 && (this.getTile(nt.x 
 }
 return false;
 }
+getAirportRunwayTiles(ax, az, rot = 0) {
+const r = ((rot || 0) % 4 + 4) % 4;
+const rc = Math.round(Math.cos(r * Math.PI * 0.5));
+const rs = Math.round(Math.sin(r * Math.PI * 0.5));
+const out = [];
+for (let lx = -2; lx <= 2; lx++) {
+out.push({ x: ax + lx * rc + (-1) * rs, z: az - lx * rs + (-1) * rc });
+}
+return out;
+}
+isBlockedByAirportRunway(x, z, ignoreAx = -1, ignoreAz = -1) {
+for (let dz = -2; dz <= 2; dz++) {
+for (let dx = -2; dx <= 2; dx++) {
+const ax = x + dx, az = z + dz;
+if (!inBounds(ax, az)) continue;
+if (ax === ignoreAx && az === ignoreAz) continue;
+const at = this.grid[idx(ax, az)];
+if (!at || !at.building || at.building.type !== 'airport') continue;
+const strip = this.getAirportRunwayTiles(ax, az, at.building.rot || 0);
+for (let k = 0; k < strip.length; k++) {
+if (strip[k].x === x && strip[k].z === z) return true;
+}
+}
+}
+return false;
+}
+previewAirportFootprint(x, z, manualRot = 0) {
+const acc = this.findRoadAccess(x, z);
+const bRot = ((acc ? acc.rot : 0) + (manualRot || 0)) & 3;
+const runway = this.getAirportRunwayTiles(x, z, bRot);
+const allTiles = [{ x, z }, ...runway];
+let ok = inBounds(x, z) && !this.isWaterTile(x, z);
+let reason = '';
+if (ok) {
+const t0 = this.getTile(x, z);
+const { slope } = this.getTileMinMaxElev(x, z);
+if (!t0 || slope > 0.65 || t0.roadGround > 0 || t0.roadElevated > 0 || t0.rail > 0 || t0.dam || t0.pylon || (t0.building && !BUILDING_NAMES[t0.building.type])) {
+ok = false;
+reason = '航站楼位置受阻或坡度过陡';
+}
+} else {
+reason = '航站楼必须位于陆地上';
+}
+if (ok) {
+for (const rt of runway) {
+if (!inBounds(rt.x, rt.z)) { ok = false; reason = '后方5格跑道超出地图边界（请点击旋转）'; break; }
+const cell = this.getTile(rt.x, rt.z);
+if (!cell || this.isWaterTile(rt.x, rt.z) || cell.dam || cell.pylon || cell.roadGround > 0 || cell.roadElevated > 0 || cell.rail > 0 || (cell.building && !BUILDING_NAMES[cell.building.type])) {
+ok = false;
+reason = '后方5格跑道净空区存在铁塔/建筑/道路/水域（请旋转方向或选平坦空地）';
+break;
+}
+}
+}
+return { valid: ok, reason, rot: bRot, tiles: allTiles, runwayTiles: runway };
+}
+getWeatherInfo() {
+const w = this.weather || { state: 'clear', mode: 'auto', intensity: 0, tempC: 22 };
+const meta = {
+clear:  { id: 'clear',  icon: '☀️', label: '晴朗', solarMult: 1.15, roadMult: 1.00, tourMult: 1.15, heatMult: 1.00, happyMod: 2 },
+cloudy: { id: 'cloudy', icon: '⛅', label: '多云', solarMult: 0.88, roadMult: 1.00, tourMult: 1.00, heatMult: 1.00, happyMod: 0 },
+rain:   { id: 'rain',   icon: '🌧️', label: '阵雨', solarMult: 0.65, roadMult: 0.88, tourMult: 0.90, heatMult: 1.02, happyMod: -1 },
+storm:  { id: 'storm',  icon: '⛈️', label: '雷暴', solarMult: 0.50, roadMult: 0.82, tourMult: 0.78, heatMult: 1.05, happyMod: -3 },
+snow:   { id: 'snow',   icon: '❄️', label: '降雪', solarMult: 0.75, roadMult: 0.85, tourMult: 1.08, heatMult: 1.12, happyMod: 1 },
+fog:    { id: 'fog',    icon: '🌫️', label: '晨雾', solarMult: 0.82, roadMult: 0.92, tourMult: 0.95, heatMult: 1.02, happyMod: 0 }
+};
+const info = meta[w.state] || meta.clear;
+return { ...info, mode: w.mode || 'auto', intensity: w.intensity || 0, tempC: Math.round(w.tempC ?? 22) };
+}
+setWeatherMode(mode = 'auto') {
+const valid = ['auto', 'clear', 'cloudy', 'rain', 'storm', 'snow', 'fog'];
+const m = valid.includes(mode) ? mode : 'auto';
+if (!this.weather) this.weather = { state: 'clear', mode: 'auto', intensity: 0, timer: 42, tempC: 22, lightningFlash: 0 };
+this.weather.mode = m;
+if (m !== 'auto') {
+this.weather.state = m;
+this.weather.intensity = (m === 'storm') ? 1.0 : ((m === 'rain' || m === 'snow' || m === 'fog') ? 0.78 : (m === 'cloudy' ? 0.45 : 0));
+this.weather.tempC = m === 'snow' ? -2 : (m === 'storm' ? 16 : (m === 'rain' ? 18 : (m === 'fog' ? 14 : (m === 'cloudy' ? 20 : 24))));
+} else {
+this.weather.timer = 18;
+}
+this.recomputeNetworksAndFields();
+return this.getWeatherInfo();
+}
+stepWeather(simDt) {
+if (!this.weather) return;
+const w = this.weather;
+if (w.lightningFlash > 0) {
+w.lightningFlash = Math.max(0, w.lightningFlash - simDt * 3.8);
+}
+if (w.mode === 'auto') {
+w.timer -= simDt;
+if (w.timer <= 0) {
+w.timer = 38 + Math.random() * 34;
+const isWinter = this.month === 12 || this.month === 1 || this.month === 2;
+const r = Math.random();
+let next = 'clear';
+if (isWinter) {
+if (r < 0.36) next = 'clear';
+else if (r < 0.56) next = 'cloudy';
+else if (r < 0.84) next = 'snow';
+else next = 'fog';
+} else {
+if (r < 0.44) next = 'clear';
+else if (r < 0.64) next = 'cloudy';
+else if (r < 0.80) next = 'rain';
+else if (r < 0.90) next = 'storm';
+else next = 'fog';
+}
+w.state = next;
+}
+}
+const targetInt = (w.state === 'storm') ? 1.0
+: (w.state === 'rain' || w.state === 'snow' || w.state === 'fog') ? 0.80
+: (w.state === 'cloudy' ? 0.45 : 0.0);
+w.intensity += (targetInt - (w.intensity || 0)) * Math.min(1, simDt * 0.85);
+const targetTemp = w.state === 'snow' ? -2 : (w.state === 'storm' ? 16 : (w.state === 'rain' ? 18 : (w.state === 'fog' ? 14 : (w.state === 'cloudy' ? 20 : 24))));
+w.tempC = (w.tempC ?? 22) + (targetTemp - (w.tempC ?? 22)) * Math.min(1, simDt * 0.25);
+if (w.state === 'storm' && w.lightningFlash <= 0 && Math.random() < simDt * 0.14) {
+w.lightningFlash = 1.0;
+}
+if ((w.state === 'rain' || w.state === 'storm') && simDt > 0) {
+const fireDamp = (w.state === 'storm' ? 0.14 : 0.07) * simDt;
+const rainFill = (w.state === 'storm' ? 0.00055 : 0.00028) * simDt;
+for (let i = 0; i < this.grid.length; i++) {
+const t = this.grid[i];
+if (t.building && t.building.fire > 0) {
+t.building.fire = Math.max(0, t.building.fire - fireDamp);
+}
+if (t.waterSpring > 0 && this.waterDepth[i] < 1.95) {
+this.waterDepth[i] = Math.min(2.2, this.waterDepth[i] + rainFill * 25);
+}
+}
+}
+}
+createBusLine(name = '', colorHex = null, stops = [], busCount = 2, fare = 2) {
+const palette = ['#0ea5e9', '#10b981', '#f97316', '#a855f7', '#ef4444', '#eab308'];
+const id = this._nextBusLineId++;
+const col = colorHex || palette[(id - 1) % palette.length];
+const cleanStops = [];
+for (const s of (stops || [])) {
+if (!s || !inBounds(s.x, s.z)) continue;
+const t = this.grid[idx(s.x, s.z)];
+if (t && t.busStop && t.roadGround > 0) {
+if (!cleanStops.some((e) => e.x === s.x && e.z === s.z)) {
+cleanStops.push({ x: s.x, z: s.z });
+}
+}
+}
+const line = {
+id,
+name: name || `${id}路 公交专线`,
+colorHex: col,
+stops: cleanStops,
+busCount: Math.max(1, Math.min(6, busCount | 0 || 2)),
+fare: Math.max(0, Math.min(5, Number(fare) || 2)),
+active: true,
+dailyRiders: 0
+};
+this.busLines.push(line);
+this.infraDirty = true;
+return line;
+}
+deleteBusLine(lineId) {
+const prevLen = this.busLines.length;
+this.busLines = this.busLines.filter((l) => l.id !== lineId);
+if (this.busLines.length !== prevLen) {
+this.infraDirty = true;
+return true;
+}
+return false;
+}
+addStopToBusLine(lineId, x, z) {
+const line = this.busLines.find((l) => l.id === lineId);
+if (!line || !inBounds(x, z)) return { ok: false, reason: '无效线路或坐标' };
+const t = this.grid[idx(x, z)];
+if (!t || !t.busStop || t.roadGround <= 0) return { ok: false, reason: '请点击已建成的【🚏 智能公交站】！' };
+if (line.stops.some((s) => s.x === x && s.z === z)) return { ok: false, reason: '该站点已在当前线路中' };
+line.stops.push({ x, z });
+this.infraDirty = true;
+return { ok: true, line };
+}
+removeStopFromBusLine(lineId, stopIdx) {
+const line = this.busLines.find((l) => l.id === lineId);
+if (!line || stopIdx < 0 || stopIdx >= line.stops.length) return false;
+line.stops.splice(stopIdx, 1);
+this.infraDirty = true;
+return true;
+}
+setBusLineConfig(lineId, patch = {}) {
+const line = this.busLines.find((l) => l.id === lineId);
+if (!line) return false;
+if (patch.name !== undefined) line.name = String(patch.name).slice(0, 24) || line.name;
+if (patch.colorHex !== undefined) line.colorHex = String(patch.colorHex);
+if (patch.busCount !== undefined) line.busCount = Math.max(1, Math.min(6, Number(patch.busCount) | 0));
+if (patch.fare !== undefined) line.fare = Math.max(0, Math.min(5, Number(patch.fare)));
+if (patch.active !== undefined) line.active = Boolean(patch.active);
+this.infraDirty = true;
+return true;
+}
+_pruneDeletedBusStops() {
+if (!Array.isArray(this.busLines) || this.busLines.length === 0) return;
+for (const line of this.busLines) {
+line.stops = (line.stops || []).filter((s) => {
+if (!inBounds(s.x, s.z)) return false;
+const t = this.grid[idx(s.x, s.z)];
+return Boolean(t && t.busStop && t.roadGround > 0);
+});
+}
+}
+autoPlanBusLines() {
+const stops = [];
+for (let i = 0; i < this.grid.length; i++) {
+const t = this.grid[i];
+if (t.busStop && t.roadGround >= 1 && t.roadGround !== 4) {
+stops.push({ x: t.x, z: t.z });
+}
+}
+if (stops.length < 2) {
+return { ok: false, reason: '至少需要建设 2 座【🚏 智能公交站】才能自动规划环线！' };
+}
+const orderTour = (pts) => {
+if (pts.length <= 2) return pts.slice();
+const rem = pts.slice();
+rem.sort((a, b) => (a.x + a.z) - (b.x + b.z));
+const tour = [rem.shift()];
+while (rem.length > 0) {
+const cur = tour[tour.length - 1];
+let bestIdx = 0, bestD = 1e9;
+for (let k = 0; k < rem.length; k++) {
+const d = Math.hypot(rem[k].x - cur.x, rem[k].z - cur.z);
+if (d < bestD) { bestD = d; bestIdx = k; }
+}
+tour.push(rem.splice(bestIdx, 1)[0]);
+}
+return tour;
+};
+this.busLines = [];
+this._nextBusLineId = 1;
+if (stops.length >= 6) {
+const sortedZ = stops.slice().sort((a, b) => a.z - b.z);
+const mid = Math.ceil(sortedZ.length / 2);
+const northStops = orderTour(sortedZ.slice(0, mid));
+const southStops = orderTour(sortedZ.slice(mid - 1)); // share 1 transfer hub stop!
+this.createBusLine('1路 中心城CBD环线', '#0ea5e9', northStops, 3, 2);
+this.createBusLine('2路 滨海文旅专线', '#10b981', southStops, 2, 2);
+} else {
+const ordered = orderTour(stops);
+this.createBusLine('1路 全城公交环线', '#0ea5e9', ordered, Math.min(4, Math.max(2, stops.length - 1)), 2);
+}
+this.infraDirty = true;
+return { ok: true, count: this.busLines.length };
+}
 _inferOneWayDirs(tiles, opts = null) {
 const dirFromDelta = (dx, dz) => {
 if (Math.abs(dx) >= Math.abs(dz)) return dx >= 0 ? 3 : 2;
@@ -10557,16 +11233,17 @@ const t = this.getTile(pos.x, pos.z);
 if (!t) continue;
 const wet = this.isWaterTile(pos.x, pos.z);
 const { slope } = this.getTileMinMaxElev(pos.x, pos.z);
+const onRunway = this.isBlockedByAirportRunway(pos.x, pos.z);
 if (toolId === 'road_1' || toolId === 'road_2') {
 const target = toolId === 'road_1' ? 1 : 2;
-if (t.roadGround === 3 || t.dam) continue;
+if (onRunway || t.roadGround === 3 || t.dam) continue;
 if (slope > 0.72 && !wet) continue;
 if (t.building && !BUILDING_NAMES[t.building.type]) continue;
 if (t.roadGround === target && (typeof t.roadDir !== 'number' || t.roadDir < 0) && (!wet || t.roadBridge)) continue;
 cost += wet ? CATALOG[toolId].bridgeCost : CATALOG[toolId].cost;
 validTiles.push(pos);
 } else if (toolId === 'road_oneway') {
-if (t.roadGround === 3 || t.dam) continue;
+if (onRunway || t.roadGround === 3 || t.dam) continue;
 if (slope > 0.72 && !wet) continue;
 if (t.building && !BUILDING_NAMES[t.building.type]) continue;
 const targetDir = oneWayDirs[k];
@@ -10578,12 +11255,12 @@ if (t.roadGround < 1 || t.roadGround === 3 || t.roadGround === 4 || t.dam || t.r
 cost += CATALOG.bus_stop.cost;
 validTiles.push(pos);
 } else if (toolId === 'road_elev') {
-if (t.roadElevated === 1 || t.dam) continue;
+if (onRunway || t.roadElevated === 1 || t.dam) continue;
 if (t.building && !BUILDING_NAMES[t.building.type]) continue;
 cost += CATALOG.road_elev.cost;
 validTiles.push(pos);
 } else if (toolId === 'road_ramp') {
-if (t.ramp || t.dam || wet || t.roadGround === 3 || t.rail > 0 || (t.building && !BUILDING_NAMES[t.building.type])) continue;
+if (onRunway || t.ramp || t.dam || wet || t.roadGround === 3 || t.rail > 0 || (t.building && !BUILDING_NAMES[t.building.type])) continue;
 cost += CATALOG.road_ramp.cost;
 validTiles.push(pos);
 } else if (toolId === 'road_tunnel') {
@@ -10595,7 +11272,7 @@ if (t.metro) continue;
 cost += CATALOG.metro_line.cost;
 validTiles.push(pos);
 } else if (toolId === 'rail_track') {
-if (t.rail >= 1 || t.dam) continue;
+if (onRunway || t.rail >= 1 || t.dam) continue;
 if (t.building && t.building.type !== 'hsr_station') continue;
 cost += wet ? CATALOG.rail_track.bridgeCost : CATALOG.rail_track.cost;
 validTiles.push(pos);
@@ -10604,16 +11281,16 @@ if (t.pipe && !t.pipeBroken) continue;
 cost += CATALOG.water_pipe.cost;
 validTiles.push(pos);
 } else if (toolId === 'hydro_dam') {
-if (t.roadGround === 3 || t.rail === 2) continue;
+if (onRunway || t.roadGround === 3 || t.rail === 2) continue;
 cost += CATALOG.hydro_dam.cost;
 validTiles.push(pos);
 } else if (toolId === 'power_pylon') {
-if (wet || t.roadGround > 0 || t.roadElevated > 0 || t.rail > 0 || t.building || t.pylon || t.dam) continue;
+if (onRunway || wet || t.roadGround > 0 || t.roadElevated > 0 || t.rail > 0 || t.building || t.pylon || t.dam) continue;
 cost += CATALOG.power_pylon.cost;
 validTiles.push(pos);
 } else if (toolId.startsWith('zone_')) {
 const zType = toolId.slice(5);
-if (wet || slope > 0.62 || t.roadGround > 0 || t.roadElevated > 0 || t.ramp || t.rail > 0 || t.dam || t.pylon) continue;
+if (onRunway || wet || slope > 0.62 || t.roadGround > 0 || t.roadElevated > 0 || t.ramp || t.rail > 0 || t.dam || t.pylon) continue;
 if (this._isBlockedByMidSlipFlank(pos.x, pos.z)) continue;
 if (t.building && !BUILDING_NAMES[t.building.type]) continue;
 if (t.zone === zType && (!t.building || !t.building.abandoned)) continue;
@@ -10634,8 +11311,11 @@ validTiles.push(pos);
 }
 } else if (CATALOG[toolId]) {
 const hasFixedBuilding = Boolean(t.building && !BUILDING_NAMES[t.building.type]);
-if (this._isBlockedByMidSlipFlank(pos.x, pos.z)) continue;
-if (toolId === 'water_pump' || toolId === 'sewage_out') {
+if (onRunway || this._isBlockedByMidSlipFlank(pos.x, pos.z)) continue;
+if (toolId === 'airport') {
+const apPrev = this.previewAirportFootprint(pos.x, pos.z, opts?.rot || 0);
+if (!apPrev.valid) continue;
+} else if (toolId === 'water_pump' || toolId === 'sewage_out') {
 const nearW = this.hasNearbyWater(pos.x, pos.z, 2);
 if (!nearW.found || hasFixedBuilding || t.roadGround > 0 || t.roadElevated > 0 || t.rail > 0 || t.dam) continue;
 } else if (toolId === 'nuclear_plant' || toolId === 'seaport') {
@@ -10672,6 +11352,11 @@ this.emitToast('💧 抽水站与排污口必须建在河岸或海边（2格内�
 this.emitToast('☢️ 核裂变发电站必须建在河岸或海湾陆地上（2格内有冷却水）！');
 } else if (!free && toolId === 'seaport') {
 this.emitToast('🚢 深水集装箱海港必须建在海湾或深水河岸陆地上（2格内有水域）！');
+} else if (!free && toolId === 'airport') {
+const apPrev = tiles && tiles[0] ? this.previewAirportFootprint(tiles[0].x, tiles[0].z, opts?.rot || 0) : null;
+this.emitToast(`✈️ ${apPrev?.reason || '国际机场后方需预留 5 格净空平坦跑道（点击旋转方向）！'}`);
+} else if (!free && tiles && tiles.some((p) => this.isBlockedByAirportRunway(p.x, p.z))) {
+this.emitToast('✈️ 该地块位于国际机场 5 格跑道净空区内，严禁修建铁塔、道路或建筑！');
 } else if (!free && toolId === 'bus_stop') {
 this.emitToast('🚏 智能公交站必须建在普通地面街道或主干道上（不可建在隧道/大坝/匝道上）！');
 }
@@ -10953,15 +11638,22 @@ if (toolId === 'hsr_station') t.rail = 1;
 const manualRot = (opts && typeof opts.rot === 'number') ? opts.rot : 0;
 const bRot = ((acc ? acc.rot : 0) + manualRot) & 3;
 if (toolId === 'airport') {
+const strip = this.getAirportRunwayTiles(pos.x, pos.z, bRot);
+for (const rt of strip) {
+if (!inBounds(rt.x, rt.z)) continue;
+const cell = this.grid[idx(rt.x, rt.z)];
+if (cell) {
+cell.trees = 0;
+cell.pylon = false;
+cell.zone = null;
+}
+gradeFlat(rt.x, rt.z, 0.72);
+}
 const rc = Math.round(Math.cos(bRot * Math.PI * 0.5));
 const rs = Math.round(Math.sin(bRot * Math.PI * 0.5));
-for (let lx = -2; lx <= 2; lx++) {
-for (const lz of [-1, 0]) {
-const rx = pos.x + lx * rc + lz * rs;
-const rz = pos.z - lx * rs + lz * rc;
-const rt = this.getTile(rx, rz);
-if (rt) rt.trees = 0;
-}
+for (const lx of [-1, 1]) {
+const at = this.getTile(pos.x + lx * rc, pos.z - lx * rs);
+if (at) at.trees = 0;
 }
 }
 t.building = {
@@ -10983,6 +11675,7 @@ abandonReason: ''
 }
 }
 if (toolId === 'bulldoze') {
+this._pruneDeletedBusStops();
 const dirs4 = [[1, 0], [-1, 0], [0, 1], [0, -1]];
 for (const pos of validTiles) {
 for (const [dx, dz] of [[0, 0], ...dirs4]) {
@@ -11435,6 +12128,28 @@ if (operational && t.powered) {
 landmarkBonus += 0.12;
 this.addRadialField(x, z, 14, 34, 0, 30 * svcMult, 0, 0, 0);
 }
+} else if (b.type === 'zoo') {
+if (operational && t.powered) {
+landmarkBonus += 0.14;
+this.addRadialField(x, z, 13, 30, 0, 32 * svcMult, 0, 15, 0);
+this.addNoiseField(x, z, 4, -14);
+}
+} else if (b.type === 'botanical_garden') {
+if (operational && t.powered) {
+landmarkBonus += 0.13;
+this.addRadialField(x, z, 12, 34, -22, 30 * svcMult, 0, 10, 0);
+this.addNoiseField(x, z, 5, -30);
+}
+} else if (b.type === 'museum') {
+if (operational && t.powered) {
+landmarkBonus += 0.11;
+this.addRadialField(x, z, 12, 28, 0, 26 * svcMult, 0, 28, 0);
+}
+} else if (b.type === 'tv_tower') {
+if (operational && t.powered) {
+landmarkBonus += 0.20;
+this.addRadialField(x, z, 16, 42, 0, 34 * svcMult, 0, 0, 0);
+}
 } else if (b.type === 'stadium') {
 if (operational && t.powered) {
 landmarkBonus += 0.14;
@@ -11547,6 +12262,13 @@ let hasSeaport = false;
 let hasAirport = false;
 let hasAmusementPark = false;
 let hasStadium = false;
+let hasZoo = false;
+let hasBotanicalGarden = false;
+let hasMuseum = false;
+let hasTvTower = false;
+let touristBase = 0;
+const weatherInfo = this.getWeatherInfo();
+const heatMult = weatherInfo.heatMult || 1.0;
 for (let i = 0; i < N; i++) {
 const t = this.grid[i];
 const b = t.building;
@@ -11558,22 +12280,34 @@ abandoned++;
 continue;
 }
 const st = this.getBuildingStats(b);
-totalPDemand += st.power * energyDemMult;
+totalPDemand += st.power * energyDemMult * heatMult;
 totalWDemand += st.water * energyDemMult;
 const active = t.powered && t.watered && !b.flooded && !(b.fire > 0.3);
 pop += active ? st.pop : Math.round(st.pop * 0.25);
 jobs += active ? st.jobs : Math.round(st.jobs * 0.25);
 if (!b.underConstruction && t.powered && !b.flooded && !(b.fire > 0.3)) {
-if (b.type === 'seaport' && this.hasNearbyWater(t.x, t.z, 2).found) hasSeaport = true;
-else if (b.type === 'airport') hasAirport = true;
-else if (b.type === 'amusement_park') hasAmusementPark = true;
-else if (b.type === 'stadium') hasStadium = true;
+if (b.type === 'seaport' && this.hasNearbyWater(t.x, t.z, 2).found) { hasSeaport = true; touristBase += 95; }
+else if (b.type === 'airport') { hasAirport = true; touristBase += 260; }
+else if (b.type === 'hsr_station') { touristBase += 140; }
+else if (b.type === 'amusement_park') { hasAmusementPark = true; touristBase += 210; }
+else if (b.type === 'stadium') { hasStadium = true; touristBase += 180; }
+else if (b.type === 'zoo') { hasZoo = true; touristBase += 280; }
+else if (b.type === 'botanical_garden') { hasBotanicalGarden = true; touristBase += 220; }
+else if (b.type === 'museum') { hasMuseum = true; touristBase += 190; }
+else if (b.type === 'tv_tower') { hasTvTower = true; touristBase += 420; }
+else if (b.type === 'landmark') { touristBase += 240; }
 }
 }
 this.hasSeaport = hasSeaport;
 this.hasAirport = hasAirport;
 this.hasAmusementPark = hasAmusementPark;
 this.hasStadium = hasStadium;
+this.hasZoo = hasZoo;
+this.hasBotanicalGarden = hasBotanicalGarden;
+this.hasMuseum = hasMuseum;
+this.hasTvTower = hasTvTower;
+const gatewayMult = 1.0 + (hasAirport ? 0.35 : 0) + (hasSeaport ? 0.15 : 0);
+this.tourists = Math.round(touristBase * gatewayMult * (weatherInfo.tourMult || 1.0));
 this.powerDemand = Math.ceil(totalPDemand);
 this.waterDemand = Math.ceil(totalWDemand);
 this.sewageDemand = this.waterDemand;
@@ -11590,6 +12324,11 @@ const sewageOverload = sewageCrisis
 const wonderHappyBoost =
 (hasAmusementPark ? 4 : 0) +
 (hasStadium ? 3 : 0) +
+(hasZoo ? 4 : 0) +
+(hasBotanicalGarden ? 4 : 0) +
+(hasMuseum ? 2 : 0) +
+(hasTvTower ? 3 : 0) +
+(weatherInfo.happyMod || 0) +
 (this.matchDayBoostTimer > 0 ? 8 : 0) +
 (this.tempHappinessBoost || 0);
 for (let i = 0; i < N; i++) {
@@ -11831,6 +12570,10 @@ waste_plant: 10
 const radialTools = {
 park: 7,
 metro_station: 9,
+zoo: 13,
+botanical_garden: 12,
+museum: 12,
+tv_tower: 16,
 amusement_park: 14,
 stadium: 15
 };
@@ -11995,6 +12738,7 @@ if (this.dayProgress >= 1) this.dayProgress -= 1;
 } else if (this.timeMode === 'day') this.dayProgress = 0.42;
 else if (this.timeMode === 'sunset') this.dayProgress = 0.755;
 else if (this.timeMode === 'night') this.dayProgress = 0.02;
+this.stepWeather(simDt);
 this.dateAccum += simDt;
 if (this.dateAccum >= 4.5) {
 this.dateAccum -= 4.5;
@@ -12470,7 +13214,14 @@ else if (b.type === 'airport') grossTax += 95;
 else if (b.type === 'seaport' && this.hasNearbyWater(t.x, t.z, 2).found) grossTax += 65;
 else if (b.type === 'stadium') grossTax += 55;
 else if (b.type === 'amusement_park') grossTax += 48;
+else if (b.type === 'zoo') grossTax += 64;
+else if (b.type === 'botanical_garden') grossTax += 52;
+else if (b.type === 'museum') grossTax += 48;
+else if (b.type === 'tv_tower') grossTax += 110;
 }
+const tvBonus = this.hasTvTower ? 1.10 : 1.0;
+this.tourismIncome = Math.round((this.tourists || 0) * 0.16 * tvBonus);
+grossTax += this.tourismIncome;
 const freeTransitMult = this.policies.freeTransit ? 1.35 : 1.0;
 const svcBudgetRatio = this.budgets.service / 100;
 let busCatchment = 0;
@@ -13314,7 +14065,7 @@ this.waterDepth[idx(x, z)] = Math.max(this.waterDepth[idx(x, z)], 1.52 - elev);
 }
 }
 }
-for (const py of [[12, 18], [13, 22], [14, 26], [15, 30]]) {
+for (const py of [[11, 18], [11, 22], [11, 26], [12, 30]]) {
 this.applyTool('power_pylon', [{ x: py[0], z: py[1] }], true);
 }
 this.applyTool('road_2', this.computeLineOrLPath(22, 52, 22, 14), true);
@@ -13571,6 +14322,30 @@ if (this.powerSupply > this.powerDemand * 1.38) break;
 this.applyTool('solar_plant', [sp], true);
 this.recomputeNetworksAndFields();
 }
+for (const spot of [{ x: 24, z: 34 }, { x: 25, z: 33 }, { x: 20, z: 34 }]) {
+if (this.applyTool('tv_tower', [spot], true).ok) {
+this.applyTool('water_pipe', [{ x: spot.x, z: spot.z }], true);
+break;
+}
+}
+for (const spot of [{ x: 35, z: 34 }, { x: 35, z: 33 }, { x: 35, z: 36 }, { x: 29, z: 31 }]) {
+if (this.applyTool('zoo', [spot], true).ok) {
+this.applyTool('water_pipe', this.computeLineOrLPath(32, 34, spot.x, spot.z, false), true);
+break;
+}
+}
+for (const spot of [{ x: 25, z: 31 }, { x: 26, z: 31 }, { x: 30, z: 31 }, { x: 14, z: 33 }]) {
+if (this.applyTool('botanical_garden', [spot], true).ok) {
+this.applyTool('water_pipe', this.computeLineOrLPath(22, 32, spot.x, spot.z, false), true);
+break;
+}
+}
+for (const spot of [{ x: 19, z: 33 }, { x: 25, z: 37 }, { x: 28, z: 34 }]) {
+if (this.applyTool('museum', [spot], true).ok) {
+this.applyTool('water_pipe', [{ x: spot.x, z: spot.z }], true);
+break;
+}
+}
 for (let z = 0; z < GRID_SIZE; z++) {
 for (let x = 0; x < GRID_SIZE; x++) {
 const b = this.grid[idx(x, z)].building;
@@ -13585,6 +14360,7 @@ for (const bs of [
 ]) {
 this.applyTool('bus_stop', [bs], true);
 }
+this.autoPlanBusLines();
 this.milestoneIdx = MILESTONES.length - 1;
 this.recomputeNetworksAndFields();
 this._suppressPromotions = false;
@@ -13615,6 +14391,10 @@ month: this.month,
 day: this.day,
 dayProgress: this.dayProgress,
 timeMode: this.timeMode,
+weather: this.weather ? { state: this.weather.state, mode: this.weather.mode, tempC: Math.round(this.weather.tempC ?? 22) } : undefined,
+busLines: Array.isArray(this.busLines) ? this.busLines.map((l) => ({
+id: l.id, name: l.name, colorHex: l.colorHex, stops: l.stops, busCount: l.busCount, fare: l.fare, active: l.active
+})) : [],
 milestoneIdx: this.milestoneIdx,
 maxPopReached: this.maxPopReached,
 mayorLevel: this.mayorLevel,
@@ -13658,7 +14438,7 @@ f: t.building.fire ? Number(t.building.fire.toFixed(2)) : undefined
 };
 }
 fromJSON(data) {
-if (!data || (data.v !== 3 && data.v !== 4) || !Array.isArray(data.tiles) || data.tiles.length !== GRID_SIZE * GRID_SIZE) {
+if (!data || (data.v !== 3 && data.v !== 4 && data.v !== 5) || !Array.isArray(data.tiles) || data.tiles.length !== GRID_SIZE * GRID_SIZE) {
 return false;
 }
 this._suppressPromotions = true;
@@ -13687,6 +14467,20 @@ this.month = data.month || 3;
 this.day = data.day || 1;
 this.dayProgress = typeof data.dayProgress === 'number' ? data.dayProgress : 0.36;
 this.timeMode = data.timeMode || 'cycle';
+this.weather = data.weather
+? { state: data.weather.state || 'clear', mode: data.weather.mode || 'auto', intensity: 0, timer: 42, tempC: data.weather.tempC ?? 22, lightningFlash: 0 }
+: { state: 'clear', mode: 'auto', intensity: 0, timer: 42, tempC: 22, lightningFlash: 0 };
+this.busLines = Array.isArray(data.busLines) ? data.busLines.map((l) => ({
+id: l.id || 1,
+name: l.name || '1路 公交专线',
+colorHex: l.colorHex || '#0ea5e9',
+stops: Array.isArray(l.stops) ? l.stops.map((s) => ({ x: s.x, z: s.z })) : [],
+busCount: Math.max(1, Math.min(6, l.busCount || 2)),
+fare: Math.max(0, Math.min(5, l.fare ?? 2)),
+active: l.active !== false,
+dailyRiders: 0
+})) : [];
+this._nextBusLineId = this.busLines.reduce((m, l) => Math.max(m, (l.id || 0) + 1), 1);
 this.milestoneIdx = data.milestoneIdx || 0;
 this.maxPopReached = data.maxPopReached || 0;
 this.gridlockTimeouts = 0;
@@ -13798,6 +14592,7 @@ this.vehicles = [];
 this.trains = [];      // HSR multi-car bullet trains & underground metro trains!
 this.aircraft = [];    // 3D Wide-body Airliners approaching/landing/climbing at airports!
 this.ships = [];       // 3D Cargo Container Ships sailing SE Sea Bay <-> Seaport!
+this.leisureBoats = []; // 3D Coastal CC0 Sailboats & Fishing Boats cruising the bay!
 this.busStops = [];    // Active roadside EV bus stop tiles collected during refreshRoadGraph!
 this.pedestrians = []; // Lightweight sidewalk pedestrians (<= 240, pure data, zero Three.js dependency)
 this._pedRoadPool = [];
@@ -13807,10 +14602,12 @@ this.trainTimer = 0;
 this.fireTimer = 0;
 this.aircraftTimer = 0;
 this.shipTimer = 2.0;
+this._boatSpawnTimer = 1.0;
 this.signalClock = 0;
 this.modalTimer = 0;
 this._nextVehId = 1;
 this._nextShipId = 1;
+this._nextBoatId = 1;
 this._nextPedId = 1;
 const N = GRID_SIZE * GRID_SIZE;
 this.roadDegree = new Uint8Array(N);
@@ -13845,12 +14642,14 @@ this.vehicles.length = 0;
 this.trains.length = 0;
 this.aircraft.length = 0;
 this.ships.length = 0;
+this.leisureBoats.length = 0;
 this.busStops.length = 0;
 this.pedestrians.length = 0;
 this._pedRoadPool.length = 0;
 this._pedSpawnTimer = 0;
 this.aircraftTimer = 0;
 this.shipTimer = 2.0;
+this._boatSpawnTimer = 1.0;
 this.modalTimer = 0;
 this.tileOccupancy.fill(0);
 this.elevOccupancy.fill(0);
@@ -15161,7 +15960,63 @@ const freeTransit = Boolean(this.sim.policies?.freeTransit);
 const period = typeof this.sim.getTrafficPeriodInfo === 'function'
 ? this.sim.getTrafficPeriodInfo()
 : { id: 'normal', mult: 1.0, commuteBias: 'balanced' };
-if (this.busStops.length >= 2) {
+const activeBusLines = Array.isArray(this.sim.busLines)
+? this.sim.busLines.filter((l) => l && l.active !== false && Array.isArray(l.stops) && l.stops.length >= 2)
+: [];
+if (activeBusLines.length > 0) {
+for (let li = 0; li < activeBusLines.length; li++) {
+const line = activeBusLines[li];
+const lineCount = this.vehicles.reduce((acc, v) => acc + (v.kind === 'bus' && v.busLineId === line.id ? 1 : 0), 0);
+const targetForLine = Math.max(1, Math.min(6, line.busCount || 2));
+if (lineCount >= targetForLine) continue;
+const startIdx = lineCount % line.stops.length;
+const nextIdx = (startIdx + 1) % line.stops.length;
+const stopA = line.stops[startIdx];
+const stopB = line.stops[nextIdx];
+const busPath = this.findRoadPath(stopA.x, stopA.z, stopB.x, stopB.z, false, 0, false);
+if (busPath && busPath.length >= 2) {
+const w0 = tileToWorld(busPath[0].x, busPath[0].z);
+const maxSpeed = 1.72;
+const bv = {
+id: this._nextVehId++,
+variantIdx: 0,
+kind: 'bus',
+busLineId: line.id,
+busLineColor: line.colorHex || '#0ea5e9',
+busStopIdx: nextIdx,
+busDwell: 0,
+tripType: 'transit',
+tripLabel: `🚌 ${line.name}`,
+fromName: `${line.name} · 第${startIdx + 1}站`,
+toName: `${line.name} · 第${nextIdx + 1}站`,
+originTile: { x: stopA.x, z: stopA.z },
+destTile: { x: stopB.x, z: stopB.z },
+color: [0.10, 0.72, 0.88],
+length: 0.42,
+width: 0.15,
+height: 0.15,
+path: busPath,
+seg: 0,
+t: 0,
+speed: maxSpeed * 0.65,
+maxSpeed,
+stuckTimer: 0,
+laneSlot: 0,
+laneChangeCooldown: 0,
+wx: w0.wx,
+wy: this.getRoadNodeY(busPath[0].x, busPath[0].z, busPath[0].layer),
+wz: w0.wz,
+dirX: 0,
+dirZ: -1,
+inTunnel: false
+};
+this.syncVehicleTransform(bv, 0);
+this.vehicles.push(bv);
+this.refreshActiveModalCounts();
+return;
+}
+}
+} else if (this.busStops.length >= 2) {
 const activeBuses = this.vehicles.filter((v) => v.kind === 'bus').length;
 const targetBuses = Math.min(12, Math.max(2, Math.ceil(this.busStops.length * (freeTransit ? 1.5 : 1.0))));
 if (activeBuses < targetBuses && (activeBuses < 2 || Math.random() < (freeTransit ? 0.42 : 0.28))) {
@@ -15589,11 +16444,19 @@ this.trySpawnTrains();
 }
 this.rebuildTileOccupancy();
 let gridlockTiles = null;
+const weatherRoadMult = (typeof this.sim.getWeatherInfo === 'function' ? this.sim.getWeatherInfo().roadMult : 1.0) || 1.0;
 for (let i = this.vehicles.length - 1; i >= 0; i--) {
 const v = this.vehicles[i];
 let cur = v.path && v.path[v.seg];
 if (!cur || !this.isValidRoadStep(cur, null)) {
 this.vehicles.splice(i, 1);
+continue;
+}
+if (v.busDwell > 0) {
+v.busDwell = Math.max(0, v.busDwell - effDt);
+v.speed = 0;
+v.stuckTimer = 0;
+this.syncVehicleTransform(v, effDt);
 continue;
 }
 let nxt = v.path[v.seg + 1];
@@ -15644,7 +16507,7 @@ isOneWaySeg ||
 );
 const allowOvertake = isMultiLane && !curTile.ramp && !nxtTile.ramp;
 const roadBoost = isElevated ? 1.55 : (onRampSeg ? 1.32 : (nxtTile.roadGround >= 2 ? 1.25 : (isOneWaySeg ? 1.12 : 1.0)));
-let targetSpeed = v.maxSpeed * roadBoost;
+let targetSpeed = v.maxSpeed * roadBoost * weatherRoadMult;
 if (!isElevated && !nxt.onRamp) {
 const nxtIdx = idx(nxt.x, nxt.z);
 const nxtDeg = this.roadDegree[nxtIdx];
@@ -15765,6 +16628,34 @@ if (dtTile?.building && typeof dtTile.building.garbage === 'number') {
 dtTile.building.garbage = Math.max(0, dtTile.building.garbage - 0.4);
 }
 }
+if (v.kind === 'bus' && v.busLineId) {
+const line = Array.isArray(this.sim.busLines) ? this.sim.busLines.find((l) => l.id === v.busLineId) : null;
+if (line && line.active !== false && Array.isArray(line.stops) && line.stops.length >= 2) {
+const curStopIdx = ((v.busStopIdx || 0) % line.stops.length + line.stops.length) % line.stops.length;
+const nextStopIdx = (curStopIdx + 1) % line.stops.length;
+const stA = line.stops[curStopIdx];
+const stB = line.stops[nextStopIdx];
+const nextPath = this.findRoadPath(stA.x, stA.z, stB.x, stB.z, false, 0, false);
+if (nextPath && nextPath.length >= 2) {
+line.dailyRiders = (line.dailyRiders || 0) + 12;
+v.path = nextPath;
+v.seg = 0;
+v.t = 0;
+v.busStopIdx = nextStopIdx;
+v.busDwell = 1.45;
+v.stuckTimer = 0;
+v.speed = 0;
+v.busLineColor = line.colorHex || '#0ea5e9';
+v.tripLabel = `🚌 ${line.name}`;
+v.fromName = `${line.name} · 第${curStopIdx + 1}站`;
+v.toName = `${line.name} · 第${nextStopIdx + 1}站`;
+v.originTile = { x: stA.x, z: stA.z };
+v.destTile = { x: stB.x, z: stB.z };
+this.syncVehicleTransform(v, effDt);
+continue;
+}
+}
+}
 this.sim.onTripComplete?.(v);
 this.sim.onTripCompleted?.(v);
 this.vehicles.splice(i, 1);
@@ -15836,6 +16727,7 @@ t.congestion = t.congestion * 0.90 + raw * 0.10;
 }
 this.updateAircraft(effDt);
 this.updateShips(effDt);
+this.updateLeisureBoats(effDt);
 this.updatePedestrians(effDt);
 }
 _isPedRoadTile(tx, tz) {
@@ -16522,6 +17414,98 @@ ship.wy = s0 + (s1 - s0) * ship.t + Math.sin(this.signalClock * 1.8 + ship.bobPh
 ship.roll = Math.sin(this.signalClock * 1.3 + ship.bobPhase) * 0.022;
 }
 }
+updateLeisureBoats(effDt) {
+const isSafeBoatWater = (wx, wz) => {
+const tile = worldToTile(wx, wz);
+if (!inBounds(tile.x, tile.z)) return false;
+const ti = idx(tile.x, tile.z);
+const t = this.sim.grid[ti];
+if (!t || t.dam || t.roadGround > 0 || t.roadElevated > 0 || t.rail > 0 || t.building) return false;
+return this.sim.waterDepth[ti] > 0.28;
+};
+this._boatSpawnTimer -= effDt;
+if (this.leisureBoats.length < 3 && this._boatSpawnTimer <= 0) {
+this._boatSpawnTimer = 2.6;
+const cands = [
+{ tx: 46, tz: 49, r: 2.1, v: 0 },
+{ tx: 49, tz: 45, r: 1.9, v: 1 },
+{ tx: 43, tz: 50, r: 1.7, v: 0 },
+{ tx: 50, tz: 50, r: 1.8, v: 1 }
+];
+for (let k = 0; k < cands.length && this.leisureBoats.length < 3; k++) {
+const c = cands[(this._nextBoatId + k) % cands.length];
+if (!inBounds(c.tx, c.tz)) continue;
+const center = tileToWorld(c.tx, c.tz);
+if (this.leisureBoats.some((b) => Math.hypot(b.cx - center.wx, b.cz - center.wz) < 3.0)) continue;
+let loopClean = true;
+for (let a = 0; a < 8; a++) {
+const ang = (a / 8) * Math.PI * 2;
+if (!isSafeBoatWater(center.wx + Math.cos(ang) * c.r, center.wz + Math.sin(ang) * c.r)) {
+loopClean = false;
+break;
+}
+}
+if (!loopClean) continue;
+const startAng = Math.random() * Math.PI * 2;
+const wx = center.wx + Math.cos(startAng) * c.r;
+const wz = center.wz + Math.sin(startAng) * c.r;
+const t = worldToTile(wx, wz);
+const surf = this.sim.getTileElev(t.x, t.z) + this.sim.waterDepth[idx(t.x, t.z)];
+this.leisureBoats.push({
+id: this._nextBoatId++,
+variant: c.v,
+cx: center.wx,
+cz: center.wz,
+radius: c.r,
+angle: startAng,
+angSpeed: (0.24 + Math.random() * 0.12) * (k % 2 === 0 ? 1 : -1),
+bobPhase: Math.random() * Math.PI * 2,
+wx,
+wy: surf,
+wz,
+yaw: startAng + Math.PI * 0.5,
+roll: 0
+});
+break;
+}
+}
+for (let i = this.leisureBoats.length - 1; i >= 0; i--) {
+const b = this.leisureBoats[i];
+let yieldToShip = false;
+for (let j = 0; j < this.ships.length; j++) {
+const s = this.ships[j];
+if (Math.hypot(s.wx - b.wx, s.wz - b.wz) < 2.4) {
+yieldToShip = true;
+break;
+}
+}
+if (!yieldToShip) {
+const nextAng = b.angle + b.angSpeed * effDt;
+const nextWx = b.cx + Math.cos(nextAng) * b.radius;
+const nextWz = b.cz + Math.sin(nextAng) * b.radius;
+if (!isSafeBoatWater(nextWx, nextWz)) {
+this.leisureBoats.splice(i, 1);
+continue;
+}
+const vx = nextWx - b.wx;
+const vz = nextWz - b.wz;
+b.angle = nextAng;
+b.wx = nextWx;
+b.wz = nextWz;
+if (Math.hypot(vx, vz) > 0.0005) {
+b.yaw = lerpAngle(b.yaw, Math.atan2(vx, vz), Math.min(1, effDt * 4.5));
+}
+}
+const tile = worldToTile(b.wx, b.wz);
+if (!inBounds(tile.x, tile.z) || this.sim.waterDepth[idx(tile.x, tile.z)] <= 0.15) {
+this.leisureBoats.splice(i, 1);
+continue;
+}
+const surf = this.sim.getTileElev(tile.x, tile.z) + this.sim.waterDepth[idx(tile.x, tile.z)];
+b.wy = surf + Math.sin(this.signalClock * 2.1 + b.bobPhase) * 0.014;
+b.roll = Math.sin(this.signalClock * 1.7 + b.bobPhase) * 0.045;
+}
+}
 }
 
 Object.assign(__M, { TrafficManager });
@@ -16703,6 +17687,8 @@ this.camPitch = 0.66;
 this.camDist = 22.0;
 this.overlayMode = 'none';
 this.lastOverlayMode = 'none';
+this.activeBusLineHighlight = null;
+this._busRouteMats = new Map();
 this.previewTiles = [];
 this.previewColor = [0.22, 0.85, 1.0];
 this.servicePreviewTiles = [];
@@ -16753,11 +17739,15 @@ this._planeSparePool = new Map();
 this.shipPool = [];
 this._shipActiveMap = new Map();
 this._shipSparePool = new Map();
+this.leisureBoatPool = [];
+this._boatActiveMap = new Map();
+this._boatSparePool = new Map();
 this.smokePool = [];
 this.firePool = [];
 this.sprayPool = [];
 this.glowPool = [];
 this.previewMeshPool = [];
+this.previewRimPool = [];
 this.scaffoldPool = [];
 this.meteorPool = [];
 this.damWarnPool = [];
@@ -16769,7 +17759,8 @@ windRotors: [],
 ferrisWheels: [],
 radarDishes: [],
 smokeSources: [],
-beacons: []
+beacons: [],
+zooAnimals: []
 };
 this.waterMesh = null;
 this.waterRebuildAccum = 99;
@@ -16812,7 +17803,11 @@ redCross: new THREE.MeshBasicMaterial({ color: 0xf43f5e }),
 goldGlow: new THREE.MeshBasicMaterial({ color: 0xfbbf24 }),
 cyanGlow: new THREE.MeshBasicMaterial({ color: 0x38bdf8 }),
 meteorGlow: new THREE.MeshBasicMaterial({ color: 0xff7b1c }),
-previewMat: new THREE.MeshBasicMaterial({ color: 0x38d9ff, transparent: true, opacity: 0.62 }),
+previewMat: new THREE.MeshBasicMaterial({ color: 0x38d9ff, transparent: true, opacity: 0.68, depthWrite: false }),
+previewWaterMat: new THREE.MeshBasicMaterial({ color: 0xfbbf24, transparent: true, opacity: 0.86, depthWrite: false }),
+previewRimMat: new THREE.MeshBasicMaterial({ color: 0xffffff, wireframe: true, transparent: true, opacity: 0.94, depthWrite: false }),
+weatherRainMat: new THREE.MeshBasicMaterial({ color: 0xc8e4ff, transparent: true, opacity: 0.44, depthWrite: false }),
+weatherSnowMat: new THREE.MeshBasicMaterial({ color: 0xf8fafc, transparent: true, opacity: 0.84, depthWrite: false }),
 servicePreviewMat: new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.46, depthWrite: false }),
 pedBodyMat: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.70, metalness: 0.04 }),
 pedHeadMat: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.74 }),
@@ -16871,6 +17866,9 @@ lampPole: this._makeLampPoleGeo(),
 lampBulb: this._makeLampBulbGeo(),
 signalPole: this._makeSignalPoleGeo(),
 signalLens: new THREE.SphereGeometry(0.026, 6, 5),
+pylonTower: this._makePylonTowerGeo(),
+weatherRainDrop: new THREE.BoxGeometry(0.014, 0.42, 0.014),
+weatherSnowFlake: new THREE.BoxGeometry(0.055, 0.055, 0.055),
 pedTorso: this._makePedTorsoGeo(),
 pedHead: this._makePedHeadGeo(),
 pedHair: this._makePedHairGeo(),
@@ -17013,11 +18011,81 @@ const box = new THREE.BoxGeometry(0.052, 0.125, 0.056);
 box.translate(-0.24, 0.47, 0);
 return mergeGeometriesSimple([post, arm, box]);
 }
+_makePylonTowerGeo() {
+const parts = [];
+const addStrut = (ax, ay, az, bx, by, bz, thickness = 0.018) => {
+const dx = bx - ax, dy = by - ay, dz = bz - az;
+const len = Math.hypot(dx, dy, dz);
+if (len < 1e-4) return;
+const g = new THREE.BoxGeometry(thickness, len, thickness);
+const q = new THREE.Quaternion().setFromUnitVectors(
+new THREE.Vector3(0, 1, 0),
+new THREE.Vector3(dx / len, dy / len, dz / len)
+);
+g.applyMatrix4(new THREE.Matrix4().compose(
+new THREE.Vector3((ax + bx) * 0.5, (ay + by) * 0.5, (az + bz) * 0.5),
+q,
+new THREE.Vector3(1, 1, 1)
+));
+parts.push(g);
+};
+const levels = [
+{ y: 0.00, r: 0.17 },
+{ y: 0.34, r: 0.125 },
+{ y: 0.68, r: 0.088 },
+{ y: 0.96, r: 0.064 },
+{ y: 1.24, r: 0.044 }
+];
+const corners = [[-1, -1], [1, -1], [1, 1], [-1, 1]];
+for (const [cx, cz] of corners) {
+const pad = new THREE.BoxGeometry(0.052, 0.05, 0.052);
+pad.translate(cx * 0.17, 0.025, cz * 0.17);
+parts.push(pad);
+}
+for (let lv = 0; lv < levels.length - 1; lv++) {
+const a = levels[lv], b = levels[lv + 1];
+for (let c = 0; c < 4; c++) {
+const [x0, z0] = corners[c];
+const [x1, z1] = corners[(c + 1) & 3];
+addStrut(x0 * a.r, a.y, z0 * a.r, x0 * b.r, b.y, z0 * b.r, 0.022);
+addStrut(x0 * b.r, b.y, z0 * b.r, x1 * b.r, b.y, z1 * b.r, 0.015);
+addStrut(x0 * a.r, a.y, z0 * a.r, x1 * b.r, b.y, z1 * b.r, 0.012);
+addStrut(x1 * a.r, a.y, z1 * a.r, x0 * b.r, b.y, z0 * b.r, 0.012);
+}
+}
+const armSpecs = [
+{ y: 0.96, span: 0.34, r: 0.064 },
+{ y: 1.18, span: 0.25, r: 0.048 }
+];
+for (const arm of armSpecs) {
+const mainBeam = new THREE.BoxGeometry(arm.span * 2, 0.024, 0.036);
+mainBeam.translate(0, arm.y, 0);
+parts.push(mainBeam);
+addStrut(-arm.span, arm.y, 0, -arm.r, arm.y + 0.09, 0, 0.014);
+addStrut(arm.span, arm.y, 0, arm.r, arm.y + 0.09, 0, 0.014);
+for (const sx of [-arm.span + 0.02, arm.span - 0.02]) {
+const ins = new THREE.CylinderGeometry(0.014, 0.018, 0.075, 6);
+ins.translate(sx, arm.y - 0.045, 0);
+parts.push(ins);
+}
+}
+const peak = new THREE.ConeGeometry(0.048, 0.18, 4);
+peak.rotateY(Math.PI * 0.25);
+peak.translate(0, 1.33, 0);
+parts.push(peak);
+return mergeGeometriesSimple(parts);
+}
 _initPersistentOverlayMeshes() {
 this.selectedTileMesh = new THREE.Mesh(this.geos.unitBox, this.mats.cyanGlow);
-this.selectedTileMesh.scale.set(0.98, 0.04, 0.98);
+this.selectedTileMesh.scale.set(0.98, 0.045, 0.98);
+this.selectedTileMesh.renderOrder = 28;
 this.selectedTileMesh.visible = false;
 this.uiOverlayGroup.add(this.selectedTileMesh);
+this.selectedTileRim = new THREE.Mesh(this.geos.unitBox, this.mats.previewRimMat);
+this.selectedTileRim.scale.set(1.01, 0.08, 1.01);
+this.selectedTileRim.renderOrder = 29;
+this.selectedTileRim.visible = false;
+this.uiOverlayGroup.add(this.selectedTileRim);
 this.selectedVehicleHalo = new THREE.Mesh(this.geos.cylTower, this.mats.goldGlow);
 this.selectedVehicleHalo.visible = false;
 this.uiOverlayGroup.add(this.selectedVehicleHalo);
@@ -17034,8 +18102,35 @@ for (let i = 0; i < this._poolCaps.smoke; i++) this._acquirePoolSprite(this.smok
 for (let i = 0; i < this._poolCaps.spray; i++) this._acquirePoolSprite(this.sprayPool, i, { map: this.smokeTex });
 for (let i = 0; i < this._poolCaps.damWarn; i++) this._acquirePoolMesh(this.damWarnPool, i, this.geos.waterSphere, this.mats.redCross);
 for (let i = 0; i < this._poolCaps.preview; i++) this._acquirePoolMesh(this.previewMeshPool, i, this.geos.unitBox, this.mats.previewMat);
+for (let i = 0; i < this._poolCaps.preview; i++) this._acquirePoolMesh(this.previewRimPool, i, this.geos.unitBox, this.mats.previewRimMat);
 for (let i = 0; i < this._poolCaps.scaffold; i++) this._acquirePoolMesh(this.scaffoldPool, i, this.geos.unitBox, this.mats.goldGlow);
 for (let i = 0; i < this._poolCaps.meteor; i++) this._acquirePoolMesh(this.meteorPool, i, this.geos.waterSphere, this.mats.meteorGlow);
+this._rainCap = 420;
+this._rainSeeds = new Float32Array(this._rainCap * 4);
+for (let i = 0; i < this._rainCap; i++) {
+this._rainSeeds[i * 4 + 0] = (hash2D(i, 11, 701) - 0.5) * 30;
+this._rainSeeds[i * 4 + 1] = hash2D(i, 23, 702) * 16;
+this._rainSeeds[i * 4 + 2] = (hash2D(i, 37, 703) - 0.5) * 30;
+this._rainSeeds[i * 4 + 3] = 11.5 + hash2D(i, 53, 704) * 5.5;
+}
+this.weatherRainInst = new THREE.InstancedMesh(this.geos.weatherRainDrop, this.mats.weatherRainMat, this._rainCap);
+this.weatherRainInst.visible = false;
+this.weatherRainInst.frustumCulled = false;
+this.weatherRainInst.renderOrder = 18;
+this.uiOverlayGroup.add(this.weatherRainInst);
+this._snowCap = 360;
+this._snowSeeds = new Float32Array(this._snowCap * 4);
+for (let i = 0; i < this._snowCap; i++) {
+this._snowSeeds[i * 4 + 0] = (hash2D(i, 19, 801) - 0.5) * 30;
+this._snowSeeds[i * 4 + 1] = hash2D(i, 29, 802) * 14;
+this._snowSeeds[i * 4 + 2] = (hash2D(i, 41, 803) - 0.5) * 30;
+this._snowSeeds[i * 4 + 3] = 1.65 + hash2D(i, 61, 804) * 1.15;
+}
+this.weatherSnowInst = new THREE.InstancedMesh(this.geos.weatherSnowFlake, this.mats.weatherSnowMat, this._snowCap);
+this.weatherSnowInst.visible = false;
+this.weatherSnowInst.frustumCulled = false;
+this.weatherSnowInst.renderOrder = 18;
+this.uiOverlayGroup.add(this.weatherSnowInst);
 this._servicePreviewCap = 320;
 this.servicePreviewInst = new THREE.InstancedMesh(this.geos.unitBox, this.mats.servicePreviewMat, this._servicePreviewCap);
 this.servicePreviewInst.count = 0;
@@ -17217,6 +18312,39 @@ this.sim.buildingDirty = true;
 );
 } catch {}
 });
+}
+applyExternalGLBModels(glbMap) {
+if (!glbMap || typeof glbMap !== 'object') return;
+let added = 0;
+for (const [key, root] of Object.entries(glbMap)) {
+if (!root) continue;
+this.glbProtos[key] = root;
+added++;
+}
+if (added > 0) {
+this._clearVehiclePool();
+this._clearLeisureBoatPool();
+this.sim.buildingDirty = true;
+}
+}
+_clearLeisureBoatPool() {
+for (const obj of this.leisureBoatPool) this.vehicleGroup.remove(obj);
+this.leisureBoatPool.length = 0;
+for (const entry of this._boatActiveMap.values()) this.vehicleGroup.remove(entry.obj);
+this._boatActiveMap.clear();
+for (const bucket of this._boatSparePool.values()) {
+for (const obj of bucket) this.vehicleGroup.remove(obj);
+}
+this._boatSparePool.clear();
+}
+_getBusRouteMat(colorHex) {
+const key = String(colorHex || '#0ea5e9').toLowerCase();
+let mat = this._busRouteMats.get(key);
+if (!mat) {
+mat = new THREE.MeshBasicMaterial({ color: key });
+this._busRouteMats.set(key, mat);
+}
+return mat;
 }
 _clearVehiclePool() {
 for (const item of this.vehiclePool) this.vehicleGroup.remove(item.obj);
@@ -17447,13 +18575,11 @@ this._addBoxTo(this.infraGroup, wx, t.damCrest + 0.02, wz, 1.02, 0.04, 0.86, thi
 }
 if (t.pylon) {
 pylonPts.push(new THREE.Vector3(wx, avgH + 1.18, wz));
-const tower = new THREE.Mesh(this.geos.taperSpire, this.mats.steelLattice);
-tower.scale.set(0.36, 1.22, 0.36);
-tower.position.set(wx, avgH + 0.61, wz);
+const tower = new THREE.Mesh(this.geos.pylonTower, this.mats.steelLattice);
+tower.position.set(wx, avgH, wz);
 tower.castShadow = this.qualityMode !== 'eco';
+tower.receiveShadow = true;
 this.infraGroup.add(tower);
-this._addBoxTo(this.infraGroup, wx, avgH + 0.96, wz, 0.58, 0.04, 0.05, this.mats.steelLattice);
-this._addBoxTo(this.infraGroup, wx, avgH + 1.15, wz, 0.42, 0.04, 0.05, this.mats.steelLattice);
 }
 }
 }
@@ -17468,6 +18594,58 @@ const tubeGeo = new THREE.TubeGeometry(curve, 8, 0.014, 5, false);
 const m = new THREE.Mesh(tubeGeo, this.overlayMode === 'power' ? this.mats.powerGlow : this.mats.cable);
 m.userData.ownGeo = true;
 this.infraGroup.add(m);
+}
+}
+}
+if (!isUnder && (this.overlayMode === 'transit' || this.activeBusLineHighlight != null) && Array.isArray(this.sim.busLines)) {
+for (let li = 0; li < this.sim.busLines.length; li++) {
+const line = this.sim.busLines[li];
+if (!line || line.active === false || !Array.isArray(line.stops) || line.stops.length === 0) continue;
+const isHi = this.activeBusLineHighlight === line.id;
+const routeMat = this._getBusRouteMat(line.colorHex);
+const yOff = (isHi ? 0.21 : 0.14) + (li % 4) * 0.025;
+const rad = isHi ? 0.056 : 0.036;
+for (let si = 0; si < line.stops.length; si++) {
+const st = line.stops[si];
+if (!inBounds(st.x, st.z)) continue;
+const { wx, wz } = tileToWorld(st.x, st.z);
+const sy = this.sim.infraHeights?.roadCornerY
+? this._sampleInfraHeight(this.sim.infraHeights.roadCornerY, wx, wz)
+: Math.max(this.sim.getTileElev(st.x, st.z), this.sim.getTileElev(st.x, st.z) + this.sim.waterDepth[idx(st.x, st.z)]);
+const pin = new THREE.Mesh(this.geos.cylTower, routeMat);
+pin.scale.set(isHi ? 0.36 : 0.26, isHi ? 0.62 : 0.44, isHi ? 0.36 : 0.26);
+pin.position.set(wx, sy + (isHi ? 0.31 : 0.22), wz);
+this.infraGroup.add(pin);
+const halo = new THREE.Mesh(this.geos.cylTower, routeMat);
+halo.scale.set(isHi ? 0.92 : 0.72, 0.035, isHi ? 0.92 : 0.72);
+halo.position.set(wx, sy + yOff * 0.7, wz);
+this.infraGroup.add(halo);
+}
+if (line.stops.length >= 2 && this.traffic && typeof this.traffic.findRoadPath === 'function') {
+const legs = line.stops.length === 2 ? 1 : line.stops.length;
+for (let k = 0; k < legs; k++) {
+const stA = line.stops[k];
+const stB = line.stops[(k + 1) % line.stops.length];
+const rPath = this.traffic.findRoadPath(stA.x, stA.z, stB.x, stB.z, false, 0, false);
+if (!rPath || rPath.length < 2) continue;
+const pts = [];
+for (let p = 0; p < rPath.length; p++) {
+const nd = rPath[p];
+const w = tileToWorld(nd.x, nd.z);
+const baseY = (nd.layer === 1 && this.sim.infraHeights?.elevCornerY)
+? this._sampleInfraHeight(this.sim.infraHeights.elevCornerY, w.wx, w.wz)
+: (this.sim.infraHeights?.roadCornerY
+? this._sampleInfraHeight(this.sim.infraHeights.roadCornerY, w.wx, w.wz)
+: Math.max(this.sim.getTileElev(nd.x, nd.z), this.sim.getTileElev(nd.x, nd.z) + this.sim.waterDepth[idx(nd.x, nd.z)]));
+pts.push(new THREE.Vector3(w.wx, baseY + yOff, w.wz));
+}
+const curve = new THREE.CatmullRomCurve3(pts, false, 'catmullrom', 0.25);
+const segs = Math.min(84, Math.max(8, pts.length * 3));
+const tubeGeo = new THREE.TubeGeometry(curve, segs, rad, 6, false);
+const tubeMesh = new THREE.Mesh(tubeGeo, routeMat);
+tubeMesh.userData.ownGeo = true;
+this.infraGroup.add(tubeMesh);
+}
 }
 }
 }
@@ -17640,6 +18818,7 @@ this.animHooks.ferrisWheels.length = 0;
 this.animHooks.radarDishes.length = 0;
 this.animHooks.smokeSources.length = 0;
 this.animHooks.beacons.length = 0;
+this.animHooks.zooAnimals.length = 0;
 const isUnder = this.overlayMode === 'underground';
 for (let z = 0; z < GRID_SIZE; z++) {
 for (let x = 0; x < GRID_SIZE; x++) {
@@ -17881,10 +19060,10 @@ this.waterMesh = mesh;
 this.waterGroup.add(mesh);
 }
 }
-_createVehicleObject(kind, variantIdx) {
+_createVehicleObject(kind, variantIdx, lineColorHex = null) {
 if (this.archLib && typeof this.archLib.createRealisticVehicleObject === 'function') {
 try {
-const obj = this.archLib.createRealisticVehicleObject(kind, variantIdx);
+const obj = this.archLib.createRealisticVehicleObject(kind, variantIdx, lineColorHex);
 if (obj) {
 obj.rotation.order = 'YXZ';
 return obj;
@@ -18042,6 +19221,17 @@ for (const pod of wheel.userData.gondolas) pod.rotation.z = -wheel.rotation.z;
 }
 for (const radar of this.animHooks.radarDishes) radar.rotation.y += dt * 2.2;
 for (const bc of this.animHooks.beacons) bc.visible = night > 0.22 ? beaconBlink : false;
+if (Array.isArray(this.animHooks.zooAnimals)) {
+for (let i = 0; i < this.animHooks.zooAnimals.length; i++) {
+const a = this.animHooks.zooAnimals[i];
+const ang = this.clock * (a.speed || 0.45) + (a.phase || 0);
+const nx = (a.cx || 0) + Math.cos(ang) * (a.radius || 0.08);
+const nz = (a.cz || 0) + Math.sin(ang) * (a.radius || 0.08);
+const bob = Math.abs(Math.sin(ang * 4.5)) * 0.008;
+a.obj.position.set(nx, (a.baseY || 0) + bob, nz);
+a.obj.rotation.y = Math.atan2(-Math.sin(ang), Math.cos(ang));
+}
+}
 if (this.mats.lampEmissive) {
 const lampGlow = Math.max(0.08, night * 2.2);
 this.mats.lampEmissive.emissiveIntensity = lampGlow;
@@ -18074,7 +19264,8 @@ const v = visibleVehicles[i];
 const varIdx = typeof v.variantIdx === 'number'
 ? (v.variantIdx & 15)
 : (typeof v.id === 'number' ? (v.id % 12) : 0);
-const poolKey = `${v.kind}:${varIdx}`;
+const busCol = v.kind === 'bus' ? (v.busLineColor || '') : '';
+const poolKey = `${v.kind}:${varIdx}:${busCol}`;
 let entry = this._vehActiveMap.get(v);
 if (entry && entry.key !== poolKey) {
 entry.obj.visible = false;
@@ -18091,7 +19282,7 @@ if (!entry) {
 const bucket = this._vehSparePool.get(poolKey);
 let obj = bucket && bucket.length > 0 ? bucket.pop() : null;
 if (!obj) {
-obj = this._createVehicleObject(v.kind, varIdx);
+obj = this._createVehicleObject(v.kind, varIdx, busCol || null);
 this.vehicleGroup.add(obj);
 }
 entry = { key: poolKey, kind: v.kind, variantIdx: varIdx, obj };
@@ -18230,6 +19421,42 @@ sh.visible = true;
 sh.position.set(s.wx, s.wy, s.wz);
 sh.rotation.set(-(s.pitch || 0), s.yaw || 0, s.roll || 0);
 this.shipPool.push(sh);
+}
+const boats = isUnder ? [] : (this.traffic.leisureBoats || []);
+const activeBoatSet = new Set(boats);
+for (const [bObj, entry] of this._boatActiveMap.entries()) {
+if (!activeBoatSet.has(bObj)) {
+entry.obj.visible = false;
+let bucket = this._boatSparePool.get(entry.key);
+if (!bucket) { bucket = []; this._boatSparePool.set(entry.key, bucket); }
+bucket.push(entry.obj);
+this._boatActiveMap.delete(bObj);
+}
+}
+this.leisureBoatPool.length = 0;
+for (let i = 0; i < boats.length; i++) {
+const b = boats[i];
+const bVar = (b.variant || 0) & 1;
+let entry = this._boatActiveMap.get(b);
+if (!entry) {
+const bucket = this._boatSparePool.get(bVar);
+let boatMesh = bucket && bucket.length > 0 ? bucket.pop() : null;
+if (!boatMesh && this.archLib && typeof this.archLib.createLeisureBoatObject === 'function') {
+boatMesh = this.archLib.createLeisureBoatObject(bVar);
+this.vehicleGroup.add(boatMesh);
+}
+if (boatMesh) {
+entry = { key: bVar, obj: boatMesh };
+this._boatActiveMap.set(b, entry);
+}
+}
+if (entry) {
+const bm = entry.obj;
+bm.visible = true;
+bm.position.set(b.wx, b.wy, b.wz);
+bm.rotation.set(0, b.yaw || 0, b.roll || 0);
+this.leisureBoatPool.push(bm);
+}
 }
 const peds = (!isUnder && this._maxPedestrians > 0 && Array.isArray(this.traffic.pedestrians))
 ? this.traffic.pedestrians
@@ -18439,27 +19666,51 @@ for (let r = 0; r < this.tornadoRings.length; r++) this.tornadoRings[r].visible 
 }
 this._hidePoolFrom(this.meteorPool, meteorCount);
 let prevCount = 0;
+let rimCount = 0;
 if (this.previewTiles.length > 0) {
 this.mats.previewMat.color.setRGB(this.previewColor[0], this.previewColor[1], this.previewColor[2]);
 if (this.mats.previewMat.depthTest !== !isUnder) {
 this.mats.previewMat.depthTest = !isUnder;
-this.mats.previewMat.depthWrite = !isUnder;
 this.mats.previewMat.needsUpdate = true;
 }
+const isCyanPreview = this.previewColor[2] > 0.65 && this.previewColor[0] < 0.55;
 for (const pos of this.previewTiles) {
 if (!inBounds(pos.x, pos.z)) continue;
 const { wx, wz } = tileToWorld(pos.x, pos.z);
-const py = isUnder
-? this.sim.getTileElev(pos.x, pos.z) + 0.34
-: Math.max(this.sim.getTileElev(pos.x, pos.z), this.sim.getTileElev(pos.x, pos.z) + this.sim.waterDepth[idx(pos.x, pos.z)]) + 0.06;
+const ti = idx(pos.x, pos.z);
+const elev = this.sim.getTileElev(pos.x, pos.z);
+const wd = this.sim.waterDepth[ti] || 0;
+const overWater = !isUnder && wd > 0.05;
+const t = this.sim.grid[ti];
+let py;
+if (isUnder) {
+py = elev + 0.34;
+} else if (overWater) {
+const waterSurf = Math.max(elev, elev + wd);
+const roadDeck = (t && t.roadGround > 0 && this.sim.infraHeights?.roadCornerY)
+? this._sampleInfraHeight(this.sim.infraHeights.roadCornerY, wx, wz)
+: (waterSurf + 0.22);
+py = Math.max(waterSurf + 0.24, roadDeck + 0.08);
+} else {
+py = elev + 0.07;
+}
 const hl = this._acquirePoolMesh(this.previewMeshPool, prevCount++, this.geos.unitBox, this.mats.previewMat);
-hl.scale.set(0.92, isUnder ? 0.14 : 0.06, 0.92);
+hl.material = (overWater && isCyanPreview) ? this.mats.previewWaterMat : this.mats.previewMat;
+hl.scale.set(0.92, isUnder ? 0.14 : (overWater ? 0.08 : 0.06), 0.92);
 hl.position.set(wx, py, wz);
-hl.renderOrder = isUnder ? 25 : 4;
+hl.renderOrder = isUnder ? 25 : (overWater ? 32 : 12);
 hl.visible = true;
+if (overWater || this.previewTiles.length <= 25) {
+const rim = this._acquirePoolMesh(this.previewRimPool, rimCount++, this.geos.unitBox, this.mats.previewRimMat);
+rim.scale.set(0.96, overWater ? 0.11 : 0.08, 0.96);
+rim.position.set(wx, py + 0.015, wz);
+rim.renderOrder = overWater ? 33 : 13;
+rim.visible = true;
+}
 }
 }
 this._hidePoolFrom(this.previewMeshPool, prevCount);
+this._hidePoolFrom(this.previewRimPool, rimCount);
 const svcList = Array.isArray(this.servicePreviewTiles) ? this.servicePreviewTiles : [];
 const svcCount = Math.min(svcList.length, this._servicePreviewCap);
 if (svcCount > 0 && !isUnder) {
@@ -18485,13 +19736,27 @@ this.servicePreviewInst.visible = true;
 this.servicePreviewInst.visible = false;
 }
 if (this.selectedTile && inBounds(this.selectedTile.x, this.selectedTile.z)) {
-const { wx, wz } = tileToWorld(this.selectedTile.x, this.selectedTile.z);
-const sy = this.sim.getTileElev(this.selectedTile.x, this.selectedTile.z) + 0.08;
+const sx = this.selectedTile.x, sz = this.selectedTile.z;
+const { wx, wz } = tileToWorld(sx, sz);
+const ti = idx(sx, sz);
+const elev = this.sim.getTileElev(sx, sz);
+const wd = this.sim.waterDepth[ti] || 0;
+const t = this.sim.grid[ti];
+const waterSurf = Math.max(elev, elev + wd);
+let sy = waterSurf + (wd > 0.05 ? 0.16 : 0.08);
+if (t && t.roadGround > 0 && this.sim.infraHeights?.roadCornerY) {
+sy = Math.max(sy, this._sampleInfraHeight(this.sim.infraHeights.roadCornerY, wx, wz) + 0.07);
+}
+this.selectedTileMesh.material = wd > 0.05 ? this.mats.previewWaterMat : this.mats.cyanGlow;
 this.selectedTileMesh.position.set(wx, sy, wz);
 this.selectedTileMesh.visible = true;
+this.selectedTileRim.position.set(wx, sy + 0.015, wz);
+this.selectedTileRim.visible = true;
 } else {
 this.selectedTileMesh.visible = false;
+this.selectedTileRim.visible = false;
 }
+this._syncWeatherParticles(dt, isUnder);
 if (!isUnder && this.selectedVehicle && this.traffic.vehicles.includes(this.selectedVehicle) && !this.selectedVehicle.inTunnel) {
 const v = this.selectedVehicle;
 const pulse = 1.0 + Math.sin(this.clock * 7.5) * 0.14;
@@ -18500,6 +19765,64 @@ this.selectedVehicleHalo.position.set(v.wx, (v.wy || 0) + 0.24, v.wz);
 this.selectedVehicleHalo.visible = true;
 } else {
 this.selectedVehicleHalo.visible = false;
+}
+}
+_syncWeatherParticles(dt, isUnder) {
+const w = this.sim.weather || { state: 'clear', intensity: 0 };
+const st = w.state || 'clear';
+const inten = Math.max(0, Math.min(1, w.intensity || 0));
+const tx = this.camTarget[0], ty = this.camTarget[1], tz = this.camTarget[2];
+const showRain = !isUnder && (st === 'rain' || st === 'storm') && inten > 0.06 && this.qualityMode !== 'eco';
+if (showRain && this.weatherRainInst) {
+const activeCount = Math.max(60, Math.min(this._rainCap, Math.floor(this._rainCap * (st === 'storm' ? 1.0 : 0.65 * inten))));
+const windLean = st === 'storm' ? 0.22 : 0.09;
+this._tmpEuler.set(windLean * 0.6, 0, windLean);
+this._tmpQuat.setFromEuler(this._tmpEuler);
+this._tmpScale.set(1, st === 'storm' ? 1.25 : 0.95, 1);
+const tClk = this.clock;
+for (let i = 0; i < activeCount; i++) {
+const ox = this._rainSeeds[i * 4 + 0];
+const y0 = this._rainSeeds[i * 4 + 1];
+const oz = this._rainSeeds[i * 4 + 2];
+const spd = this._rainSeeds[i * 4 + 3] * (st === 'storm' ? 1.35 : 1.0);
+const h = 16.0 - ((y0 + tClk * spd) % 16.0);
+const driftX = (16.0 - h) * windLean;
+this._tmpPos.set(tx + ox + driftX, ty + h - 0.5, tz + oz);
+this._tmpMat4.compose(this._tmpPos, this._tmpQuat, this._tmpScale);
+this.weatherRainInst.setMatrixAt(i, this._tmpMat4);
+}
+this.mats.weatherRainMat.opacity = (st === 'storm' ? 0.56 : 0.40) * inten;
+this.weatherRainInst.count = activeCount;
+this.weatherRainInst.instanceMatrix.needsUpdate = true;
+this.weatherRainInst.visible = true;
+} else if (this.weatherRainInst) {
+this.weatherRainInst.visible = false;
+}
+const showSnow = !isUnder && st === 'snow' && inten > 0.06 && this.qualityMode !== 'eco';
+if (showSnow && this.weatherSnowInst) {
+const activeCount = Math.max(50, Math.min(this._snowCap, Math.floor(this._snowCap * inten)));
+this._tmpScale.set(1, 1, 1);
+const tClk = this.clock;
+for (let i = 0; i < activeCount; i++) {
+const ox = this._snowSeeds[i * 4 + 0];
+const y0 = this._snowSeeds[i * 4 + 1];
+const oz = this._snowSeeds[i * 4 + 2];
+const spd = this._snowSeeds[i * 4 + 3];
+const h = 14.0 - ((y0 + tClk * spd) % 14.0);
+const swayX = Math.sin(tClk * 1.4 + i) * 0.55;
+const swayZ = Math.cos(tClk * 1.1 + i * 0.7) * 0.45;
+this._tmpEuler.set(tClk + i, tClk * 0.7 + i, 0);
+this._tmpQuat.setFromEuler(this._tmpEuler);
+this._tmpPos.set(tx + ox + swayX, ty + h - 0.3, tz + oz + swayZ);
+this._tmpMat4.compose(this._tmpPos, this._tmpQuat, this._tmpScale);
+this.weatherSnowInst.setMatrixAt(i, this._tmpMat4);
+}
+this.mats.weatherSnowMat.opacity = 0.84 * inten;
+this.weatherSnowInst.count = activeCount;
+this.weatherSnowInst.instanceMatrix.needsUpdate = true;
+this.weatherSnowInst.visible = true;
+} else if (this.weatherSnowInst) {
+this.weatherSnowInst.visible = false;
 }
 }
 _updateAtmosphereAndShadows() {
@@ -18512,11 +19835,16 @@ const lx = sunElev >= -0.05 ? Math.cos(sunAngle) * 34 : -Math.cos(sunAngle) * 28
 const ly = sunElev >= -0.05 ? Math.max(12, sunElev * 42) : 26;
 const lz = sunElev >= -0.05 ? 22 : -20;
 const sunDir = new THREE.Vector3(lx, ly, lz).normalize();
+const w = this.sim.weather || { state: 'clear', intensity: 0, lightningFlash: 0 };
+const wState = w.state || 'clear';
+const wInt = Math.max(0, Math.min(1, w.intensity || 0));
+const flash = Math.max(0, Math.min(1, w.lightningFlash || 0));
 if (this.overlayMode === 'underground') {
 if (this.skyDome) this.skyDome.mesh.visible = false;
 this.skyColor.setRGB(0.04, 0.07, 0.12);
 this.scene.background = this.skyColor;
 this.fog.color.copy(this.skyColor);
+this.fog.density = 0.0072;
 this.sunLight.intensity = 0.7;
 this.hemiLight.intensity = 0.55;
 if (this.scene.environment) this.scene.environmentIntensity = 0.15;
@@ -18524,13 +19852,46 @@ return { night: 0.65, sunDir };
 }
 if (this.skyDome) {
 this.skyDome.mesh.visible = true;
-this.skyDome.update(p, night, sunDir);
+this.skyDome.update(p, night, sunDir, wState, wInt);
 }
 const daySky = new THREE.Color(0x74b6f2);
 const sunsetSky = new THREE.Color(0xe57c56);
 const nightSky = new THREE.Color(0x091124);
 this.skyColor.copy(daySky).lerp(nightSky, night).lerp(sunsetSky, sunset * 0.65);
+let targetFog = 0.0072;
+let sunWeatherMult = 1.0;
+if (wState === 'cloudy') {
+this._tmpColor.setHex(night > 0.5 ? 0x161f30 : 0x94a8bd);
+this.skyColor.lerp(this._tmpColor, 0.42 * wInt);
+targetFog = 0.0072 + 0.0024 * wInt;
+sunWeatherMult = 1.0 - 0.24 * wInt;
+} else if (wState === 'rain') {
+this._tmpColor.setHex(night > 0.5 ? 0x111a29 : 0x6f8296);
+this.skyColor.lerp(this._tmpColor, 0.64 * wInt);
+targetFog = 0.0072 + 0.0064 * wInt;
+sunWeatherMult = 1.0 - 0.42 * wInt;
+} else if (wState === 'storm') {
+this._tmpColor.setHex(night > 0.5 ? 0x0b111c : 0x4b5c6e);
+this.skyColor.lerp(this._tmpColor, 0.78 * wInt);
+targetFog = 0.0072 + 0.0095 * wInt;
+sunWeatherMult = 1.0 - 0.58 * wInt;
+} else if (wState === 'snow') {
+this._tmpColor.setHex(night > 0.5 ? 0x1b2638 : 0xc8d9ea);
+this.skyColor.lerp(this._tmpColor, 0.56 * wInt);
+targetFog = 0.0072 + 0.0056 * wInt;
+sunWeatherMult = 1.0 - 0.22 * wInt;
+} else if (wState === 'fog') {
+this._tmpColor.setHex(night > 0.5 ? 0x1c2533 : 0xd6e0ea);
+this.skyColor.lerp(this._tmpColor, 0.72 * wInt);
+targetFog = 0.0072 + 0.0168 * wInt;
+sunWeatherMult = 1.0 - 0.30 * wInt;
+}
+if (flash > 0.02) {
+this._tmpColor.setHex(0xe8f3ff);
+this.skyColor.lerp(this._tmpColor, flash * 0.48);
+}
 this.fog.color.copy(this.skyColor);
+this.fog.density = targetFog;
 const snapX = Math.round(this.camTarget[0] * 2) * 0.5;
 const snapY = Math.round(this.camTarget[1] * 2) * 0.5;
 const snapZ = Math.round(this.camTarget[2] * 2) * 0.5;
@@ -18540,9 +19901,16 @@ const daySun = new THREE.Color(0xfff7e8);
 const sunsetSun = new THREE.Color(0xff8c4a);
 const moonCol = new THREE.Color(0x4a6fa5);
 this.sunLight.color.copy(daySun).lerp(moonCol, night).lerp(sunsetSun, sunset * 0.75);
-this.sunLight.intensity = 1.92 * (1 - night * 0.72);
-this.hemiLight.intensity = (this.hemiBase || 0.88) * (1 - night * 0.62);
-if (this.scene.environment) this.scene.environmentIntensity = 0.68 * (1 - night * 0.78);
+this.sunLight.intensity = 1.92 * (1 - night * 0.72) * sunWeatherMult + flash * 1.45;
+this.hemiLight.intensity = (this.hemiBase || 0.88) * (1 - night * 0.62) * (0.78 + 0.22 * sunWeatherMult) + flash * 0.55;
+if (this.scene.environment) this.scene.environmentIntensity = 0.68 * (1 - night * 0.78) * (0.7 + 0.3 * sunWeatherMult);
+const wetness = (wState === 'rain' || wState === 'storm') ? wInt : 0;
+for (const rMat of [this.mats.road2, this.mats.road4, this.mats.roadHub]) {
+if (!rMat) continue;
+const dryR = rMat.roughnessMap ? 1.0 : 0.83;
+const wetR = rMat.roughnessMap ? 0.38 : 0.26;
+rMat.roughness = dryR + (wetR - dryR) * wetness;
+}
 this.archLib.setNightFactor(night);
 updatePhysicalWaterUniforms(
 this.physicalWaterMat,
@@ -18589,7 +19957,7 @@ rail:     ['bus_stop', 'metro_line', 'metro_station', 'rail_track', 'hsr_station
 zones:    ['zone_RL', 'zone_RH', 'zone_CL', 'zone_CH', 'zone_I', 'zone_O', 'dezone'],
 water:    ['water_pipe', 'water_pump', 'sewage_out', 'water_treat', 'waste_plant'],
 power:    ['hydro_dam', 'power_pylon', 'power_wind', 'power_plant', 'solar_plant', 'nuclear_plant'],
-civic:    ['fire_station', 'police_station', 'hospital', 'school', 'park', 'amusement_park', 'stadium', 'landmark'],
+civic:    ['fire_station', 'police_station', 'hospital', 'school', 'park', 'zoo', 'botanical_garden', 'museum', 'amusement_park', 'stadium', 'tv_tower', 'landmark'],
 bulldoze: ['bulldoze', 'bulldoze_under']
 };
 class GameUI {
@@ -18604,6 +19972,7 @@ this.assetManager = assetManager;
 this.activeTool = 'pan';
 this.openCategory = null;
 this.autoOverlayActive = false;
+this.editingBusLineId = null;
 this.pointers = new Map();
 this.multiTouchGesture = false;
 this.lastPinchDist = 0;
@@ -18713,6 +20082,27 @@ const labels = { cycle: '🔄 真实慢速昼夜', day: '☀️ 白昼锁定', s
 this.showToast(`光影：${labels[nxt]}`);
 this.refreshHUD();
 });
+const btnWeather = document.getElementById('btn-weather');
+if (btnWeather) {
+btnWeather.addEventListener('click', () => {
+this.sfx.tap();
+const wModes = ['auto', 'clear', 'cloudy', 'rain', 'storm', 'snow', 'fog'];
+const curM = this.sim.weather?.mode || 'auto';
+const nxtM = wModes[(wModes.indexOf(curM) + 1) % wModes.length];
+const info = typeof this.sim.setWeatherMode === 'function' ? this.sim.setWeatherMode(nxtM) : null;
+const wLabels = {
+auto: '🔄 自动四季天气演算',
+clear: '☀️ 晴空万里（光伏+15% · 旅游+15%）',
+cloudy: '⛅ 多云微风',
+rain: '🌧️ 绵绵阵雨（自然灭火 · 水库蓄水 · 湿滑路面）',
+storm: '⛈️ 狂风暴雨（雷电闪耀 · 强力灭火 · 减速通行）',
+snow: '❄️ 瑞雪纷飞（银装素裹 · 冬季采暖电耗+12%）',
+fog: '🌫️ 城市晨雾（朦胧雾景 · 慢行护航）'
+};
+this.showToast(`天气：${wLabels[nxtM] || info?.label || nxtM}`);
+this.refreshHUD();
+});
+}
 const btnIssues = document.getElementById('btn-issues');
 if (btnIssues) {
 btnIssues.addEventListener('click', () => {
@@ -18789,7 +20179,7 @@ if (overlayPicker) {
 overlayPicker.classList.toggle('open');
 } else {
 this.autoOverlayActive = false;
-const modes = ['none', 'underground', 'power', 'landValue', 'traffic', 'pollution', 'education', 'noise'];
+const modes = ['none', 'underground', 'power', 'landValue', 'traffic', 'transit', 'pollution', 'education', 'noise'];
 const next = modes[(modes.indexOf(this.renderer.overlayMode) + 1) % modes.length];
 this.renderer.overlayMode = next;
 this.updateOverlayLegend();
@@ -18856,6 +20246,15 @@ this.showToast(xrayLabels[next]);
 });
 }
 document.getElementById('cancel-drag-btn').addEventListener('click', () => {
+if (this.editingBusLineId !== null) {
+this.editingBusLineId = null;
+this.renderer.activeBusLineHighlight = null;
+this.sim.infraDirty = true;
+this.updateToolHint();
+this.showToast('✅ 已完成公交线路地图选站');
+this.openBusLinesModal();
+return;
+}
 this.dragCancelled = true;
 this.dragBuildStart = null;
 this.renderer.previewTiles = [];
@@ -18915,6 +20314,21 @@ this.selectTool(id, categoryKey, true);
 });
 sub.appendChild(btn);
 });
+if (categoryKey === 'rail') {
+const busMgrBtn = document.createElement('button');
+busMgrBtn.className = 'sub-item';
+busMgrBtn.style.borderColor = 'rgba(56, 189, 248, 0.72)';
+busMgrBtn.innerHTML = `
+<span class="sub-icon">🚌</span>
+<span class="sub-title">公交线路</span>
+<span class="sub-cost" style="color:#38bdf8;">${(this.sim.busLines || []).length}条线</span>
+`;
+busMgrBtn.addEventListener('click', () => {
+this.sfx.tap();
+this.openBusLinesModal();
+});
+sub.appendChild(busMgrBtn);
+}
 sub.classList.add('open');
 this.selectTool(defaultToolId, categoryKey, true);
 }
@@ -19068,10 +20482,23 @@ const hint = document.getElementById('tool-hint');
 const txt = document.getElementById('tool-hint-text');
 const cancelBtn = document.getElementById('cancel-drag-btn');
 if (this.activeTool === 'pan') {
+if (this.editingBusLineId !== null) {
+const line = (this.sim.busLines || []).find((l) => l.id === this.editingBusLineId);
+if (line) {
+hint.classList.add('visible');
+txt.textContent = `🚌 正在编辑【${line.name}】(${line.stops.length}站)：点击地图上的【🚏 智能公交站】依次加入环线！`;
+cancelBtn.textContent = '✅ 完成选站';
+cancelBtn.style.display = 'inline-block';
+return;
+}
+this.editingBusLineId = null;
+}
 hint.classList.remove('visible');
+cancelBtn.textContent = '✖ 取消';
 cancelBtn.style.display = 'none';
 return;
 }
+cancelBtn.textContent = '✖ 取消';
 hint.classList.add('visible');
 if (extraText) {
 txt.textContent = extraText;
@@ -19108,6 +20535,7 @@ underground: `<strong>🔵 地下透视蓝图视图</strong><br>青蓝管线 = �
 power: `<strong>⚡ 高压电网覆盖视图</strong><br>蓝色地块 = 已通电区域 | 远距离电厂/大坝请架设【高压输电铁塔】接力`,
 landValue: `<strong>💎 地价热力视图</strong><br>翠绿 = 高地价核心区（可长出 48~64 层摩天大楼）`,
 traffic: `<strong>🚦 交通拥堵热力视图</strong><br>红橙色道路 = 严重堵车（会导致商店缺货！建议架二层高架、设单行道或修公交/地铁）`,
+transit: `<strong>🚌 城市公交线路网视图</strong><br>彩色立体光带 = 已开通的自定义公交专线 | 青色圆点 = 🚏智能公交站 | 紫色 = 地铁/高铁/机场枢纽`,
 pollution: `<strong>☣️ 空气与水体污染视图</strong><br>紫红色 = 重工业/污水高污染区（远离居民区与抽水站，可用【环保减排法】大幅降低）`,
 education: `<strong>🎓 教育与市政覆盖视图</strong><br>金青色 = 高学历与高市政覆盖区（驱动高新写字楼与清洁科技工业增产！）`,
 noise: `<strong>🔊 城市交通与工业噪音视图</strong><br>品红/橙色 = 噪音扰民区（点击住宅街道开启【🚫 禁行重型货车】或种树建公园降噪！）`
@@ -19172,6 +20600,26 @@ infoEl.textContent = prev.valid
 : `⚠️ ${prev.reason || '当前位置无法放置立体立交（请选平坦开阔地）'}`;
 }
 if (okBtn) okBtn.disabled = !prev.valid;
+} else if (p.toolId === 'airport' && typeof this.sim.previewAirportFootprint === 'function') {
+const est = this.sim.estimateAction('airport', [{ x: p.x, z: p.z }], { rot: p.rot || 0 });
+const apPrev = this.sim.previewAirportFootprint(p.x, p.z, p.rot || 0);
+const valid = !est.lockedLevel && apPrev.valid && est.validTiles.length > 0 && (this.sim.difficulty === 'sandbox' || est.cost <= this.sim.money);
+this.renderer.previewTiles = apPrev.tiles || [{ x: p.x, z: p.z }];
+this.renderer.previewColor = valid ? [0.22, 0.92, 0.62] : [0.95, 0.28, 0.28];
+this.renderer.servicePreviewTiles = [];
+if (infoEl) {
+if (est.lockedLevel) {
+infoEl.textContent = `🔒 需升至 Lv.${est.lockedLevel} 解锁【${item.name}】`;
+} else if (!apPrev.valid) {
+infoEl.textContent = `⚠️ ${apPrev.reason || '跑道净空区受阻（按🔄旋转跑道朝向）'}`;
+} else if (this.sim.difficulty !== 'sandbox' && est.cost > this.sim.money) {
+infoEl.textContent = `💰 资金不足：需要 ¥${est.cost.toLocaleString()}`;
+} else {
+const costStr = this.sim.difficulty === 'sandbox' ? '免费' : `¥${est.cost.toLocaleString()}`;
+infoEl.textContent = `✈️ 国际民航机场（航站楼 + 后方5格跑道净空区）· ${costStr} · 点🔄可旋转方向`;
+}
+}
+if (okBtn) okBtn.disabled = !valid;
 } else {
 const est = this.sim.estimateAction(p.toolId, [{ x: p.x, z: p.z }]);
 const valid = !est.lockedLevel && est.validTiles.length > 0 && (this.sim.difficulty === 'sandbox' || est.cost <= this.sim.money);
@@ -19363,6 +20811,11 @@ const prev = this.sim.previewInterchange(this.activeTool, hit.tx, hit.tz, 0);
 this.renderer.previewTiles = prev.tiles || [{ x: hit.tx, z: hit.tz }];
 this.renderer.previewColor = prev.valid ? [0.22, 0.92, 0.62] : [0.95, 0.28, 0.28];
 this.renderer.servicePreviewTiles = [];
+} else if (this.activeTool === 'airport' && typeof this.sim.previewAirportFootprint === 'function') {
+const apPrev = this.sim.previewAirportFootprint(hit.tx, hit.tz, 0);
+this.renderer.previewTiles = apPrev.tiles || [{ x: hit.tx, z: hit.tz }];
+this.renderer.previewColor = apPrev.valid ? [0.22, 0.92, 0.62] : [0.95, 0.28, 0.28];
+this.renderer.servicePreviewTiles = [];
 } else {
 this.renderer.previewTiles = [{ x: hit.tx, z: hit.tz }];
 if (this._isConfirmTool(this.activeTool) && typeof this.sim.previewServiceCoverage === 'function') {
@@ -19446,6 +20899,19 @@ const moved = Math.hypot(e.clientX - this.dragStartScreen.x, e.clientY - this.dr
 if (moved < 9) {
 const hit = this.renderer.screenToGround(e.clientX, e.clientY);
 if (hit && hit.valid) {
+if (this.editingBusLineId !== null) {
+const res = this.sim.addStopToBusLine(this.editingBusLineId, hit.tx, hit.tz);
+if (res && res.ok) {
+this.sfx.buildCivic();
+this.updateToolHint();
+this.refreshHUD();
+this.showToast(`🚏 已将 (${hit.tx},${hit.tz}) 加入【${res.line.name}】（当前共 ${res.line.stops.length} 站）`);
+} else {
+this.sfx.error();
+this.showToast(`⚠️ ${res?.reason || '请点击道路上已建成的【🚏 智能公交站】'}`);
+}
+return;
+}
 const tappedTile = this.sim.getTile(hit.tx, hit.tz);
 const fallbackW = tileToWorld(hit.tx, hit.tz);
 const wx = typeof hit.wx === 'number' ? hit.wx : fallbackW.wx;
@@ -19490,6 +20956,11 @@ window.addEventListener('keydown', (e) => {
 if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
 this.keys.add(e.key.toLowerCase());
 if (e.key === 'Escape') {
+if (this.editingBusLineId !== null) {
+this.editingBusLineId = null;
+this.renderer.activeBusLineHighlight = null;
+this.sim.infraDirty = true;
+}
 this.clearPendingPlace();
 this.selectTool('pan');
 this.closeModal();
@@ -19772,6 +21243,9 @@ htmlAct += `<div style="display:flex;gap:6px;flex-wrap:wrap;">`;
 if (isOneWay) {
 htmlAct += `<button class="btn-primary" id="btn-flip-oneway" style="flex:1;font-size:11.5px;padding:6px 8px;">🔁 反转单行方向</button>`;
 }
+if (t.busStop) {
+htmlAct += `<button class="btn-primary" id="btn-open-bus-lines" style="flex:1;font-size:11.5px;padding:6px 8px;">🚌 公交线路管理</button>`;
+}
 htmlAct += `<button class="${t.banTrucks ? 'btn-primary' : 'btn-secondary'}" id="btn-toggle-truck-ban" style="flex:1;font-size:11.5px;padding:6px 8px;">${t.banTrucks ? '✅ 解除重卡禁行' : '🚫 禁行重型货车(降噪)'}</button>`;
 htmlAct += `</div>`;
 }
@@ -19796,6 +21270,13 @@ this.refreshHUD();
 this.inspectTile(x, z);
 this.showToast(`🔁 已反转 ${r.count || 1} 格单行道通行方向`);
 }
+});
+}
+const busLineBtn = document.getElementById('btn-open-bus-lines');
+if (busLineBtn) {
+busLineBtn.addEventListener('click', () => {
+this.sfx.tap();
+this.openBusLinesModal();
 });
 }
 const banBtn = document.getElementById('btn-toggle-truck-ban');
@@ -19932,6 +21413,12 @@ if (periodEl && typeof this.sim.getTrafficPeriodInfo === 'function') {
 const pInfo = this.sim.getTrafficPeriodInfo();
 periodEl.textContent = `${pInfo.icon} ${pInfo.label}`;
 periodEl.className = 'traffic-period-chip' + (pInfo.mult >= 1.8 ? ' rush' : (pInfo.mult <= 0.5 ? ' night' : ''));
+}
+const weatherBtn = document.getElementById('btn-weather');
+if (weatherBtn && typeof this.sim.getWeatherInfo === 'function') {
+const wi = this.sim.getWeatherInfo();
+weatherBtn.textContent = `${wi.icon} ${wi.tempC}°C${wi.mode !== 'auto' ? '·定' : ''}`;
+weatherBtn.title = `当前天气：${wi.label} (${wi.tempC}°C) · ${wi.mode === 'auto' ? '自动四季演算' : '已锁定天气'}（点击切换）`;
 }
 const evPill = document.getElementById('event-pill');
 if (evPill) {
@@ -20244,6 +21731,7 @@ body.innerHTML = `
 <div class="insp-grid" style="font-size:12px;">
 <div>税收总收入：<strong style="color:#4ade80">+¥${this.sim.lastTaxIncome}</strong></div>
 <div>基建与部门维护：<strong style="color:#f87171">-¥${this.sim.lastUpkeep}</strong></div>
+<div>旅游景点门票：<strong style="color:#38bdf8">+¥${this.sim.tourismIncome || 0}</strong> <span style="color:#94a3b8;font-size:10.5px;">(${(this.sim.tourists || 0).toLocaleString()}名游客)</span></div>
 <div>银行贷款还本付息：<strong style="color:#fbbf24">-¥${this.sim.lastLoanPay}</strong></div>
 <div>净现金流：<strong>${this.sim.netIncome >= 0 ? '+' : ''}¥${this.sim.netIncome}</strong></div>
 <div>失业率 / 受教育率：<strong>${this.sim.unemploymentPct}% / <span style="color:#38bdf8">${Math.round(this.sim.educatedRate || 0)}%</span></strong></div>
@@ -20261,7 +21749,10 @@ const rows = [
 ];
 return `
 <div class="modal-section">
-<h4>🚌 公共交通客流与票务盈亏表（总减堵 -${ts.totalCarsSaved || 0} 车）</h4>
+<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px;flex-wrap:wrap;">
+<h4 style="margin:0;">🚌 公共交通客流与票务盈亏表（总减堵 -${ts.totalCarsSaved || 0} 车）</h4>
+<button class="btn-primary" id="btn-budget-bus-lines" style="font-size:11.5px;padding:5px 10px;">🚌 管理公交线路 (${(this.sim.busLines || []).length}条)</button>
+</div>
 <table class="transit-table">
 <thead><tr><th>线路</th><th>站点</th><th>日客流</th><th>票收</th><th>维护</th><th>净利</th></tr></thead>
 <tbody>
@@ -20363,6 +21854,13 @@ ${active
 </div>
 `;
 this._drawFinanceHistoryChart('netIncome');
+const budgetBusBtn = document.getElementById('btn-budget-bus-lines');
+if (budgetBusBtn) {
+budgetBusBtn.addEventListener('click', () => {
+this.sfx.tap();
+this.openBusLinesModal();
+});
+}
 body.querySelectorAll('[data-chart-metric]').forEach((tab) => {
 tab.addEventListener('click', () => {
 this.sfx.tap();
@@ -20425,6 +21923,167 @@ bindPol('pol-green', 'greenEnergy', 'greenCity');
 bindPol('pol-edu', 'freeHigherEd');
 bindPol('pol-energy', 'energySubsidy');
 bindPol('pol-biz', 'bizTaxBreak', 'techBoost');
+document.getElementById('modal-backdrop').classList.add('open');
+}
+openBusLinesModal() {
+const body = document.getElementById('modal-body');
+document.getElementById('modal-title').textContent = '🚌 城市公交线路规划与调度中心';
+const lines = Array.isArray(this.sim.busLines) ? this.sim.busLines : [];
+const totalStops = (this.traffic?.busStops || []).length;
+const palette = ['#0ea5e9', '#10b981', '#f97316', '#a855f7', '#ef4444', '#eab308'];
+body.innerHTML = `
+<div class="modal-section" style="padding-bottom:8px;">
+<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between;margin-bottom:10px;">
+<div style="font-size:12px;color:#cbd5e1;">
+🚏 全城已建公交站：<strong>${totalStops} 座</strong> · 已开线路：<strong>${lines.length} 条</strong>
+</div>
+<div style="display:flex;gap:6px;flex-wrap:wrap;">
+<button class="btn-primary" id="btn-bus-autoplan" style="font-size:12px;padding:6px 10px;">✨ 一键智能规划环线</button>
+<button class="btn-secondary" id="btn-bus-new" style="font-size:12px;padding:6px 10px;">➕ 新建线路</button>
+<button class="btn-secondary" id="btn-bus-overlay" style="font-size:12px;padding:6px 10px;">🗺️ 3D线路网</button>
+</div>
+</div>
+<div class="issue-list-wrap">
+${lines.length === 0 ? `
+<div style="text-align:center;padding:22px 12px;color:#94a3b8;border:1px dashed rgba(148,163,184,0.35);border-radius:10px;font-size:12.5px;">
+暂未规划自定义公交线路。<br>
+请先在道路旁建 ≥ 2 座【🚏 智能公交站】，然后点击上方 <strong>✨ 一键智能规划环线</strong> 或 <strong>➕ 新建线路</strong>！
+</div>
+` : lines.map((ln) => `
+<div class="issue-item-card" style="flex-direction:column;align-items:stretch;gap:8px;">
+<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;">
+<div style="display:flex;align-items:center;gap:8px;">
+<span style="display:inline-block;width:13px;height:13px;border-radius:50%;background:${ln.colorHex};box-shadow:0 0 8px ${ln.colorHex};"></span>
+<strong style="color:#f8fafc;font-size:13px;">${ln.name}</strong>
+<span class="badge ${ln.active !== false ? 'ok' : 'warn'}" style="font-size:10px;">${ln.active !== false ? '运营中' : '已停运'}</span>
+<span style="font-size:11px;color:#7dd3fc;">载客 ${ln.dailyRiders || 0} 人次</span>
+</div>
+<div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap;">
+<button class="btn-secondary" data-bus-color="${ln.id}" title="切换涂装与3D光带颜色" style="font-size:11px;padding:4px 7px;">🎨 换色</button>
+<button class="btn-secondary" data-bus-dec="${ln.id}" style="font-size:11px;padding:4px 7px;">-</button>
+<span style="font-size:11.5px;color:#e2e8f0;min-width:44px;text-align:center;">🚌 ${ln.busCount || 2}辆</span>
+<button class="btn-secondary" data-bus-inc="${ln.id}" style="font-size:11px;padding:4px 7px;">+</button>
+<button class="btn-primary" data-bus-pick="${ln.id}" style="font-size:11px;padding:4px 8px;">📍 地图选站</button>
+<button class="btn-danger" data-bus-del="${ln.id}" style="font-size:11px;padding:4px 7px;">🗑️</button>
+</div>
+</div>
+<div style="display:flex;flex-wrap:wrap;gap:5px;align-items:center;font-size:11px;color:#cbd5e1;">
+<span style="color:#94a3b8;">途经站点 (${(ln.stops || []).length})：</span>
+${(ln.stops || []).length === 0
+? `<span style="color:#fbbf24;">请点右侧【📍 地图选站】添加至少2座公交站</span>`
+: ln.stops.map((st, sIdx) => `
+<span class="badge info" style="display:inline-flex;align-items:center;gap:4px;font-size:10.5px;">
+#${sIdx + 1} (${st.x},${st.z})
+<span data-bus-rmstop="${ln.id}:${sIdx}" style="cursor:pointer;color:#fca5a5;font-weight:700;" title="移除此站">×</span>
+</span>
+`).join('➔')}
+</div>
+</div>
+`).join('')}
+</div>
+</div>
+`;
+const autoBtn = document.getElementById('btn-bus-autoplan');
+if (autoBtn) {
+autoBtn.addEventListener('click', () => {
+const res = this.sim.autoPlanBusLines();
+if (res && res.ok) {
+this.sfx.milestone();
+this.renderer.overlayMode = 'transit';
+this.updateOverlayLegend();
+this.showToast(`✨ 已智能规划 ${res.lines.length} 条彩色公交环线！`);
+this.openBusLinesModal();
+} else {
+this.sfx.error();
+this.showToast(`⚠️ ${res?.reason || '至少需要建设 2 座智能公交站'}`);
+}
+});
+}
+const newBtn = document.getElementById('btn-bus-new');
+if (newBtn) {
+newBtn.addEventListener('click', () => {
+this.sfx.tap();
+const ln = this.sim.createBusLine();
+this.showToast(`➕ 已新建【${ln.name}】，请点击【📍 地图选站】添加途经公交站`);
+this.openBusLinesModal();
+});
+}
+const ovBtn = document.getElementById('btn-bus-overlay');
+if (ovBtn) {
+ovBtn.addEventListener('click', () => {
+this.sfx.tap();
+this.renderer.overlayMode = 'transit';
+this.sim.infraDirty = true;
+this.updateOverlayLegend();
+this.closeModal();
+this.showToast('🚌 已切换至 3D 城市公交线路网视图');
+});
+}
+body.querySelectorAll('[data-bus-color]').forEach((btn) => {
+btn.addEventListener('click', () => {
+this.sfx.tap();
+const id = Number(btn.dataset.busColor);
+const ln = (this.sim.busLines || []).find((l) => l.id === id);
+if (!ln) return;
+const nextCol = palette[(palette.indexOf(ln.colorHex) + 1) % palette.length];
+this.sim.setBusLineConfig(id, { colorHex: nextCol });
+this.openBusLinesModal();
+});
+});
+body.querySelectorAll('[data-bus-inc]').forEach((btn) => {
+btn.addEventListener('click', () => {
+this.sfx.tap();
+const id = Number(btn.dataset.busInc);
+const ln = (this.sim.busLines || []).find((l) => l.id === id);
+if (ln) this.sim.setBusLineConfig(id, { busCount: Math.min(6, (ln.busCount || 2) + 1) });
+this.openBusLinesModal();
+});
+});
+body.querySelectorAll('[data-bus-dec]').forEach((btn) => {
+btn.addEventListener('click', () => {
+this.sfx.tap();
+const id = Number(btn.dataset.busDec);
+const ln = (this.sim.busLines || []).find((l) => l.id === id);
+if (ln) this.sim.setBusLineConfig(id, { busCount: Math.max(1, (ln.busCount || 2) - 1) });
+this.openBusLinesModal();
+});
+});
+body.querySelectorAll('[data-bus-pick]').forEach((btn) => {
+btn.addEventListener('click', () => {
+this.sfx.tap();
+const id = Number(btn.dataset.busPick);
+this.selectTool('pan', null);
+this.autoOverlayActive = false;
+this.editingBusLineId = id;
+this.renderer.activeBusLineHighlight = id;
+this.renderer.overlayMode = 'transit';
+this.sim.infraDirty = true;
+this.updateOverlayLegend();
+this.updateToolHint();
+this.closeModal();
+this.showToast('📍 请在 3D 地图上依次点击【🚏 智能公交站】加入该线路，完成后点顶部【✅ 完成选站】', 3600);
+});
+});
+body.querySelectorAll('[data-bus-del]').forEach((btn) => {
+btn.addEventListener('click', () => {
+this.sfx.tap();
+const id = Number(btn.dataset.busDel);
+if (this.editingBusLineId === id) {
+this.editingBusLineId = null;
+this.renderer.activeBusLineHighlight = null;
+}
+this.sim.deleteBusLine(id);
+this.openBusLinesModal();
+});
+});
+body.querySelectorAll('[data-bus-rmstop]').forEach((el) => {
+el.addEventListener('click', () => {
+this.sfx.tap();
+const [lid, sidx] = el.dataset.busRmstop.split(':').map(Number);
+this.sim.removeStopFromBusLine(lid, sidx);
+this.openBusLinesModal();
+});
+});
 document.getElementById('modal-backdrop').classList.add('open');
 }
 openDisasterModal() {
@@ -20993,6 +22652,13 @@ renderer.applyExternalPBRTextures(tex);
 }
 }).catch(() => {});
 }
+if (typeof assetManager.loadGLBModels === 'function') {
+assetManager.loadGLBModels(globalThis.THREE).then((glbs) => {
+if (glbs && typeof renderer.applyExternalGLBModels === 'function') {
+renderer.applyExternalGLBModels(glbs);
+}
+}).catch(() => {});
+}
 }
 setSplashProgress(1.0, '就绪！欢迎回到山河天际线');
 setTimeout(dismissSplash, 160);
@@ -21036,6 +22702,8 @@ if (sim.grid[i].dam) damNear = true;
 const focusElev = inBounds(cx, cz) ? sim.getTileElev(cx, cz) : 0.3;
 const sunAngle = (sim.dayProgress - 0.25) * Math.PI * 2;
 const night = Math.max(0, Math.min(1, (-Math.sin(sunAngle) + 0.16) / 0.42));
+const wObj = sim.weather || { state: 'clear', intensity: 0 };
+const rainInt = (wObj.state === 'rain' || wObj.state === 'storm') ? Math.max(0.35, wObj.intensity || 0.7) : 0;
 return {
 camDist: renderer.camDist,
 focusElev,
@@ -21043,6 +22711,8 @@ waterNear: samples > 0 ? Math.min(1, (waterSum / samples) * 2.5) : 0,
 damNear,
 population: sim.population || 0,
 night,
+rainIntensity: rainInt,
+weatherState: wObj.state || 'clear',
 disasterActive: Boolean((disasters.meteors && disasters.meteors.length > 0) || disasters.tornado || disasters.shakeTime > 0)
 };
 }
