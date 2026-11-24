@@ -340,12 +340,12 @@ export class AssetManager {
   }
 
   getCacheName() {
-    const ver = (this.manifest && this.manifest.version) || 'v8.4';
+    const ver = (this.manifest && this.manifest.version) || 'v8.5';
     return `mini-skylines-${ver}`;
   }
 
   getAssetCacheName() {
-    const ver = (this.manifest && this.manifest.version) || 'v8.4-dev';
+    const ver = (this.manifest && this.manifest.version) || 'v8.5-dev';
     const assetHash = ver.split('-')[1] || 'dev';
     return `mini-skylines-assets-${assetHash}`;
   }
@@ -355,7 +355,7 @@ export class AssetManager {
       return { supported: false, version: 'offline-inline', cachedCount: 0, totalCount: 0, totalBytes: 0, complete: false };
     }
     const manifest = await this.loadManifest();
-    const version = (manifest && manifest.version) || 'v8.4';
+    const version = (manifest && manifest.version) || 'v8.5';
     const coreUrls = ['./', './index.html', './app.bundle.js', './vendor/three_classic.js', './manifest.json', './assets/manifest.json'];
     const assetUrls = manifest && Array.isArray(manifest.files) ? manifest.files.map((f) => './' + f.path) : [];
     const totalCount = coreUrls.length + assetUrls.length;
@@ -436,7 +436,7 @@ export class AssetManager {
     for (let i = 0; i < concurrency; i++) workers.push(run());
     await Promise.all(workers);
 
-    return { ok: failed === 0, cached: done - failed, total: items.length, failed, version: this.manifest?.version || 'v8.4' };
+    return { ok: failed === 0, cached: done - failed, total: items.length, failed, version: this.manifest?.version || 'v8.5' };
   }
 
   async checkForUpdates() {

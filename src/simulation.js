@@ -5670,17 +5670,17 @@ export class CitySimulation {
     this.applyTool('road_tunnel', this.computeLineOrLPath(32, 19, 41, 19, true), true);
     this.applyTool('road_2', this.computeLineOrLPath(42, 19, 46, 26), true);
 
-    // 3. Elevated Highway Viaducts (+1 Layer) + Smooth Multi-Tile Ramp + Over-Avenue Median Ramp!
+    // 3. Elevated Highway Viaducts (+1 Layer) + Smooth Multi-Tile Ramp + Over-Avenue Median Ramp (100% ramp-connected!)
     this.applyTool('road_2', this.computeLineOrLPath(9, 35, 12, 35), true);
     this.applyTool('road_ramp', [{ x: 10, z: 35 }, { x: 11, z: 35 }], true);
-    this.applyTool('road_elev', this.computeLineOrLPath(12, 35, 34, 35, true), true);
-    this.applyTool('road_2', this.computeLineOrLPath(33, 35, 35, 35), true);
-    this.applyTool('road_ramp', [{ x: 35, z: 35 }], true);
+    this.applyTool('road_elev', this.computeLineOrLPath(12, 35, 31, 35, true), true);
+    this.applyTool('road_2', this.computeLineOrLPath(31, 35, 34, 35), true);
+    this.applyTool('road_ramp', [{ x: 32, z: 35 }], true);
 
-    this.applyTool('road_1', [{ x: 25, z: 46 }, { x: 24, z: 46 }, { x: 23, z: 46 }, { x: 22, z: 46 }], true);
-    this.applyTool('road_ramp', [{ x: 25, z: 47 }], true);
-    this.applyTool('road_elev', this.computeLineOrLPath(25, 46, 25, 29, true), true);
-    this.applyTool('road_1', this.computeLineOrLPath(22, 28, 25, 28), true);
+    this.applyTool('road_1', [{ x: 25, z: 47 }, { x: 24, z: 47 }, { x: 23, z: 47 }, { x: 22, z: 47 }], true);
+    this.applyTool('road_elev', this.computeLineOrLPath(25, 45, 25, 29, true), true);
+    this.applyTool('road_ramp', [{ x: 25, z: 46 }], true);
+    this.applyTool('road_1', this.computeLineOrLPath(22, 27, 25, 27), true);
     this.applyTool('road_ramp', [{ x: 25, z: 28 }], true);
 
     // Over-Avenue Median Ramp along the z=38 4-lane Boulevard (keeps ground avenue flowing on both sides!)

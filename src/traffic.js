@@ -40,7 +40,8 @@ export class TrafficManager {
     this.trainTimer = 0;
     this.fireTimer = 0;
     this.policeTimer = 0;
-    this._accidentCooldown = 28;
+    this._accidentCooldown = 90;
+    this._jamCooldown = 0;
     this.aircraftTimer = 0;
     this.shipTimer = 2.0;
     this._boatSpawnTimer = 1.0;
@@ -58,6 +59,8 @@ export class TrafficManager {
     this.roadDegree = new Uint8Array(N);
     this.tileOccupancy = new Uint8Array(N);
     this.elevOccupancy = new Uint8Array(N);
+    this.elevViaductOpen = new Uint8Array(N);
+    this.tunnelOpen = new Uint8Array(N);
     this.rampMeta = new Map();
     this.lastRoadSignature = -1;
     this.lastGraphSignature = -1;
@@ -100,7 +103,8 @@ export class TrafficManager {
     this.spawnTimer = 0;
     this.fireTimer = 0;
     this.policeTimer = 0;
-    this._accidentCooldown = 28;
+    this._accidentCooldown = 90;
+    this._jamCooldown = 0;
     this.totalAccidentsCleared = 0;
     this.trainTimer = 0;
     this.aircraftTimer = 0;
@@ -109,6 +113,8 @@ export class TrafficManager {
     this.modalTimer = 0;
     this.tileOccupancy.fill(0);
     this.elevOccupancy.fill(0);
+    this.elevViaductOpen.fill(0);
+    this.tunnelOpen.fill(0);
     this.rampMeta.clear();
     this.lastRoadSignature = -1;
     this.lastGraphSignature = -1;
@@ -199,6 +205,7 @@ export class TrafficManager {
   refreshModalSplitDemand() {
     const grid = this.sim.grid;
     if (!grid || !grid.length) return;
+    this.ensureRampGraphFresh();
 
     let hasAnyRoad = false;
     let indJobs = 0;
@@ -224,8 +231,8 @@ export class TrafficManager {
         activeBusStops++;
       }
 
-      // Collect sidewalk pedestrian spawn candidates near populated zones, parks, bus stops & rail stations
-      if (passGround && (t.roadGround === 1 || t.roadGround === 2) && !t.dam && !t.ramp) {
+      // Collect sidewalk pedestrian spawn candidates near populated zones, parks, bus stops & rail stations (skip isolated 0-neighbor unfinished road stubs!)
+      if (passGround && (t.roadGround === 1 || t.roadGround === 2) && !t.dam && !t.ramp && (this.roadDegree[i] || 0) >= 1) {
         let pedHotspot = Boolean(t.busStop);
         if (!pedHotspot) {
           for (let dz = -2; dz <= 2 && !pedHotspot; dz++) {
@@ -518,15 +525,21 @@ export class TrafficManager {
         const highEnd = ordered[K - 1];
         const lowNb = this.sim.getTile(lowEnd.x + RAMP_DIRS[lowDir].dx, lowEnd.z + RAMP_DIRS[lowDir].dz);
         const highNb = this.sim.getTile(highEnd.x + RAMP_DIRS[highDir].dx, highEnd.z + RAMP_DIRS[highDir].dz);
-        const lowRef = (lowNb && this.isGroundRoadPassable(lowNb))
+        const hasLowGround = Boolean(lowNb && this.isGroundRoadPassable(lowNb));
+        const hasHighElev = Boolean(highNb && highNb.roadElevated > 0);
+        const rampConnected = hasLowGround && hasHighElev;
+        const lowRef = hasLowGround
           ? { x: lowNb.x, z: lowNb.z }
           : { x: lowEnd.x, z: lowEnd.z };
-        const highRef = (highNb && highNb.roadElevated > 0)
+        const highRef = hasHighElev
           ? { x: highNb.x, z: highNb.z }
           : { x: highEnd.x, z: highEnd.z };
+        const rampChainId = ordered[0].i + 1;
 
         for (let k = 0; k < K; k++) {
           this.rampMeta.set(ordered[k].i, {
+            chainId: rampChainId,
+            connected: rampConnected,
             mode,
             highDir,
             lowDir,
@@ -538,6 +551,121 @@ export class TrafficManager {
             lowRef,
             highRef
           });
+        }
+      }
+    }
+
+    // Physical Completeness Rule A: Elevated highway components MUST have >= 2 connected ramps,
+    // and half-built dead-end elevated sky-stubs are strictly CLOSED to traffic!
+    this.elevViaductOpen.fill(0);
+    const elevVis = new Uint8Array(N);
+    for (let i = 0; i < N; i++) {
+      const t = grid[i];
+      if (!(t.roadElevated > 0) || elevVis[i]) continue;
+      if (t.ramp) {
+        const rm = this.rampMeta.get(i);
+        if (!rm || (!rm.connected && !rm.throughElev)) continue;
+      }
+      const comp = [];
+      const connectedRampChains = new Set();
+      const q = [i];
+      elevVis[i] = 1;
+      for (let qh = 0; qh < q.length; qh++) {
+        const ci = q[qh];
+        comp.push(ci);
+        const ct = grid[ci];
+        const crm = ct.ramp ? this.rampMeta.get(ci) : null;
+        if (crm && crm.connected) connectedRampChains.add(crm.chainId);
+        const cx = ci % GRID_SIZE;
+        const cz = (ci / GRID_SIZE) | 0;
+        for (let d = 0; d < 4; d++) {
+          if (crm && d !== crm.lowDir && d !== crm.highDir) continue;
+          const nx = cx + RAMP_DIRS[d].dx;
+          const nz = cz + RAMP_DIRS[d].dz;
+          if (!inBounds(nx, nz)) continue;
+          const ni = idx(nx, nz);
+          if (elevVis[ni]) continue;
+          const nt = grid[ni];
+          if (!(nt.roadElevated > 0)) continue;
+          if (nt.ramp) {
+            const nrm = this.rampMeta.get(ni);
+            if (!nrm || (!nrm.connected && !nrm.throughElev)) continue;
+            const oppD = RAMP_DIRS[d].opp;
+            if (oppD !== nrm.lowDir && oppD !== nrm.highDir) continue;
+          }
+          elevVis[ni] = 1;
+          q.push(ni);
+        }
+      }
+      if (connectedRampChains.size >= 2) {
+        for (let k = 0; k < comp.length; k++) {
+          this.elevViaductOpen[comp[k]] = 1;
+        }
+      }
+    }
+    // Iteratively close any half-built dead-end elevated branch sticking out into mid-air off a completed viaduct!
+    let prunedElev = true;
+    while (prunedElev) {
+      prunedElev = false;
+      for (let i = 0; i < N; i++) {
+        if (!this.elevViaductOpen[i]) continue;
+        const t = grid[i];
+        if (t.ramp) continue;
+        const cx = i % GRID_SIZE;
+        const cz = (i / GRID_SIZE) | 0;
+        let openDeg = 0;
+        for (let d = 0; d < 4; d++) {
+          const nx = cx + RAMP_DIRS[d].dx;
+          const nz = cz + RAMP_DIRS[d].dz;
+          if (!inBounds(nx, nz)) continue;
+          const ni = idx(nx, nz);
+          if (!this.elevViaductOpen[ni]) continue;
+          const nt = grid[ni];
+          if (nt.ramp) {
+            const nrm = this.rampMeta.get(ni);
+            const oppD = RAMP_DIRS[d].opp;
+            if (!nrm || (oppD !== nrm.highDir && !(nrm.throughElev && oppD === nrm.lowDir))) continue;
+          }
+          openDeg++;
+        }
+        if (openDeg < 2) {
+          this.elevViaductOpen[i] = 0;
+          prunedElev = true;
+        }
+      }
+    }
+
+    // Physical Completeness Rule B: Mountain tunnels (roadGround === 4) MUST have >= 2 open surface portals!
+    this.tunnelOpen.fill(0);
+    const tunVis = new Uint8Array(N);
+    for (let i = 0; i < N; i++) {
+      if (grid[i].roadGround !== 4 || tunVis[i]) continue;
+      const comp = [];
+      const surfacePortals = new Set();
+      const q = [i];
+      tunVis[i] = 1;
+      for (let qh = 0; qh < q.length; qh++) {
+        const ci = q[qh];
+        comp.push(ci);
+        const cx = ci % GRID_SIZE;
+        const cz = (ci / GRID_SIZE) | 0;
+        for (let d = 0; d < 4; d++) {
+          const nx = cx + RAMP_DIRS[d].dx;
+          const nz = cz + RAMP_DIRS[d].dz;
+          if (!inBounds(nx, nz)) continue;
+          const ni = idx(nx, nz);
+          const nt = grid[ni];
+          if (nt.roadGround === 4 && !tunVis[ni]) {
+            tunVis[ni] = 1;
+            q.push(ni);
+          } else if (nt.roadGround >= 1 && nt.roadGround <= 3 && !nt.dam && this.isGroundRoadPassable(nt)) {
+            surfacePortals.add(ni);
+          }
+        }
+      }
+      if (surfacePortals.size >= 2) {
+        for (let k = 0; k < comp.length; k++) {
+          this.tunnelOpen[comp[k]] = 1;
         }
       }
     }
@@ -592,23 +720,29 @@ export class TrafficManager {
     if (!node) return false;
     const tile = this.sim.getTile(node.x, node.z);
     if (!tile) return false;
+    const nIdx = idx(node.x, node.z);
 
     if (node.onRamp) {
       if (!(tile.ramp === true && tile.roadElevated > 0 && this.isGroundRoadPassable(tile))) {
         return false;
       }
+      this.ensureRampGraphFresh();
+      const rm = this.rampMeta.get(nIdx);
+      if (!rm || !rm.connected || !this.elevViaductOpen[nIdx]) return false;
     } else if (node.layer === 0) {
       if (!this.isGroundRoadPassable(tile)) return false;
+      this.ensureRampGraphFresh();
+      if (tile.roadGround === 4 && !this.tunnelOpen[nIdx]) return false;
       if (node.onRamp === false && tile.ramp) {
-        this.ensureRampGraphFresh();
-        const rm = this.rampMeta.get(idx(node.x, node.z));
+        const rm = this.rampMeta.get(nIdx);
         if (!rm || !rm.throughGround) return false;
       }
     } else if (node.layer === 1) {
       if (!(tile.roadElevated > 0)) return false;
+      this.ensureRampGraphFresh();
+      if (!this.elevViaductOpen[nIdx]) return false;
       if (node.onRamp === false && tile.ramp) {
-        this.ensureRampGraphFresh();
-        const rm = this.rampMeta.get(idx(node.x, node.z));
+        const rm = this.rampMeta.get(nIdx);
         if (!rm || !rm.throughElev) return false;
       }
     } else {
@@ -765,7 +899,7 @@ export class TrafficManager {
 
     const stdOffFor = (node, tile) => {
       const multi = node.layer === 1 || (tile && tile.roadGround >= 2 && tile.roadGround !== 4);
-      return multi ? (v.laneSlot === 1 ? 0.24 : 0.11) : 0.17;
+      return multi ? (v.laneSlot === 1 ? 0.295 : 0.105) : 0.175;
     };
 
     // 1. Sloped Ramp Deck vehicle: median_split=0.10, mid_slip=0.68, bridgehead=0.15
@@ -793,7 +927,7 @@ export class TrafficManager {
       typeof t0.roadDir === 'number' && t0.roadDir >= 0 &&
       typeof t1.roadDir === 'number' && t1.roadDir >= 0;
     if (isOneWayPair) {
-      return v.laneSlot === 1 ? 0.18 : -0.16;
+      return v.laneSlot === 1 ? 0.19 : -0.17;
     }
 
     const isMultiLane =
@@ -802,7 +936,7 @@ export class TrafficManager {
       (t0 && t0.roadGround >= 2 && t0.roadGround !== 4) ||
       (t1 && t1.roadGround >= 2 && t1.roadGround !== 4);
 
-    let laneOff = isMultiLane ? (v.laneSlot === 1 ? 0.24 : 0.11) : 0.17;
+    let laneOff = isMultiLane ? (v.laneSlot === 1 ? 0.295 : 0.105) : 0.175;
 
     // 2. Ground underpass boulevard flare (0.39) around central median_split ramp
     if (p0.layer === 0 && p1.layer === 0) {
@@ -813,7 +947,7 @@ export class TrafficManager {
       if (split0 || split1) {
         if (split0 && !split1 && isMultiLane) {
           v.laneSlot = 1;
-          laneOff = 0.24;
+          laneOff = 0.295;
         }
         if (split0 && split1) return 0.39;
         if (!split0 && split1) {
@@ -825,7 +959,7 @@ export class TrafficManager {
       }
     }
 
-    // 3. Smooth outward arc bulge (+0.08) around roundabout hub center (only when hub degree >= 3)
+    // 3. Smooth outward arc bulge (+0.07) around roundabout hub center (only when hub degree >= 3)
     const r0 = p0.layer === 0 && t0?.junctionMode === 'roundabout' && this.roadDegree[i0] >= 3;
     const r1 = p1.layer === 0 && t1?.junctionMode === 'roundabout' && this.roadDegree[i1] >= 3;
     if (r0 || r1) {
@@ -835,13 +969,13 @@ export class TrafficManager {
       } else if (!r0 && r1) {
         rWeight = Math.sin(clampedT * Math.PI * 0.5);
       }
-      laneOff += 0.08 * rWeight;
+      laneOff += 0.07 * rWeight;
     }
     // Keep vehicles funnelled cleanly inside mountain tunnel bore opening (±0.35m) so wide trucks never clip portal piers!
     if (p0.layer === 0 && p1.layer === 0 && (t0?.roadGround === 4 || t1?.roadGround === 4)) {
       return Math.min(0.165, laneOff);
     }
-    return Math.min(0.34, laneOff);
+    return Math.min(0.35, laneOff);
   }
 
   syncVehicleTransform(v, effDt = 0) {
@@ -854,25 +988,37 @@ export class TrafficManager {
     const vz = w1.wz - w0.wz;
     const len = Math.hypot(vx, vz);
 
+    let segDirX = v.dirX || 0;
+    let segDirZ = v.dirZ || -1;
     if (len > 0.01) {
       const targetDirX = vx / len;
       const targetDirZ = vz / len;
-      if (effDt <= 0) {
+      segDirX = targetDirX;
+      segDirZ = targetDirZ;
+      if (effDt <= 0 || !Number.isFinite(v.dirX) || !Number.isFinite(v.dirZ)) {
         v.dirX = targetDirX;
         v.dirZ = targetDirZ;
       } else {
-        // Smooth steering interpolation so corners & roundabouts turn gracefully instead of snapping!
-        const steerRate = Math.min(1, effDt * 14);
-        v.dirX += (targetDirX - v.dirX) * steerRate;
-        v.dirZ += (targetDirZ - v.dirZ) * steerRate;
-        const dl = Math.hypot(v.dirX, v.dirZ) || 1;
-        v.dirX /= dl;
-        v.dirZ /= dl;
+        // True angular heading interpolation (lerpAngle) -> MATHEMATICALLY IMPOSSIBLE to lock 180° backwards on ramps/viaducts!
+        const dot = (v.dirX || 0) * targetDirX + (v.dirZ || 0) * targetDirZ;
+        if (dot < -0.65) {
+          // Instant heading alignment on sharp reversal so vehicles NEVER travel backwards or swing into oncoming lanes!
+          v.dirX = targetDirX;
+          v.dirZ = targetDirZ;
+        } else {
+          const curYaw = Math.atan2(v.dirX, v.dirZ);
+          const targetYaw = Math.atan2(targetDirX, targetDirZ);
+          const nextYaw = lerpAngle(curYaw, targetYaw, Math.min(1, effDt * 14));
+          v.dirX = Math.sin(nextYaw);
+          v.dirZ = Math.cos(nextYaw);
+        }
       }
     }
 
-    const rightX = -v.dirZ;
-    const rightZ = v.dirX;
+    // Use smooth heading for right-hand lane offset, falling back to true segment right when steering > 60° to prevent oncoming swings
+    const alignDot = v.dirX * segDirX + v.dirZ * segDirZ;
+    const rightX = alignDot >= 0.45 ? -v.dirZ : -segDirZ;
+    const rightZ = alignDot >= 0.45 ? v.dirX : segDirX;
     const targetLaneOff = this.getTargetLaneOffset(v, p0, p1);
     if (effDt <= 0 || v.curLaneOff === undefined) {
       v.curLaneOff = targetLaneOff;
@@ -891,15 +1037,15 @@ export class TrafficManager {
     const isT1 = p1.layer === 0 && !p1.onRamp && t1?.roadGround === 4;
 
     if (isT0 !== isT1) {
-      // Exact portal-mouth visibility & level pitch: cars enter/emerge smoothly right at the hooded arch opening!
+      // Exact portal-mouth visibility & level pitch: cars stay 1.0x full-size in renderer3d while _portalFade tracks deep hood occlusion
       v.pitch = 0;
       const ct = v.t || 0;
       if (!isT0 && isT1) {
-        v.inTunnel = ct >= 0.62;
-        v._portalFade = ct <= 0.50 ? 1.0 : Math.max(0.42, 1.0 - ((ct - 0.50) / 0.12) * 0.58);
+        v.inTunnel = ct >= 0.60;
+        v._portalFade = ct <= 0.42 ? 1.0 : Math.max(0.42, 1.0 - ((ct - 0.42) / 0.18) * 0.58);
       } else {
-        v.inTunnel = ct < 0.38;
-        v._portalFade = ct >= 0.50 ? 1.0 : Math.max(0.42, 0.42 + ((ct - 0.38) / 0.12) * 0.58);
+        v.inTunnel = ct < 0.40;
+        v._portalFade = ct >= 0.58 ? 1.0 : Math.max(0.42, 0.42 + ((ct - 0.40) / 0.18) * 0.58);
       }
     } else {
       // Finite-difference 3D slope pitch across exact Hermite ramp & terrain profile!
@@ -1213,21 +1359,28 @@ export class TrafficManager {
     const eIdx = idx(ex, ez);
 
     if (!this.isGroundRoadPassable(grid[eIdx])) return null;
+    if (grid[eIdx].roadGround === 4 && !this.tunnelOpen[eIdx]) return null;
     if (startLayer === 1 && !startOnRamp) {
-      if (!(grid[sIdx].roadElevated > 0)) return null;
-    } else if (!this.isGroundRoadPassable(grid[sIdx])) {
-      return null;
+      if (!(grid[sIdx].roadElevated > 0) || !this.elevViaductOpen[sIdx]) return null;
+    } else if (startOnRamp) {
+      const srm = this.rampMeta.get(sIdx);
+      if (!grid[sIdx].ramp || !srm || !srm.connected || !this.elevViaductOpen[sIdx]) return null;
+    } else {
+      if (!this.isGroundRoadPassable(grid[sIdx])) return null;
+      if (grid[sIdx].roadGround === 4 && !this.tunnelOpen[sIdx]) return null;
     }
 
     let startState = startOnRamp ? (2 * N + sIdx) : (startLayer === 1 ? (N + sIdx) : sIdx);
     if (!startOnRamp && startLayer === 0 && grid[sIdx].ramp && !this.rampMeta.get(sIdx)?.throughGround) {
-      if (!this.rampMeta.has(sIdx)) return null;
+      const srm = this.rampMeta.get(sIdx);
+      if (!srm || !srm.connected || !this.elevViaductOpen[sIdx]) return null;
       startState = 2 * N + sIdx;
     }
 
     let endState = eIdx;
     if (grid[eIdx].ramp && !this.rampMeta.get(eIdx)?.throughGround) {
-      if (!this.rampMeta.has(eIdx)) return null;
+      const erm = this.rampMeta.get(eIdx);
+      if (!erm || !erm.connected || !this.elevViaductOpen[eIdx]) return null;
       endState = 2 * N + eIdx;
     }
     if (startState === endState) return null;
@@ -1333,7 +1486,7 @@ export class TrafficManager {
           if (avoidTruckBan && nt.banTrucks === true && ni !== eIdx) continue;
 
           if (!nt.ramp) {
-            if (this.isGroundRoadPassable(nt)) {
+            if (this.isGroundRoadPassable(nt) && (nt.roadGround !== 4 || this.tunnelOpen[ni])) {
               relax(ni, curCost + this.groundStepCost(nt, ni), cur);
             }
           } else {
@@ -1344,8 +1497,8 @@ export class TrafficManager {
             if (nrm.throughGround && this.isGroundRoadPassable(nt) && (oppD === nrm.lowDir || oppD === nrm.highDir)) {
               relax(ni, curCost + this.groundStepCost(nt, ni), cur);
             }
-            // 2) Enter sloped ramp deck strictly from its lowDir mouth (lowFrac === 0)
-            if (oppD === nrm.lowDir && Math.abs(nrm.lowFrac) < 1e-5) {
+            // 2) Enter sloped ramp deck strictly from its lowDir mouth ONLY if ramp & viaduct are structurally finished!
+            if (nrm.connected && this.elevViaductOpen[ni] && oppD === nrm.lowDir && Math.abs(nrm.lowFrac) < 1e-5) {
               relax(2 * N + ni, curCost + 0.68, cur);
             }
           }
@@ -1377,13 +1530,13 @@ export class TrafficManager {
           const nt = grid[ni];
 
           if (!nt.ramp) {
-            if (nt.roadElevated > 0) {
+            if (nt.roadElevated > 0 && this.elevViaductOpen[ni]) {
               const eCost = 0.56 + (nt.elevCongestion || 0) * 1.4;
               relax(N + ni, curCost + eCost, cur);
             }
           } else {
             const nrm = this.rampMeta.get(ni);
-            if (!nrm) continue;
+            if (!nrm || !this.elevViaductOpen[ni]) continue;
             const oppD = RAMP_DIRS[d].opp;
             // 1) Continue along continuous elevated viaduct deck (mid_slip throughElev)
             if (nrm.throughElev && nt.roadElevated > 0 && (oppD === nrm.lowDir || oppD === nrm.highDir)) {
@@ -1391,7 +1544,7 @@ export class TrafficManager {
               relax(N + ni, curCost + eCost, cur);
             }
             // 2) Enter sloped ramp deck strictly from its highDir crest (highFrac === 1.0)
-            if (oppD === nrm.highDir && Math.abs(nrm.highFrac - 1.0) < 1e-5) {
+            if (nrm.connected && oppD === nrm.highDir && Math.abs(nrm.highFrac - 1.0) < 1e-5) {
               relax(2 * N + ni, curCost + 0.68, cur);
             }
           }
@@ -1410,11 +1563,11 @@ export class TrafficManager {
             const nt = grid[ni];
             if (Math.abs(crm.highFrac - 1.0) < 1e-5) {
               const nrm = nt.ramp ? this.rampMeta.get(ni) : null;
-              if (nt.roadElevated > 0 && (!nt.ramp || nrm?.throughElev)) {
+              if (nt.roadElevated > 0 && this.elevViaductOpen[ni] && (!nt.ramp || nrm?.throughElev)) {
                 const eCost = 0.56 + (nt.elevCongestion || 0) * 1.4;
                 relax(N + ni, curCost + eCost, cur);
               }
-            } else if (nt.ramp && this.rampMeta.has(ni)) {
+            } else if (nt.ramp && this.rampMeta.has(ni) && this.elevViaductOpen[ni]) {
               relax(2 * N + ni, curCost + 0.68, cur);
             }
           }
@@ -1598,9 +1751,9 @@ export class TrafficManager {
       originTile: { x: bestStation.x, z: bestStation.z },
       destTile: { x: burningTile.x, z: burningTile.z },
       color: [0.95, 0.14, 0.14],
-      length: 0.38,
-      width: 0.15,
-      height: 0.15,
+      length: 0.44,
+      width: 0.185,
+      height: 0.19,
       path: bestPath,
       seg: 0,
       t: 0,
@@ -1781,7 +1934,7 @@ export class TrafficManager {
     );
 
     const highSafety = (chosenTile.safety || 0) >= 60;
-    const totalTime = Number(options.duration || (isBadWeather ? 11.5 : (highSafety ? 8.5 : 10.0)));
+    const totalTime = Number(options.duration || (isBadWeather ? 8.5 : (highSafety ? 6.5 : 7.5)));
     const wCenter = tileToWorld(chosenTile.x, chosenTile.z);
     const primaryVeh = involved[0];
     const acc = {
@@ -1800,7 +1953,7 @@ export class TrafficManager {
       policeStationTile: null,
       totalTime,
       remainingTime: totalTime,
-      selfClearTimer: Number(options.selfClearTime || 26.0),
+      selfClearTimer: Number(options.selfClearTime || 18.0),
       elapsed: 0
     };
 
@@ -1815,7 +1968,7 @@ export class TrafficManager {
     }
 
     this.accidents.push(acc);
-    this._accidentCooldown = 48;
+    this._accidentCooldown = 240;
     chosenTile.congestion = Math.max(chosenTile.congestion || 0, 0.85);
     this.sim.latestChirp = {
       user: '@交警支队播报',
@@ -1839,7 +1992,7 @@ export class TrafficManager {
       ? '四向十字路口'
       : (deg === 3 ? '三向交叉路口' : (t.roadGround >= 2 ? '四车道主干道' : '城市街道'));
     const wCenter = tileToWorld(tx, tz);
-    const totalTime = Number(options.duration || 7.0);
+    const totalTime = Number(options.duration || 5.0);
     const acc = {
       id: this._nextAccidentId++,
       type: 'jam',
@@ -1856,11 +2009,12 @@ export class TrafficManager {
       policeStationTile: null,
       totalTime,
       remainingTime: totalTime,
-      selfClearTimer: Number(options.selfClearTime || 14.0),
+      selfClearTimer: Number(options.selfClearTime || 12.0),
       elapsed: 0
     };
 
     this.accidents.push(acc);
+    this._jamCooldown = 95;
     t.congestion = Math.max(t.congestion || 0, 0.90);
     this.sim.latestChirp = {
       user: '@交警支队播报',
@@ -2127,9 +2281,9 @@ export class TrafficManager {
             originTile: { x: stopA.x, z: stopA.z },
             destTile: { x: stopB.x, z: stopB.z },
             color: [0.10, 0.72, 0.88],
-            length: 0.42,
-            width: 0.15,
-            height: 0.15,
+            length: 0.50,
+            width: 0.168,
+            height: 0.185,
             path: busPath,
             seg: 0,
             t: 0,
@@ -2176,9 +2330,9 @@ export class TrafficManager {
               originTile: { x: stopA.bx, z: stopA.bz },
               destTile: { x: stopB.bx, z: stopB.bz },
               color: [0.10, 0.72, 0.88],
-              length: 0.42,
-              width: 0.15,
-              height: 0.15,
+              length: 0.50,
+              width: 0.168,
+              height: 0.185,
               path: busPath,
               seg: 0,
               t: 0,
@@ -2384,11 +2538,11 @@ export class TrafficManager {
     if (!path || path.length < 2) return;
 
     let color = CAR_COLORS[(Math.random() * CAR_COLORS.length) | 0];
-    let length = 0.25, width = 0.13, height = 0.10, maxSpeed = 1.85 + Math.random() * 0.45;
-    if (kind === 'taxi') { color = [0.98, 0.78, 0.12]; maxSpeed = 2.15; }
-    else if (kind === 'truck') { color = [0.90, 0.46, 0.16]; length = 0.35; width = 0.15; height = 0.15; maxSpeed = 1.55; }
-    else if (kind === 'garbagetruck') { color = [0.22, 0.74, 0.38]; length = 0.36; width = 0.15; height = 0.15; maxSpeed = 1.50; }
-    else if (kind === 'bus') { color = [0.18, 0.58, 0.92]; length = 0.40; width = 0.15; height = 0.15; maxSpeed = 1.65; }
+    let length = 0.31, width = 0.15, height = 0.12, maxSpeed = 1.85 + Math.random() * 0.45;
+    if (kind === 'taxi') { color = [0.98, 0.78, 0.12]; length = 0.31; width = 0.15; maxSpeed = 2.15; }
+    else if (kind === 'truck') { color = [0.90, 0.46, 0.16]; length = 0.44; width = 0.165; height = 0.19; maxSpeed = 1.55; }
+    else if (kind === 'garbagetruck') { color = [0.22, 0.74, 0.38]; length = 0.44; width = 0.185; height = 0.21; maxSpeed = 1.50; }
+    else if (kind === 'bus') { color = [0.18, 0.58, 0.92]; length = 0.50; width = 0.168; height = 0.185; maxSpeed = 1.65; }
 
     const w0 = tileToWorld(path[0].x, path[0].z);
     if (!this._hasSpawnClearance(w0.wx, w0.wz, path[0].layer || 0, 0.68)) return;
@@ -2622,8 +2776,8 @@ export class TrafficManager {
   canSwitchParallelLane(v, selfIdx, altSlot, safeGap) {
     const cur = v.path[v.seg];
     if (!cur || cur.onRamp) return false;
-    const altOff = altSlot === 1 ? 0.24 : 0.11;
-    const shiftLat = altOff - (v.curLaneOff !== undefined ? v.curLaneOff : (v.laneSlot === 1 ? 0.24 : 0.11));
+    const altOff = altSlot === 1 ? 0.295 : 0.105;
+    const shiftLat = altOff - (v.curLaneOff !== undefined ? v.curLaneOff : (v.laneSlot === 1 ? 0.295 : 0.105));
 
     for (let k = 0; k < this.vehicles.length; k++) {
       if (k === selfIdx) continue;
@@ -2636,17 +2790,44 @@ export class TrafficManager {
 
       const rvx = o.wx - v.wx;
       const rvz = o.wz - v.wz;
-      if (rvx * rvx + rvz * rvz > 0.49) continue;
+      if (rvx * rvx + rvz * rvz > 0.85) continue;
 
       const sameDir = v.dirX * o.dirX + v.dirZ * o.dirZ;
       if (sameDir < 0.45) continue;
 
       const fwdDist = rvx * v.dirX + rvz * v.dirZ;
       const latDistToAlt = Math.abs((-rvx * v.dirZ + rvz * v.dirX) - shiftLat);
-      if (latDistToAlt < 0.11 && fwdDist > -0.28 && fwdDist < safeGap + 0.14) {
+      const minLatClr = ((v.width || 0.15) + (o.width || 0.15)) * 0.56;
+      const minBackClr = ((v.length || 0.31) + (o.length || 0.31)) * 0.55 + 0.10;
+      if (latDistToAlt < minLatClr && fwdDist > -minBackClr && fwdDist < safeGap + 0.16) {
         return false;
       }
     }
+    return true;
+  }
+
+  // Exact 2D Oriented Bounding Box separating-axis overlap test (prevents physical car-vs-car penetration!)
+  _vehiclesOverlapOBB(ax, az, aDirX, aDirZ, aLen, aWid, bx, bz, bDirX, bDirZ, bLen, bWid, margin = 0.025) {
+    const dx = bx - ax;
+    const dz = bz - az;
+    const ahL = aLen * 0.5 + margin;
+    const ahW = aWid * 0.5 + margin;
+    const bhL = bLen * 0.5 + margin;
+    const bhW = bWid * 0.5 + margin;
+
+    const aRx = -aDirZ, aRz = aDirX;
+    const bRx = -bDirZ, bRz = bDirX;
+
+    // Test 4 SAT axes: aFwd, aRight, bFwd, bRight
+    const cFF = Math.abs(aDirX * bDirX + aDirZ * bDirZ);
+    const cFR = Math.abs(aDirX * bRx + aDirZ * bRz);
+    const cRF = Math.abs(aRx * bDirX + aRz * bDirZ);
+    const cRR = Math.abs(aRx * bRx + aRz * bRz);
+
+    if (Math.abs(dx * aDirX + dz * aDirZ) > ahL + bhL * cFF + bhW * cFR) return false;
+    if (Math.abs(dx * aRx + dz * aRz) > ahW + bhL * cRF + bhW * cRR) return false;
+    if (Math.abs(dx * bDirX + dz * bDirZ) > bhL + ahL * cFF + ahW * cRF) return false;
+    if (Math.abs(dx * bRx + dz * bRz) > bhW + ahL * cFR + ahW * cRR) return false;
     return true;
   }
 
@@ -2719,19 +2900,21 @@ export class TrafficManager {
       this.tryDispatchPoliceCar();
     }
 
-    // Rare realistic spontaneous traffic accidents on busy/wet intersections (strictly gated for populated cities!)
+    // Rare realistic spontaneous traffic accidents on busy/wet intersections (strictly gated, ~1 every 4-6 min, cap 1!)
     this._accidentCooldown = Math.max(0, (this._accidentCooldown || 0) - effDt);
+    this._jamCooldown = Math.max(0, (this._jamCooldown || 0) - effDt);
+    const activeCrashCount = this.accidents.reduce((acc, a) => acc + (a.type !== 'jam' ? 1 : 0), 0);
     if (
       this._accidentCooldown <= 0 &&
-      this.accidents.length < 2 &&
-      (this.sim.population || 0) >= 250 &&
-      this.vehicles.length >= 12
+      activeCrashCount < 1 &&
+      (this.sim.population || 0) >= 450 &&
+      this.vehicles.length >= 16
     ) {
       const wInfo = typeof this.sim.getWeatherInfo === 'function' ? this.sim.getWeatherInfo() : { id: 'sunny' };
       const weatherRisk = wInfo.id === 'storm' || wInfo.id === 'blizzard'
-        ? 3.0
-        : (wInfo.id === 'rain' || wInfo.id === 'snow' ? 2.0 : 1.0);
-      if (Math.random() < 0.0065 * weatherRisk * effDt) {
+        ? 2.2
+        : (wInfo.id === 'rain' || wInfo.id === 'snow' ? 1.5 : 1.0);
+      if (Math.random() < 0.00045 * weatherRisk * effDt) {
         this.triggerTrafficAccident();
       }
     }
@@ -2837,6 +3020,7 @@ export class TrafficManager {
       let targetSpeed = v.maxSpeed * roadBoost * weatherRoadMult;
       let blockedBySignal = false;
       let blockedByVehicle = false;
+      let hardStop = false;
 
       if (v._jamClearTimer > 0) {
         v._jamClearTimer = Math.max(0, v._jamClearTimer - effDt);
@@ -2860,21 +3044,21 @@ export class TrafficManager {
           const moveVertical = Math.abs(nxt.z - cur.z) > 0;
 
           if (jMode === 'roundabout') {
-            // ZERO red-light stop! Enter roundabout whenever hub occupancy < 4
-            if (v.t > 0.25 && v.t < 0.58 && !inRoundaboutHub && this.tileOccupancy[nxtIdx] >= 4) {
+            // ZERO red-light stop! Enter roundabout whenever hub occupancy < 4 (brake from t=0.08 so cars halt cleanly behind crosswalk!)
+            if (v.t > 0.08 && v.t < 0.44 && !inRoundaboutHub && this.tileOccupancy[nxtIdx] >= 4) {
               targetSpeed = 0;
               blockedBySignal = true;
             }
           } else if (jMode === 'yield') {
-            // Major road has ZERO signal stop; minor road yields only if intersection occupancy >= 2
+            // Major road has ZERO signal stop; minor road yields behind crosswalk (brake from t=0.08) if intersection occupancy >= 2
             const isMajor = this.isMajorYieldApproach(curTile, nxt.x, nxt.z, moveVertical);
-            if (!isMajor && v.t > 0.25 && v.t < 0.58 && this.tileOccupancy[nxtIdx] >= 2) {
+            if (!isMajor && v.t > 0.08 && v.t < 0.44 && this.tileOccupancy[nxtIdx] >= 2) {
               targetSpeed = 0;
               blockedBySignal = true;
             }
           } else {
-            // 'signal' mode with Right-Turn-On-Red when intersection occupancy < 2
-            if (v.t > 0.25 && v.t < 0.58 && this.isSignalRed(nxt.x, nxt.z, moveVertical)) {
+            // 'signal' mode: brake from t=0.08 (halt by ~0.24) so noses NEVER protrude into cross-street outer lanes; Right-Turn-On-Red when clear
+            if (v.t > 0.08 && v.t < 0.44 && this.isSignalRed(nxt.x, nxt.z, moveVertical)) {
               if (this.isTurningRightAtNext(v) && this.tileOccupancy[nxtIdx] < 2) {
                 targetSpeed = Math.min(targetSpeed, v.maxSpeed * 0.78);
               } else {
@@ -2883,13 +3067,13 @@ export class TrafficManager {
               }
             }
           }
+          if (blockedBySignal && v.t > 0.22) hardStop = true;
         }
       }
 
       // Full 360° 3D Bumper-to-Bumper, Strict Total-Order Intersection Cross-Traffic, Opposing-Turn & 4-Lane Overtaking Avoidance!
-      // On 4-lane avenues, parallel lanes sit 0.13m apart (0.11 vs 0.24), so use 0.105m same-lane width so overtakers pass cleanly!
-      const latLimit = isMultiLane ? 0.105 : 0.175;
-      let hardStop = false;
+      // On 4-lane avenues, parallel lane centers sit 0.190m apart (0.105 vs 0.295), so 0.145m gives wide trucks a clean physical air gap!
+      const latLimit = isMultiLane ? 0.145 : 0.185;
       for (let j = 0; j < this.vehicles.length; j++) {
         if (i === j) continue;
         const o = this.vehicles[j];
@@ -2903,17 +3087,18 @@ export class TrafficManager {
         const rvx = o.wx - v.wx;
         const rvz = o.wz - v.wz;
         const distSq = rvx * rvx + rvz * rvz;
-        if (distSq > 1.12) continue; // > 1.06 units away
+        if (distSq > 1.25) continue; // > 1.12 units away
 
         const sameDir = v.dirX * o.dirX + v.dirZ * o.dirZ;
         const fwdDist = rvx * v.dirX + rvz * v.dirZ;
         const latDist = Math.abs(-rvx * v.dirZ + rvz * v.dirX);
-        const safeGap = (v.length + o.length) * 0.62 + 0.14;
+        const safeGap = (v.length + o.length) * 0.56 + 0.14;
         const oIsStoppedHazard = Boolean(o.accidentId || o.policeOnSceneId);
 
         if (sameDir >= 0.45) {
           // 1. Same-lane car-following & smooth speed matching + 4-lane parallel overtake (also routes around parked accidents)
-          const effLat = oIsStoppedHazard ? Math.max(latLimit, 0.19) : latLimit;
+          const minBodyLat = ((v.width || 0.15) + (o.width || 0.15)) * 0.52;
+          const effLat = oIsStoppedHazard ? Math.max(latLimit, minBodyLat + 0.04) : Math.max(latLimit, minBodyLat * 0.92);
           if (fwdDist > 0.01 && fwdDist < safeGap * 1.50 && latDist < effLat) {
             if (fwdDist < safeGap) {
               if (allowOvertake && targetSpeed > 0 && o.speed < v.maxSpeed * 0.85 && !(v.laneChangeCooldown > 0)) {
@@ -2926,17 +3111,17 @@ export class TrafficManager {
               }
               targetSpeed = 0;
               blockedByVehicle = true;
-              if (fwdDist < safeGap * 0.74) hardStop = true;
+              if (fwdDist < safeGap * 0.80) hardStop = true;
               break;
             } else {
               // Gentle proportional follow deceleration before hard stop
-              targetSpeed = Math.min(targetSpeed, Math.max(0.12, o.speed * 0.90));
+              targetSpeed = Math.min(targetSpeed, Math.max(0.10, o.speed * 0.90));
             }
           }
         } else if (sameDir > -0.75) {
-          // 2. Strict Total-Order Predictive Cross-Traffic Guard (MATHEMATICALLY ZERO mutual-yield deadlocks!)
+          // 2. Strict Total-Order Predictive Cross-Traffic Guard (ZERO ghost-clipping even in green-wave, ZERO mutual deadlocks!)
           const crossFwd = (v.length * 0.5 + o.width * 0.5) + 0.30 + Math.min(0.28, (v.speed || 0) * 0.16);
-          const crossLat = (o.length * 0.5 + v.width * 0.5) + 0.16;
+          const crossLat = (o.length * 0.5 + v.width * 0.5) + 0.15;
           const oLead = Math.min(0.48, (o.speed || 0) * 0.36);
           const fRvx = rvx + o.dirX * oLead;
           const fRvz = rvz + o.dirZ * oLead;
@@ -2946,10 +3131,11 @@ export class TrafficManager {
           const predHit = futFwd > 0.01 && futFwd < crossFwd && futLat < crossLat * 1.05;
           if (directHit || predHit) {
             const oFwdToV = (-rvx) * o.dirX + (-rvz) * o.dirZ;
-            // Strict antisymmetric order: only yield if `o` is a parked hazard OR strictly deeper inside than `v` OR wins deterministic ID tie-break!
-            const oStrictlyCloser = !inJamGreenWave && (oFwdToV + 0.08 < fwdDist);
-            const tieBreak = !inJamGreenWave && Math.abs(oFwdToV - fwdDist) <= 0.08 && ((v.id || i) > (o.id || j));
-            const yieldToCross = oIsStoppedHazard || oStrictlyCloser || tieBreak;
+            // Strict antisymmetric total order: ONLY treat o as physically blocking if o is already past our line (oFwdToV < 0.02 -> o cannot yield to us!)
+            const oAlreadyPastLine = directHit && oFwdToV < 0.02 && fwdDist < (v.length * 0.5 + o.width * 0.5 + 0.14);
+            const oStrictlyCloser = oFwdToV + 0.08 < fwdDist;
+            const tieBreak = Math.abs(oFwdToV - fwdDist) <= 0.08 && ((v.id || i) > (o.id || j));
+            const yieldToCross = oIsStoppedHazard || oAlreadyPastLine || oStrictlyCloser || tieBreak;
             if (yieldToCross) {
               targetSpeed = 0;
               blockedByVehicle = true;
@@ -2958,29 +3144,29 @@ export class TrafficManager {
             }
           }
         } else {
-          // 3. Opposing-direction left-turn / narrow-street overlap guard (prevents head-on clipping without deadlock!)
+          // 3. Opposing-direction left-turn / narrow-street overlap guard (strict antisymmetric tie-break prevents head-on deadlock!)
           const oppFwd = (v.length + o.length) * 0.56 + 0.16;
-          const oppLat = (v.width + o.width) * 0.68;
+          const oppLat = (v.width + o.width) * 0.65;
           if (fwdDist > 0.01 && fwdDist < oppFwd && latDist < oppLat) {
-            const yieldOpp = oIsStoppedHazard || (!inJamGreenWave && ((v.id || i) > (o.id || j)));
+            const yieldOpp = oIsStoppedHazard || (o.maxSpeed <= 0.1) || ((v.id || i) > (o.id || j));
             if (yieldOpp) {
               targetSpeed = 0;
               blockedByVehicle = true;
-              if (fwdDist < oppFwd * 0.75) hardStop = true;
+              if (fwdDist < oppFwd * 0.78) hardStop = true;
               break;
             }
           }
         }
       }
 
-      const accel = targetSpeed < v.speed ? (hardStop ? 24.0 : 10.5) : 3.4;
+      const accel = targetSpeed < v.speed ? (hardStop ? 26.0 : 11.0) : 3.4;
       v.speed += (targetSpeed - v.speed) * Math.min(1, effDt * accel);
-      if (hardStop && targetSpeed === 0) v.speed = Math.min(v.speed, 0.04);
+      if (hardStop && targetSpeed === 0) v.speed = Math.min(v.speed, 0.02);
       if (v.speed < 0.01 && targetSpeed === 0) v.speed = 0;
 
       // Smart Anti-Vanish Jam & Police-Direction Timer:
       //  - Waiting at a red light OR queued behind an active crash/jam police scene NEVER deletes cars!
-      //  - Severe real-world jams (v.maxSpeed > 0.1) summon 🚓 Traffic Police to wave cars through instead of poof-vanishing!
+      //  - Severe multi-car jams (v.maxSpeed > 0.1, >=2 cars) summon 🚓 Traffic Police (95s cooldown) instead of poof-vanishing!
       const nearActiveIncident = this.accidents.length > 0 && this.accidents.some(
         (a) => Math.abs(a.x - cur.x) <= 3 && Math.abs(a.z - cur.z) <= 3
       );
@@ -2995,13 +3181,11 @@ export class TrafficManager {
         v.stuckTimer = Math.max(0, v.stuckTimer - effDt * 2.5);
       }
 
-      // Proactive Traffic Police Dispatch when a live vehicle has been stuck in a severe jam for >= 7.5s
-      if (v.maxSpeed > 0.1 && v.stuckTimer >= 7.5 && !nearActiveIncident && cur.layer === 0 && !cur.onRamp) {
+      // Proactive reroute at 8.5s when genuinely jammed
+      if (v.maxSpeed > 0.1 && v.stuckTimer >= 8.5 && !nearActiveIncident && cur.layer === 0 && !cur.onRamp) {
         if (!v._reroutedOnce && this.tryRerouteVehicle(v)) {
           v._reroutedOnce = true;
           v.stuckTimer = 3.0;
-        } else if ((this.sim.population || 0) >= 120) {
-          this.triggerTrafficJamIntervention(cur.x, cur.z);
         }
       }
 
@@ -3026,8 +3210,12 @@ export class TrafficManager {
         }
 
         // Healthy live vehicle (v.maxSpeed > 0.1): NEVER poof-delete mid-road!
-        // Summon Traffic Police + record congestion impact + release via green-wave creep so it VISIBLY drives out!
-        if (cur.layer === 0 && !cur.onRamp && !nearActiveIncident && (this.sim.population || 0) >= 120) {
+        const activeJamCount = this.accidents.reduce((acc, a) => acc + (a.type === 'jam' ? 1 : 0), 0);
+        const jamTileDense = (this.tileOccupancy[oldIdx] || 0) >= 2;
+        if (
+          cur.layer === 0 && !cur.onRamp && !nearActiveIncident &&
+          jamTileDense && activeJamCount < 1 && this._jamCooldown <= 0 && (this.sim.population || 0) >= 120
+        ) {
           this.triggerTrafficJamIntervention(cur.x, cur.z);
         }
         if (!v._jamPenaltyReported) {
@@ -3047,7 +3235,42 @@ export class TrafficManager {
 
       const prevSeg = v.seg;
       const segWorldLen = Math.hypot(nxt.x - cur.x, nxt.z - cur.z) || 1.0;
-      v.t += (v.speed / segWorldLen) * effDt;
+      const stepDtT = (v.speed / segWorldLen) * effDt;
+
+      // Hard Physical 2D OBB Non-Penetration Guard: NEVER advance into another vehicle's solid bounding box!
+      let obbBlocked = false;
+      if (stepDtT > 1e-4 && !v.inTunnel) {
+        const w0c = tileToWorld(cur.x, cur.z);
+        const w1c = tileToWorld(nxt.x, nxt.z);
+        const candWx = v.wx + (w1c.wx - w0c.wx) * stepDtT;
+        const candWz = v.wz + (w1c.wz - w0c.wz) * stepDtT;
+        for (let j = 0; j < this.vehicles.length; j++) {
+          if (i === j) continue;
+          const o = this.vehicles[j];
+          if (o.inTunnel !== v.inTunnel) continue;
+          const oCur = o.path[o.seg];
+          if (!oCur) continue;
+          if (oCur.layer !== cur.layer && !cur.onRamp && !oCur.onRamp) continue;
+          if (Math.abs((v.wy || 0) - (o.wy || 0)) > 0.20) continue;
+          const curDistSq = (o.wx - v.wx) * (o.wx - v.wx) + (o.wz - v.wz) * (o.wz - v.wz);
+          if (curDistSq > 0.64) continue;
+          const candDistSq = (o.wx - candWx) * (o.wx - candWx) + (o.wz - candWz) * (o.wz - candWz);
+          // Only block if moving closer into overlap (always allow separating movements so vehicles untangle cleanly!)
+          if (candDistSq < curDistSq && this._vehiclesOverlapOBB(
+            candWx, candWz, v.dirX, v.dirZ, v.length || 0.31, v.width || 0.15,
+            o.wx, o.wz, o.dirX, o.dirZ, o.length || 0.31, o.width || 0.15, 0.015
+          )) {
+            obbBlocked = true;
+            break;
+          }
+        }
+      }
+      if (obbBlocked) {
+        v.speed = 0;
+        blockedByVehicle = true;
+      } else {
+        v.t += stepDtT;
+      }
 
       while (v.t >= 1.0) {
         v.t -= 1.0;
@@ -3318,8 +3541,9 @@ export class TrafficManager {
 
   _isPedRoadTile(tx, tz) {
     if (!inBounds(tx, tz)) return false;
-    const t = this.sim.grid[idx(tx, tz)];
-    return Boolean(t && (t.roadGround === 1 || t.roadGround === 2) && !t.dam && !t.ramp && this.isGroundRoadPassable(t));
+    const ti = idx(tx, tz);
+    const t = this.sim.grid[ti];
+    return Boolean(t && (t.roadGround === 1 || t.roadGround === 2) && !t.dam && !t.ramp && this.isGroundRoadPassable(t) && (this.roadDegree[ti] || 0) >= 1);
   }
 
   _pickPedNextTile(tx, tz, prevX, prevZ) {
@@ -3526,25 +3750,47 @@ export class TrafficManager {
         }
       }
 
-      // Gentle pedestrian crosswalk courtesy yield when a moving vehicle is physically crossing directly ahead
-      let pedYield = false;
+      // Physical Pedestrian-vs-Vehicle OBB Blocking (checks BOTH stopped AND moving cars -> ZERO phasing through vehicles!)
+      let pedBlocked = false;
+      let pedInsideCar = false;
+      const stepDist = p.speed * effDt;
+      const candWx = p.wx + (p.dirX || 0) * (stepDist + 0.08);
+      const candWz = p.wz + (p.dirZ || 0) * (stepDist + 0.08);
       const vehs = this.vehicles;
       for (let vj = 0; vj < vehs.length; vj++) {
         const veh = vehs[vj];
-        if (!veh || veh.inTunnel || (veh.speed || 0) < 0.08) continue;
-        const dx = veh.wx - p.wx;
-        const dz = veh.wz - p.wz;
-        if (dx * dx + dz * dz < 0.085) {
-          const ahead = dx * (p.dirX || 0) + dz * (p.dirZ || 0);
-          if (ahead > -0.02 && ahead < 0.28) {
-            pedYield = true;
-            break;
+        if (!veh || veh.inTunnel) continue;
+        const vCur = veh.path && veh.path[veh.seg];
+        if (vCur && (vCur.layer === 1 || vCur.onRamp)) continue; // Elevated highway cars are overhead
+        const dx = candWx - veh.wx;
+        const dz = candWz - veh.wz;
+        if (dx * dx + dz * dz > 0.64) continue;
+        const vdx = veh.dirX || 0;
+        const vdz = veh.dirZ || 1;
+        const localFwd = dx * vdx + dz * vdz;
+        const localLat = Math.abs(-dx * vdz + dz * vdx);
+        const halfL = (veh.length || 0.34) * 0.5;
+        const halfW = (veh.width || 0.16) * 0.5;
+        const moveLead = (veh.speed || 0) > 0.10 ? 0.28 : 0.06;
+        if (localFwd > -(halfL + 0.12) && localFwd < (halfL + 0.12 + moveLead) && localLat < (halfW + 0.12)) {
+          pedBlocked = true;
+          // Check if citizen is already right inside vehicle's tight envelope (step gently back onto curb)
+          const cDx = p.wx - veh.wx;
+          const cDz = p.wz - veh.wz;
+          const cFwd = cDx * vdx + cDz * vdz;
+          const cLat = Math.abs(-cDx * vdz + cDz * vdx);
+          if (Math.abs(cFwd) < halfL + 0.05 && cLat < halfW + 0.05) {
+            pedInsideCar = true;
           }
+          break;
         }
       }
-      if (!pedYield) {
-        p.t += p.speed * effDt;
-        p.walkPhase = (p.walkPhase + p.speed * effDt * 15) % (Math.PI * 2);
+      if (!pedBlocked) {
+        p.t += stepDist;
+        p.walkPhase = (p.walkPhase + stepDist * 15) % (Math.PI * 2);
+      } else if (pedInsideCar) {
+        // Gently back up onto the curb so a citizen never stays inside a car that pulled up to the crosswalk
+        p.t = Math.max(0.02, p.t - stepDist * 0.8);
       }
 
       if (p.t >= 1.0) {

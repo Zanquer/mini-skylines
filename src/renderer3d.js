@@ -2144,16 +2144,8 @@ export class CityRenderer3D {
 
       const obj = entry.obj;
       obj.visible = true;
-      // Smooth curb entry/exit & tunnel-mouth depth easing (prevents sudden visual pop-in/out & hillside bumper poke!)
-      let vScale = 1.0;
-      if (!v.busLineId && !v.accidentId && !v.policeOnSceneId && v.path && v.path.length >= 2) {
-        if (v.seg === 0 && v.t < 0.22) vScale = 0.35 + (v.t / 0.22) * 0.65;
-        else if (v.seg >= v.path.length - 2 && v.t > 0.78) vScale = 0.35 + ((1.0 - v.t) / 0.22) * 0.65;
-      }
-      if (!isUnder && typeof v._portalFade === 'number' && v._portalFade < 1.0) {
-        vScale *= v._portalFade;
-      }
-      obj.scale.setScalar(Math.max(0.35, Math.min(1.0, vScale)));
+      // Keep all vehicles at true physical 1.0x scale on roads (NEVER shrink buses/cars into miniature toy scale!)
+      obj.scale.setScalar(1.0);
       this.vehiclePool.push({ kind: v.kind, obj, vehicle: v });
 
       const yawBase = Math.atan2(v.dirX, v.dirZ) + (v.accidentYawOffset || 0);
@@ -2545,12 +2537,14 @@ export class CityRenderer3D {
         const deckY = this.sim.infraHeights?.roadCornerY
           ? this._sampleInfraHeight(this.sim.infraHeights.roadCornerY, acc.wx, acc.wz)
           : (acc.wy || this.sim.getTileElev(acc.x, acc.z) + 0.03);
-        const coneOffsets = [[-0.25, -0.22], [0.25, -0.22], [-0.25, 0.22], [0.25, 0.22]];
-        for (let ci = 0; ci < coneOffsets.length && accConeCount < this._poolCaps.accidentCone; ci++) {
-          const cone = this._acquirePoolMesh(this.accidentConePool, accConeCount++, this.geos.taperSpire, this.mats.meteorGlow);
-          cone.scale.set(0.095, 0.085, 0.095);
-          cone.position.set(acc.wx + coneOffsets[ci][0], deckY + 0.045, acc.wz + coneOffsets[ci][1]);
-          cone.visible = true;
+        if (acc.type !== 'jam') {
+          const coneOffsets = [[-0.24, -0.20], [0.24, -0.20], [-0.24, 0.20], [0.24, 0.20]];
+          for (let ci = 0; ci < coneOffsets.length && accConeCount < this._poolCaps.accidentCone; ci++) {
+            const cone = this._acquirePoolMesh(this.accidentConePool, accConeCount++, this.geos.taperSpire, this.mats.meteorGlow);
+            cone.scale.set(0.072, 0.068, 0.072);
+            cone.position.set(acc.wx + coneOffsets[ci][0], deckY + 0.036, acc.wz + coneOffsets[ci][1]);
+            cone.visible = true;
+          }
         }
         if (accBeaconCount < this._poolCaps.accidentBeacon) {
           const beacon = this._acquirePoolMesh(this.accidentBeaconPool, accBeaconCount++, this.geos.waterSphere, this.mats.redCross);

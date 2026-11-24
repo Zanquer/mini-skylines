@@ -3526,10 +3526,22 @@ export function buildContinuousRoadAndViaductGroup(THREE, sim, overlayMode, mats
           }
         }
 
-        // Cylindrical support piers (portal straddle twin columns when ground road/rail/throughGround is underneath!)
+        // Cylindrical support piers (portal straddle twin columns aligned perpendicular to the ground road/rail below; span cleanly over ground intersections so piers NEVER block crosswalks or traffic lanes!)
         const isMidSlipSelf = Boolean(rmSelf && rmSelf.mode === 'mid_slip');
         const skipCableWaterPier = Boolean(elevCableSpanMask[i] && t.roadGround === 0 && t.rail === 0);
-        const placePier = skipCableWaterPier
+        let gNS = false;
+        let gEW = false;
+        let overGroundCross = false;
+        if (t.roadGround >= 1 && t.roadGround <= 3 && !t.dam) {
+          gNS =
+            (inBounds(x, z - 1) && grid[idx(x, z - 1)].roadGround >= 1 && grid[idx(x, z - 1)].roadGround <= 4) ||
+            (inBounds(x, z + 1) && grid[idx(x, z + 1)].roadGround >= 1 && grid[idx(x, z + 1)].roadGround <= 4);
+          gEW =
+            (inBounds(x - 1, z) && grid[idx(x - 1, z)].roadGround >= 1 && grid[idx(x - 1, z)].roadGround <= 4) ||
+            (inBounds(x + 1, z) && grid[idx(x + 1, z)].roadGround >= 1 && grid[idx(x + 1, z)].roadGround <= 4);
+          overGroundCross = gNS && gEW;
+        }
+        const placePier = (skipCableWaterPier || (overGroundCross && !isMidSlipSelf && connCount >= 2))
           ? false
           : (isMidSlipSelf
             ? (rmSelf.chainLen >= 2 && ((x + z) % 2 === 0))
@@ -3541,8 +3553,8 @@ export function buildContinuousRoadAndViaductGroup(THREE, sim, overlayMode, mats
           const groundY = cellElev[i] - 0.16;
 
           if (t.roadGround > 0 || t.rail > 0 || isMidSlipSelf || (rmSelf && rmSelf.throughGround) || adjacentToFlaredRamp) {
-            // Portal straddle twin columns + overhead cap bent beam clear of both ground & slip-ramp vehicles!
-            const spanAlongX = !hasEW;
+            // Portal straddle twin columns + overhead cap bent beam clear of BOTH parallel & perpendicular ground roads and slip ramps!
+            const spanAlongX = (gNS && !gEW) ? true : ((gEW && !gNS) ? false : !hasEW);
             const halfSpan = isMidSlipSelf ? 0.46 : (adjacentToFlaredRamp ? 0.68 : 0.44);
             const colR = isMidSlipSelf ? 0.054 : 0.062;
             const ox = spanAlongX ? halfSpan : 0;
