@@ -2033,20 +2033,43 @@ export class CityRenderer3D {
     this._signalSyncAccum = 0;
 
     const brightRed = 0xff2b3a;
+    const brightAmber = 0xfbbf24;
     const dimRed = 0x3b1216;
     const brightGreen = 0x22f57a;
     const dimGreen = 0x103321;
 
+    const hasStateApi = this.traffic && typeof this.traffic.getSignalState === 'function';
+    const hasRedApi = this.traffic && typeof this.traffic.isSignalRed === 'function';
+
     for (let i = 0; i < this._signalEntries.length; i++) {
       const s = this._signalEntries[i];
       const isNS = s.axis === 'NS';
-      const isRed = this.traffic && typeof this.traffic.isSignalRed === 'function'
-        ? this.traffic.isSignalRed(s.tx, s.tz, isNS)
-        : false;
-      this._tmpColor.setHex(isRed ? brightRed : dimRed);
-      this._signalRedInst.setColorAt(i, this._tmpColor);
-      this._tmpColor.setHex(isRed ? dimGreen : brightGreen);
-      this._signalGreenInst.setColorAt(i, this._tmpColor);
+      let state = 'green';
+      if (hasStateApi) {
+        const sig = this.traffic.getSignalState(s.tx, s.tz);
+        if (sig && sig.active) {
+          state = isNS ? sig.nsVeh : sig.ewVeh;
+        }
+      } else if (hasRedApi) {
+        state = this.traffic.isSignalRed(s.tx, s.tz, isNS) ? 'red' : 'green';
+      }
+      if (state === 'green') {
+        this._tmpColor.setHex(dimRed);
+        this._signalRedInst.setColorAt(i, this._tmpColor);
+        this._tmpColor.setHex(brightGreen);
+        this._signalGreenInst.setColorAt(i, this._tmpColor);
+      } else if (state === 'yellow') {
+        // Amber-Yellow clearance phase on top lens while cross-street holds red!
+        this._tmpColor.setHex(brightAmber);
+        this._signalRedInst.setColorAt(i, this._tmpColor);
+        this._tmpColor.setHex(dimGreen);
+        this._signalGreenInst.setColorAt(i, this._tmpColor);
+      } else {
+        this._tmpColor.setHex(brightRed);
+        this._signalRedInst.setColorAt(i, this._tmpColor);
+        this._tmpColor.setHex(dimGreen);
+        this._signalGreenInst.setColorAt(i, this._tmpColor);
+      }
     }
     if (this._signalRedInst.instanceColor) this._signalRedInst.instanceColor.needsUpdate = true;
     if (this._signalGreenInst.instanceColor) this._signalGreenInst.instanceColor.needsUpdate = true;

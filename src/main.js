@@ -144,7 +144,7 @@ function bootGame() {
     ui.showToast(
       restored
         ? `👋 已恢复离线进度【${sim.cityName}】(${sim.getFormattedDate()})`
-        : '🏞️ 山河天际线 Pro v8.5 已启动！全尺寸物理防穿模、行人避车、高架零倒车与未竣工封闭全面升级！'
+        : '🏞️ 山河天际线 Pro v8.6 已启动！路口一键管控、四相位黄灯/全红清场配时与行人绿灯安全过街全面升级！'
     );
   }, 550);
 

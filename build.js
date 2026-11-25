@@ -111,8 +111,8 @@ if (fs.existsSync(assetManifestPath)) {
   assetManifest = JSON.parse(fs.readFileSync(assetManifestPath, 'utf8'));
 }
 const codeHash = crypto.createHash('sha256').update(pwaAppJS).digest('hex').slice(0, 8);
-const assetHashPart = (assetManifest.version || 'v8.5-dev').split('-')[1] || 'dev';
-const buildVersion = `v8.5-${assetHashPart}-${codeHash}`;
+const assetHashPart = (assetManifest.version || 'v8.6-dev').split('-')[1] || 'dev';
+const buildVersion = `v8.6-${assetHashPart}-${codeHash}`;
 assetManifest.version = buildVersion;
 if (fs.existsSync(path.join(WWW, 'assets'))) {
   fs.writeFileSync(assetManifestPath, JSON.stringify(assetManifest, null, 2), 'utf8');

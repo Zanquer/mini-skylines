@@ -1242,11 +1242,18 @@ export class GameUI {
               return;
             }
             const tappedTile = this.sim.getTile(hit.tx, hit.tz);
+            const tappedDeg = (tappedTile && (tappedTile.roadGround === 1 || tappedTile.roadGround === 2) && !tappedTile.dam)
+              ? this.sim.getRoadIntersectionDegree(hit.tx, hit.tz)
+              : 0;
             const fallbackW = tileToWorld(hit.tx, hit.tz);
             const wx = typeof hit.wx === 'number' ? hit.wx : fallbackW.wx;
             const wz = typeof hit.wz === 'number' ? hit.wz : fallbackW.wz;
-            const veh = (!tappedTile?.building && !tappedTile?.dam)
-              ? this.traffic?.findVehicleNearWorld?.(wx, wz, 0.58)
+            // Tight direct-body vehicle hit radius so clicking busy intersections reliably selects the intersection tile (never stolen by nearby buses!);
+            // clicking an intersection while already inspecting a vehicle immediately switches down to the intersection controls!
+            const vehPickRadius = tappedDeg >= 3 ? 0.18 : 0.28;
+            const alreadyInspectingVeh = Boolean(this.inspectedVehicle);
+            const veh = (!tappedTile?.building && !tappedTile?.dam && !(tappedDeg >= 3 && alreadyInspectingVeh))
+              ? this.traffic?.findVehicleNearWorld?.(wx, wz, vehPickRadius)
               : null;
             if (veh) {
               this.inspectVehicle(veh);
@@ -1430,23 +1437,70 @@ export class GameUI {
       this.renderer.selectedTile = { x: dx, z: dz };
       this.renderer.previewTiles = [{ x: dx, z: dz }];
       this.renderer.previewColor = [0.22, 0.92, 0.55];
-      if (actionsEl && !isLiveRefresh) {
-        actionsEl.style.display = 'flex';
-        actionsEl.innerHTML = `
+    }
+    if (actionsEl && !isLiveRefresh) {
+      // Find road/intersection tile right beneath or immediately ahead of this vehicle for instant 1-tap junction control!
+      const curNode = veh.path && veh.path[veh.seg];
+      const nxtNode = veh.path && veh.path[veh.seg + 1];
+      let roadTarget = null;
+      let roadTargetDeg = 0;
+      for (const cand of [curNode, nxtNode]) {
+        if (!cand || cand.layer !== 0 || cand.onRamp) continue;
+        const ct = this.sim.getTile(cand.x, cand.z);
+        if (!ct || !(ct.roadGround === 1 || ct.roadGround === 2) || ct.dam) continue;
+        const d = this.sim.getRoadIntersectionDegree(cand.x, cand.z);
+        if (d >= 3) {
+          roadTarget = { x: cand.x, z: cand.z };
+          roadTargetDeg = d;
+          break;
+        }
+        if (!roadTarget) {
+          roadTarget = { x: cand.x, z: cand.z };
+          roadTargetDeg = d;
+        }
+      }
+
+      let btnHtml = '';
+      if (roadTarget) {
+        const lbl = roadTargetDeg >= 3
+          ? `🚦 切换下方路口管制 (${roadTarget.x}, ${roadTarget.z})`
+          : `🛣️ 管理下方路段 (${roadTarget.x}, ${roadTarget.z})`;
+        btnHtml += `
+          <button class="btn-primary" id="btn-inspect-under-road" style="width:100%;padding:6px 10px;font-size:11.5px;">
+            ${lbl}
+          </button>
+        `;
+      }
+      if (hasDest) {
+        btnHtml += `
           <button class="btn-secondary" id="btn-jump-veh-dest" style="width:100%;padding:6px 10px;font-size:11.5px;">
             📍 镜头追踪至目的地 (${dx}, ${dz})
           </button>
         `;
+      }
+      if (btnHtml) {
+        actionsEl.style.display = 'flex';
+        actionsEl.style.flexDirection = 'column';
+        actionsEl.style.gap = '5px';
+        actionsEl.innerHTML = btnHtml;
+        const roadBtn = document.getElementById('btn-inspect-under-road');
+        if (roadBtn && roadTarget) {
+          roadBtn.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            this.inspectTile(roadTarget.x, roadTarget.z);
+          });
+        }
         const jumpBtn = document.getElementById('btn-jump-veh-dest');
-        if (jumpBtn) {
-          jumpBtn.addEventListener('click', () => {
+        if (jumpBtn && hasDest) {
+          jumpBtn.addEventListener('click', (ev) => {
+            ev.stopPropagation();
             this.flyToTile(dx, dz);
           });
         }
+      } else {
+        actionsEl.style.display = 'none';
+        actionsEl.innerHTML = '';
       }
-    } else if (actionsEl && !isLiveRefresh) {
-      actionsEl.style.display = 'none';
-      actionsEl.innerHTML = '';
     }
 
     hintEl.textContent = activeAcc
@@ -1622,10 +1676,18 @@ export class GameUI {
         accRowHtml = `<div style="grid-column:1/-1;color:#fde68a;">${isJam ? '🚦 <strong>拥堵疏导：</strong>' : '🚨 <strong>交通事故：</strong>'}${tileAcc.cause} · 预计 <strong>${rem.toFixed(1)} 秒</strong>恢复 (${pct}%)</div>`;
       }
 
+      const sigState = (deg >= 3 && curJMode === 'signal' && typeof this.traffic?.getSignalState === 'function')
+        ? this.traffic.getSignalState(x, z)
+        : null;
+      const sigLiveHtml = (sigState && sigState.active)
+        ? `<span class="badge info" id="insp-sig-live">${sigState.phaseLabel} · ${sigState.activeRem.toFixed(1)}s</span>`
+        : '';
+
       badgesEl.innerHTML = `
         <span class="badge info">海拔 ${elev}m</span>
         ${accBadgeHtml}
         ${deg >= 3 ? `<span class="badge ok">${jBadgeLabel}</span>` : ''}
+        ${sigLiveHtml}
         ${isOneWay ? `<span class="badge info">${dirArrows[t.roadDir] || '➡️ 单行道'}</span>` : ''}
         ${t.banTrucks ? `<span class="badge warn">🚫 禁行重卡</span>` : ''}
         ${t.busStop ? `<span class="badge ok">🚌 智能公交站</span>` : ''}
@@ -1656,43 +1718,93 @@ export class GameUI {
 
         if (deg >= 3) {
           const rbtCost = (t.roundaboutPaid || this.sim.difficulty === 'sandbox') ? '已建/免费' : '¥120';
+          const curSigPreset = t.signalPreset || 'balanced';
+          const curYieldAxis = t.yieldAxis || 'auto';
           htmlAct += `
             <div class="junction-ctrl-lbl">🎛️ 路口交通管制方案（治堵利器）：</div>
             <div class="junction-ctrl-wrap">
-              <button class="junction-btn ${curJMode === 'signal' ? 'active' : ''}" data-jmode="signal">
-                <span>🚦 标准红绿灯</span>
-                <span style="font-size:10px;opacity:0.8;">正交均衡放行</span>
+              <button type="button" class="junction-btn ${curJMode === 'signal' ? 'active' : ''}" data-jmode="signal">
+                <span>🚦 智能红绿灯</span>
+                <span style="font-size:10px;opacity:0.85;">黄灯+全红+行人清场</span>
               </button>
-              <button class="junction-btn ${curJMode === 'yield' ? 'active' : ''}" data-jmode="yield">
-                <span>🛑 支路让主路(无灯)</span>
-                <span style="font-size:10px;opacity:0.8;">大道全速直行</span>
+              <button type="button" class="junction-btn ${curJMode === 'yield' ? 'active' : ''}" data-jmode="yield">
+                <span>🛑 主路优先(无灯)</span>
+                <span style="font-size:10px;opacity:0.85;">主干全速·支路礼让</span>
               </button>
-              <button class="junction-btn ${curJMode === 'roundabout' ? 'active' : ''}" data-jmode="roundabout">
+              <button type="button" class="junction-btn ${curJMode === 'roundabout' ? 'active' : ''}" data-jmode="roundabout">
                 <span>🔄 改建环岛(${rbtCost})</span>
                 <span style="font-size:10px;opacity:0.85;color:#fde68a;">消除红绿灯死锁</span>
               </button>
             </div>
           `;
+          if (curJMode === 'signal') {
+            htmlAct += `
+              <div class="junction-ctrl-lbl" style="margin-top:2px;">⏱️ 红绿灯配时方案（行人仅绿灯前段进斑马线）：</div>
+              <div class="junction-sub-row">
+                <button type="button" class="junction-sub-btn ${curSigPreset === 'balanced' ? 'active' : ''}" data-sigpreset="balanced">⚖️ 均衡 16s</button>
+                <button type="button" class="junction-sub-btn ${curSigPreset === 'ns_heavy' ? 'active' : ''}" data-sigpreset="ns_heavy">↕️ 南北加长</button>
+                <button type="button" class="junction-sub-btn ${curSigPreset === 'ew_heavy' ? 'active' : ''}" data-sigpreset="ew_heavy">↔️ 东西加长</button>
+              </div>
+            `;
+          } else if (curJMode === 'yield') {
+            htmlAct += `
+              <div class="junction-ctrl-lbl" style="margin-top:2px;">🛣️ 主路优先方向（可手动指定南北/东西主路）：</div>
+              <div class="junction-sub-row">
+                <button type="button" class="junction-sub-btn ${curYieldAxis === 'auto' ? 'active' : ''}" data-yieldaxis="auto">✨ 自动大道</button>
+                <button type="button" class="junction-sub-btn ${curYieldAxis === 'ns' ? 'active' : ''}" data-yieldaxis="ns">↕️ 南北为主</button>
+                <button type="button" class="junction-sub-btn ${curYieldAxis === 'ew' ? 'active' : ''}" data-yieldaxis="ew">↔️ 东西为主</button>
+              </div>
+            `;
+          }
         }
 
         if (canManageRoad) {
           htmlAct += `<div style="display:flex;gap:6px;flex-wrap:wrap;">`;
           if (isOneWay) {
-            htmlAct += `<button class="btn-primary" id="btn-flip-oneway" style="flex:1;font-size:11.5px;padding:6px 8px;">🔁 反转单行方向</button>`;
+            htmlAct += `<button type="button" class="btn-primary" id="btn-flip-oneway" style="flex:1;font-size:11.5px;padding:6px 8px;">🔁 反转单行方向</button>`;
           }
           if (t.busStop) {
-            htmlAct += `<button class="btn-primary" id="btn-open-bus-lines" style="flex:1;font-size:11.5px;padding:6px 8px;">🚌 公交线路管理</button>`;
+            htmlAct += `<button type="button" class="btn-primary" id="btn-open-bus-lines" style="flex:1;font-size:11.5px;padding:6px 8px;">🚌 公交线路管理</button>`;
           }
-          htmlAct += `<button class="${t.banTrucks ? 'btn-primary' : 'btn-secondary'}" id="btn-toggle-truck-ban" style="flex:1;font-size:11.5px;padding:6px 8px;">${t.banTrucks ? '✅ 解除重卡禁行' : '🚫 禁行重型货车(降噪)'}</button>`;
+          htmlAct += `<button type="button" class="${t.banTrucks ? 'btn-primary' : 'btn-secondary'}" id="btn-toggle-truck-ban" style="flex:1;font-size:11.5px;padding:6px 8px;">${t.banTrucks ? '✅ 解除重卡禁行' : '🚫 禁行重型货车(降噪)'}</button>`;
           htmlAct += `</div>`;
         }
 
         actionsEl.innerHTML = htmlAct;
         actionsEl.querySelectorAll('[data-jmode]').forEach((jbtn) => {
-          jbtn.addEventListener('click', () => {
+          jbtn.addEventListener('click', (ev) => {
+            ev.stopPropagation();
             const nextMode = jbtn.dataset.jmode;
             const res = this.sim.setJunctionMode(x, z, nextMode);
             if (res.ok) {
+              const modeNames = { signal: '🚦 智能红绿灯', yield: '🛑 主路优先(无灯)', roundabout: '🔄 景观环岛' };
+              this.showToast(`✅ 路口 (${x},${z}) 已切换为【${modeNames[nextMode] || nextMode}】`, 2000);
+              this.refreshHUD();
+              this.inspectTile(x, z);
+            }
+          });
+        });
+        actionsEl.querySelectorAll('[data-sigpreset]').forEach((pbtn) => {
+          pbtn.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            const preset = pbtn.dataset.sigpreset;
+            const res = this.sim.setJunctionSignalPreset?.(x, z, preset);
+            if (res && res.ok) {
+              const names = { balanced: '⚖️ 均衡 16s（6.6s+6.6s）', ns_heavy: '↕️ 南北加长 18s（9.2s+6.0s）', ew_heavy: '↔️ 东西加长 18s（6.0s+9.2s）' };
+              this.showToast(`⏱️ 路口 (${x},${z}) 配时已设为【${names[preset] || preset}】`, 2200);
+              this.refreshHUD();
+              this.inspectTile(x, z);
+            }
+          });
+        });
+        actionsEl.querySelectorAll('[data-yieldaxis]').forEach((abtn) => {
+          abtn.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            const axis = abtn.dataset.yieldaxis;
+            const res = this.sim.setJunctionYieldAxis?.(x, z, axis);
+            if (res && res.ok) {
+              const names = { auto: '✨ 自动按道路等级识别', ns: '↕️ 强制南北方向为主路', ew: '↔️ 强制东西方向为主路' };
+              this.showToast(`🛣️ 路口 (${x},${z}) 主路方向已设为【${names[axis] || axis}】`, 2200);
               this.refreshHUD();
               this.inspectTile(x, z);
             }
@@ -1793,22 +1905,33 @@ export class GameUI {
       }
     } else if (
       this.renderer?.selectedTile &&
-      document.getElementById('inspector-card')?.classList.contains('open') &&
-      Array.isArray(this.traffic?.accidents) &&
-      this.traffic.accidents.some((a) => a.x === this.renderer.selectedTile.x && a.z === this.renderer.selectedTile.z)
+      document.getElementById('inspector-card')?.classList.contains('open')
     ) {
-      // Keep live accident clearance countdown ticking smoothly while inspecting an accident road tile!
       const st = this.renderer.selectedTile;
-      const tileAcc = this.traffic.accidents.find((a) => a.x === st.x && a.z === st.z);
-      if (tileAcc) {
-        const rem = tileAcc.state === 'awaiting_police' ? tileAcc.selfClearTimer : tileAcc.remainingTime;
-        const tot = tileAcc.state === 'awaiting_police' ? 26.0 : (tileAcc.totalTime || 10.0);
-        const pct = Math.max(4, Math.min(100, Math.round((1 - rem / Math.max(1, tot)) * 100)));
-        const progWrap = document.getElementById('insp-prog-wrap');
-        const progFill = document.getElementById('insp-prog-fill');
-        if (progWrap && progFill) {
-          progWrap.style.display = 'block';
-          progFill.style.width = `${pct}%`;
+      // Live-update signal phase & countdown text without recreating action buttons!
+      const sigLiveEl = document.getElementById('insp-sig-live');
+      if (sigLiveEl && typeof this.traffic?.getSignalState === 'function') {
+        const sig = this.traffic.getSignalState(st.x, st.z);
+        if (sig && sig.active) {
+          sigLiveEl.textContent = `${sig.phaseLabel} · ${sig.activeRem.toFixed(1)}s`;
+        }
+      }
+      if (
+        Array.isArray(this.traffic?.accidents) &&
+        this.traffic.accidents.some((a) => a.x === st.x && a.z === st.z)
+      ) {
+        // Keep live accident clearance countdown ticking smoothly while inspecting an accident road tile!
+        const tileAcc = this.traffic.accidents.find((a) => a.x === st.x && a.z === st.z);
+        if (tileAcc) {
+          const rem = tileAcc.state === 'awaiting_police' ? tileAcc.selfClearTimer : tileAcc.remainingTime;
+          const tot = tileAcc.state === 'awaiting_police' ? 26.0 : (tileAcc.totalTime || 10.0);
+          const pct = Math.max(4, Math.min(100, Math.round((1 - rem / Math.max(1, tot)) * 100)));
+          const progWrap = document.getElementById('insp-prog-wrap');
+          const progFill = document.getElementById('insp-prog-fill');
+          if (progWrap && progFill) {
+            progWrap.style.display = 'block';
+            progFill.style.width = `${pct}%`;
+          }
         }
       }
     }

@@ -869,6 +869,42 @@ export class CitySimulation {
     return { ok: true, cost };
   }
 
+  setJunctionSignalPreset(x, z, preset) {
+    const t = this.getTile(x, z);
+    if (!t || !(t.roadGround === 1 || t.roadGround === 2)) return { ok: false };
+    if (!['balanced', 'ns_heavy', 'ew_heavy'].includes(preset)) return { ok: false };
+    if ((t.signalPreset || 'balanced') === preset && (t.junctionMode || 'signal') === 'signal') {
+      return { ok: true };
+    }
+    this.pushUndoSnapshot('红绿灯配时方案');
+    t.junctionMode = 'signal';
+    t.signalPreset = preset;
+    this.infraDirty = true;
+    if (this.traffic && typeof this.traffic.refreshRoadGraph === 'function') {
+      this.traffic.refreshRoadGraph();
+    }
+    if (this.sfx && this.sfx.tap) this.sfx.tap();
+    return { ok: true, preset };
+  }
+
+  setJunctionYieldAxis(x, z, axis) {
+    const t = this.getTile(x, z);
+    if (!t || !(t.roadGround === 1 || t.roadGround === 2)) return { ok: false };
+    if (!['auto', 'ns', 'ew'].includes(axis)) return { ok: false };
+    if ((t.yieldAxis || 'auto') === axis && t.junctionMode === 'yield') {
+      return { ok: true };
+    }
+    this.pushUndoSnapshot('主路优先方向');
+    t.junctionMode = 'yield';
+    t.yieldAxis = axis;
+    this.infraDirty = true;
+    if (this.traffic && typeof this.traffic.refreshRoadGraph === 'function') {
+      this.traffic.refreshRoadGraph();
+    }
+    if (this.sfx && this.sfx.tap) this.sfx.tap();
+    return { ok: true, axis };
+  }
+
   // ==================== 15-Step Lightweight Undo Stack ====================
   canUndo() {
     return this.undoStack.length > 0;
@@ -898,6 +934,8 @@ export class CitySimulation {
         busStop: Boolean(t.busStop),
         shippingLane: Boolean(t.shippingLane),
         junctionMode: t.junctionMode || null,
+        signalPreset: t.signalPreset || null,
+        yieldAxis: t.yieldAxis || null,
         roundaboutPaid: Boolean(t.roundaboutPaid),
         roadElevated: t.roadElevated,
         ramp: t.ramp,
@@ -952,6 +990,8 @@ export class CitySimulation {
       t.busStop = s.busStop;
       t.shippingLane = Boolean(s.shippingLane);
       t.junctionMode = s.junctionMode;
+      t.signalPreset = s.signalPreset || null;
+      t.yieldAxis = s.yieldAxis || null;
       t.roundaboutPaid = s.roundaboutPaid;
       t.roadElevated = s.roadElevated;
       t.ramp = s.ramp;
@@ -2889,6 +2929,8 @@ export class CitySimulation {
             t.banTrucks = false;
             t.busStop = false;
             t.junctionMode = null;
+            t.signalPreset = null;
+            t.yieldAxis = null;
             t.roundaboutPaid = false;
           }
           t.roadElevated = 0;
@@ -2974,6 +3016,8 @@ export class CitySimulation {
           }
           if (deg < 3 && nt.junctionMode && nt.junctionMode !== 'signal') {
             nt.junctionMode = 'signal';
+            nt.signalPreset = null;
+            nt.yieldAxis = null;
             nt.roundaboutPaid = false;
           }
         }
@@ -6044,6 +6088,8 @@ export class CitySimulation {
         bs: t.busStop ? 1 : undefined,
         sl: t.shippingLane ? 1 : undefined,
         jm: t.junctionMode || undefined,
+        sp: (t.signalPreset && t.signalPreset !== 'balanced') ? t.signalPreset : undefined,
+        ya: (t.yieldAxis && t.yieldAxis !== 'auto') ? t.yieldAxis : undefined,
         rbp: t.roundaboutPaid ? 1 : undefined,
         re: t.roadElevated || undefined,
         rp: t.ramp ? 1 : undefined,
@@ -6150,6 +6196,8 @@ export class CitySimulation {
       t.busStop = Boolean(s.bs);
       t.shippingLane = Boolean(s.sl);
       t.junctionMode = s.jm || null;
+      t.signalPreset = s.sp || null;
+      t.yieldAxis = s.ya || null;
       t.roundaboutPaid = Boolean(s.rbp || s.jm === 'roundabout');
       t.roadElevated = s.re || 0;
       t.ramp = Boolean(s.rp);

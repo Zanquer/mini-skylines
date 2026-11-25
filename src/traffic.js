@@ -2726,13 +2726,111 @@ export class TrafficManager {
     }
   }
 
-  isSignalRed(x, z, moveVertical) {
-    if (this.roadDegree[idx(x, z)] < 3) return false;
+  // Realistic 4-Phase Urban Traffic Signal Controller (Vehicle Green -> Yellow -> All-Red Clearance + Pedestrian WALK/FLASHING Clearance!)
+  getSignalState(x, z) {
+    if (!inBounds(x, z)) {
+      return { active: false, nsVeh: 'green', ewVeh: 'green', nsPed: 'walk', ewPed: 'walk', phaseLabel: '无信号灯', activeRem: 0, cycle: 16 };
+    }
+    const ti = idx(x, z);
     const tile = this.sim.getTile(x, z);
-    if (tile && tile.junctionMode && tile.junctionMode !== 'signal') return false;
-    const localPhase = (this.signalClock + (x + z) * 0.65) % 8.0;
-    const nsGreen = localPhase < 4.0;
-    return moveVertical ? !nsGreen : nsGreen;
+    if (this.roadDegree[ti] < 3 || (tile && tile.junctionMode && tile.junctionMode !== 'signal')) {
+      return { active: false, nsVeh: 'green', ewVeh: 'green', nsPed: 'walk', ewPed: 'walk', phaseLabel: '无信号灯', activeRem: 0, cycle: 16 };
+    }
+    const preset = (tile && tile.signalPreset) || 'balanced';
+    const nsGreen = preset === 'ns_heavy' ? 9.2 : (preset === 'ew_heavy' ? 6.0 : 6.6);
+    const ewGreen = preset === 'ew_heavy' ? 9.2 : (preset === 'ns_heavy' ? 6.0 : 6.6);
+    const yellow = 0.8;
+    const allRed = 0.6;
+    const pedClearBuf = 2.6; // Guaranteed 2.6s flashing clearance BEFORE vehicle green ends (+1.4s yellow/all-red = 4.0s before cross traffic!)
+    const nsEnd = nsGreen;
+    const nsYelEnd = nsEnd + yellow;
+    const nsClearEnd = nsYelEnd + allRed;
+    const ewEnd = nsClearEnd + ewGreen;
+    const ewYelEnd = ewEnd + yellow;
+    const cycle = ewYelEnd + allRed;
+
+    const raw = this.signalClock + (x + z) * 0.65;
+    const phase = ((raw % cycle) + cycle) % cycle;
+
+    if (phase < nsEnd) {
+      const pedWalkEnd = Math.max(1.2, nsEnd - pedClearBuf);
+      const nsPed = phase < pedWalkEnd ? 'walk' : 'flashing';
+      return {
+        active: true, preset, cycle, phase,
+        nsVeh: 'green', ewVeh: 'red',
+        nsPed, ewPed: 'dont_walk',
+        phaseLabel: nsPed === 'walk' ? '🟢 南北绿灯（人车同行）' : '🟢 南北绿灯（行人清场）',
+        activeRem: nsEnd - phase,
+        pedRem: Math.max(0, pedWalkEnd - phase)
+      };
+    }
+    if (phase < nsYelEnd) {
+      return {
+        active: true, preset, cycle, phase,
+        nsVeh: 'yellow', ewVeh: 'red',
+        nsPed: 'dont_walk', ewPed: 'dont_walk',
+        phaseLabel: '🟡 南北黄灯清场',
+        activeRem: nsYelEnd - phase,
+        pedRem: 0
+      };
+    }
+    if (phase < nsClearEnd) {
+      return {
+        active: true, preset, cycle, phase,
+        nsVeh: 'red', ewVeh: 'red',
+        nsPed: 'dont_walk', ewPed: 'dont_walk',
+        phaseLabel: '🔴 全红安全清空',
+        activeRem: nsClearEnd - phase,
+        pedRem: 0
+      };
+    }
+    if (phase < ewEnd) {
+      const pedWalkEnd = nsClearEnd + Math.max(1.2, ewGreen - pedClearBuf);
+      const ewPed = phase < pedWalkEnd ? 'walk' : 'flashing';
+      return {
+        active: true, preset, cycle, phase,
+        nsVeh: 'red', ewVeh: 'green',
+        nsPed: 'dont_walk', ewPed,
+        phaseLabel: ewPed === 'walk' ? '🟢 东西绿灯（人车同行）' : '🟢 东西绿灯（行人清场）',
+        activeRem: ewEnd - phase,
+        pedRem: Math.max(0, pedWalkEnd - phase)
+      };
+    }
+    if (phase < ewYelEnd) {
+      return {
+        active: true, preset, cycle, phase,
+        nsVeh: 'red', ewVeh: 'yellow',
+        nsPed: 'dont_walk', ewPed: 'dont_walk',
+        phaseLabel: '🟡 东西黄灯清场',
+        activeRem: ewYelEnd - phase,
+        pedRem: 0
+      };
+    }
+    return {
+      active: true, preset, cycle, phase,
+      nsVeh: 'red', ewVeh: 'red',
+      nsPed: 'dont_walk', ewPed: 'dont_walk',
+      phaseLabel: '🔴 全红安全清空',
+      activeRem: cycle - phase,
+      pedRem: 0
+    };
+  }
+
+  isSignalRed(x, z, moveVertical) {
+    const st = this.getSignalState(x, z);
+    if (!st.active) return false;
+    return (moveVertical ? st.nsVeh : st.ewVeh) !== 'green';
+  }
+
+  _hasPedestrianCrossingTile(tx, tz) {
+    for (let i = 0; i < this.pedestrians.length; i++) {
+      const p = this.pedestrians[i];
+      if (!p || p.fadeState === 'exiting') continue;
+      if ((p.nx === tx && p.nz === tz && p.t > 0.54) || (p.tx === tx && p.tz === tz && p.t < 0.46)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   isTurningRightAtNext(v) {
@@ -2755,6 +2853,9 @@ export class TrafficManager {
   }
 
   isMajorYieldApproach(curTile, nx, nz, moveVertical) {
+    const jTile = this.sim.getTile(nx, nz);
+    if (jTile && jTile.yieldAxis === 'ns') return moveVertical;
+    if (jTile && jTile.yieldAxis === 'ew') return !moveVertical;
     const myRank = this.getGroundRoadPriorityRank(curTile);
     let crossRank = 0;
     if (moveVertical) {
@@ -3044,22 +3145,22 @@ export class TrafficManager {
           const moveVertical = Math.abs(nxt.z - cur.z) > 0;
 
           if (jMode === 'roundabout') {
-            // ZERO red-light stop! Enter roundabout whenever hub occupancy < 4 (brake from t=0.08 so cars halt cleanly behind crosswalk!)
-            if (v.t > 0.08 && v.t < 0.44 && !inRoundaboutHub && this.tileOccupancy[nxtIdx] >= 4) {
+            // ZERO red-light stop! Enter roundabout whenever hub occupancy < 4 (brake from t=0.04 so cars halt cleanly behind crosswalk!)
+            if (v.t > 0.04 && v.t < 0.44 && !inRoundaboutHub && this.tileOccupancy[nxtIdx] >= 4) {
               targetSpeed = 0;
               blockedBySignal = true;
             }
           } else if (jMode === 'yield') {
-            // Major road has ZERO signal stop; minor road yields behind crosswalk (brake from t=0.08) if intersection occupancy >= 2
+            // Major road has ZERO signal stop; minor road yields behind crosswalk (brake from t=0.04) if intersection occupancy >= 2
             const isMajor = this.isMajorYieldApproach(curTile, nxt.x, nxt.z, moveVertical);
-            if (!isMajor && v.t > 0.08 && v.t < 0.44 && this.tileOccupancy[nxtIdx] >= 2) {
+            if (!isMajor && v.t > 0.04 && v.t < 0.44 && this.tileOccupancy[nxtIdx] >= 2) {
               targetSpeed = 0;
               blockedBySignal = true;
             }
           } else {
-            // 'signal' mode: brake from t=0.08 (halt by ~0.24) so noses NEVER protrude into cross-street outer lanes; Right-Turn-On-Red when clear
-            if (v.t > 0.08 && v.t < 0.44 && this.isSignalRed(nxt.x, nxt.z, moveVertical)) {
-              if (this.isTurningRightAtNext(v) && this.tileOccupancy[nxtIdx] < 2) {
+            // 'signal' mode: brake from t=0.04 (halt by ~0.18..0.22) so bus bumpers leave clean clearance for zebra crosswalk pedestrians; Right-Turn-On-Red yields to pedestrians!
+            if (v.t > 0.04 && v.t < 0.44 && this.isSignalRed(nxt.x, nxt.z, moveVertical)) {
+              if (this.isTurningRightAtNext(v) && this.tileOccupancy[nxtIdx] < 2 && !this._hasPedestrianCrossingTile(nxt.x, nxt.z)) {
                 targetSpeed = Math.min(targetSpeed, v.maxSpeed * 0.78);
               } else {
                 targetSpeed = 0;
@@ -3067,13 +3168,14 @@ export class TrafficManager {
               }
             }
           }
-          if (blockedBySignal && v.t > 0.22) hardStop = true;
+          if (blockedBySignal && v.t > 0.18) hardStop = true;
         }
       }
 
       // Full 360° 3D Bumper-to-Bumper, Strict Total-Order Intersection Cross-Traffic, Opposing-Turn & 4-Lane Overtaking Avoidance!
       // On 4-lane avenues, parallel lane centers sit 0.190m apart (0.105 vs 0.295), so 0.145m gives wide trucks a clean physical air gap!
       const latLimit = isMultiLane ? 0.145 : 0.185;
+      let queuedBehindRed = false;
       for (let j = 0; j < this.vehicles.length; j++) {
         if (i === j) continue;
         const o = this.vehicles[j];
@@ -3111,6 +3213,7 @@ export class TrafficManager {
               }
               targetSpeed = 0;
               blockedByVehicle = true;
+              if (o._waitingAtRed) queuedBehindRed = true;
               if (fwdDist < safeGap * 0.80) hardStop = true;
               break;
             } else {
@@ -3165,8 +3268,9 @@ export class TrafficManager {
       if (v.speed < 0.01 && targetSpeed === 0) v.speed = 0;
 
       // Smart Anti-Vanish Jam & Police-Direction Timer:
-      //  - Waiting at a red light OR queued behind an active crash/jam police scene NEVER deletes cars!
+      //  - Waiting at a red light (or queued behind a red-light platoon!) NEVER falsely panics during a realistic 16-18s signal cycle!
       //  - Severe multi-car jams (v.maxSpeed > 0.1, >=2 cars) summon 🚓 Traffic Police (95s cooldown) instead of poof-vanishing!
+      v._waitingAtRed = Boolean((blockedBySignal && !blockedByVehicle) || queuedBehindRed);
       const nearActiveIncident = this.accidents.length > 0 && this.accidents.some(
         (a) => Math.abs(a.x - cur.x) <= 3 && Math.abs(a.z - cur.z) <= 3
       );
@@ -3174,11 +3278,14 @@ export class TrafficManager {
       if (v.speed < 0.06) {
         if (v.maxSpeed > 0.1 && (nearActiveIncident || (blockedBySignal && !blockedByVehicle))) {
           v.stuckTimer += effDt * 0.06;
+        } else if (v.maxSpeed > 0.1 && queuedBehindRed) {
+          v.stuckTimer += effDt * 0.08;
         } else {
           v.stuckTimer += effDt;
         }
-      } else if (v.speed > 0.18) {
-        v.stuckTimer = Math.max(0, v.stuckTimer - effDt * 2.5);
+      } else if (v.speed > 0.15) {
+        v._waitingAtRed = false;
+        v.stuckTimer = Math.max(0, v.stuckTimer - effDt * 2.8);
       }
 
       // Proactive reroute at 8.5s when genuinely jammed
@@ -3509,6 +3616,18 @@ export class TrafficManager {
       if (hNow) { tr.wx = hNow.wx; tr.wz = hNow.wz; tr.dirX = hNow.dirX; tr.dirZ = hNow.dirZ; }
     }
 
+    // Discount calm red-light waiting queues (0.55 weight vs 1.0 for genuine gridlock/jams) so normal 16-18s signal phases never falsely trigger road-paralysis abandonment!
+    const redWaitMap = new Map();
+    for (let vi = 0; vi < this.vehicles.length; vi++) {
+      const v = this.vehicles[vi];
+      if (!v || !v._waitingAtRed || v.accidentId) continue;
+      const cur = v.path && v.path[v.seg];
+      if (cur && cur.layer === 0 && !cur.onRamp) {
+        const ci = idx(cur.x, cur.z);
+        redWaitMap.set(ci, (redWaitMap.get(ci) || 0) + 1);
+      }
+    }
+
     // Smoothly update ground & elevated congestion metrics (preserving 1.0 gridlock spike on timeout frame)
     for (let i = 0; i < this.sim.grid.length; i++) {
       const t = this.sim.grid[i];
@@ -3527,9 +3646,11 @@ export class TrafficManager {
         t.congestion = 1.0;
         continue;
       }
-      const cap = t.roadGround >= 2 ? 3.8 : 1.9;
-      const raw = Math.min(1, this.tileOccupancy[i] / cap);
-      t.congestion = t.congestion * 0.90 + raw * 0.10;
+      const redWaiting = redWaitMap.get(i) || 0;
+      const effOcc = Math.max(0, this.tileOccupancy[i] - redWaiting * 0.45);
+      const cap = t.roadGround >= 2 ? 4.4 : 2.3;
+      const raw = Math.min(1, effOcc / cap);
+      t.congestion = t.congestion * 0.95 + raw * 0.05;
     }
 
     // Update 3D Airliners, Cargo Container Ships, Coastal Leisure Boats & Sidewalk Pedestrians
@@ -3548,6 +3669,14 @@ export class TrafficManager {
 
   _pickPedNextTile(tx, tz, prevX, prevZ) {
     const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+    // Inside an intersection (deg >= 3), ALWAYS finish crossing straight to the far granite curb instead of turning 90° onto a perpendicular red crosswalk!
+    if (prevX >= 0 && prevZ >= 0 && inBounds(tx, tz) && (this.roadDegree[idx(tx, tz)] || 0) >= 3) {
+      const straightX = tx + (tx - prevX);
+      const straightZ = tz + (tz - prevZ);
+      if (this._isPedRoadTile(straightX, straightZ)) {
+        return { x: straightX, z: straightZ, reversed: false };
+      }
+    }
     const forwardChoices = [];
     let backChoice = null;
     for (let k = 0; k < 4; k++) {
@@ -3662,14 +3791,15 @@ export class TrafficManager {
       }
     }
 
-    // Spawn batch smoothly emerging from building doorways along active sidewalks (<= 240 hard cap)
+    // Spawn batch smoothly emerging from building doorways along straight sidewalks (NEVER spawn mid-intersection!)
     let spawnBudget = Math.min(6, Math.max(0, targetPed - this.pedestrians.length));
     while (spawnBudget-- > 0 && this.pedestrians.length < 240) {
       let spot = null;
       let doorDir = null;
-      for (let tries = 0; tries < 4; tries++) {
+      for (let tries = 0; tries < 6; tries++) {
         const cand = this._pedRoadPool[(Math.random() * this._pedRoadPool.length) | 0];
         if (!cand || !this._isPedRoadTile(cand.x, cand.z)) continue;
+        if ((this.roadDegree[idx(cand.x, cand.z)] || 0) >= 3) continue; // Keep spawns strictly on straight sidewalk blocks!
         spot = cand;
         doorDir = this._findAdjacentBuildingDir(cand.x, cand.z);
         if (doorDir) break;
@@ -3682,7 +3812,7 @@ export class TrafficManager {
         tz: spot.z,
         nx: next.x,
         nz: next.z,
-        t: Math.random() * 0.5,
+        t: 0.05 + Math.random() * 0.30,
         side: Math.random() < 0.5 ? 1 : -1,
         wx: 0,
         wy: 0,
@@ -3707,7 +3837,7 @@ export class TrafficManager {
       this.pedestrians.push(p);
     }
 
-    // Advance sidewalk walkers at calm realistic strolling speed (ZERO abrupt mid-sidewalk vanishing!)
+    // Advance sidewalk walkers at calm strolling pace + brisk signal-synchronized crosswalk clearing (0 red-light stragglers!)
     for (let i = this.pedestrians.length - 1; i >= 0; i--) {
       const p = this.pedestrians[i];
       if (!this._isPedRoadTile(p.tx, p.tz)) {
@@ -3737,8 +3867,17 @@ export class TrafficManager {
         p.returningHome = true;
       }
 
-      // If citizen is ready to head indoors and is right beside a building doorway, walk smoothly inside!
-      if (p.returningHome && p.fadeState === 'walking') {
+      const curTileDeg = inBounds(p.tx, p.tz) ? (this.roadDegree[idx(p.tx, p.tz)] || 0) : 0;
+      const nxtTileDeg = inBounds(p.nx, p.nz) ? (this.roadDegree[idx(p.nx, p.nz)] || 0) : 0;
+      const curSig = curTileDeg >= 3 ? this.getSignalState(p.tx, p.tz) : null;
+      const nxtSig = nxtTileDeg >= 3 ? this.getSignalState(p.nx, p.nz) : null;
+      const curIsSig = Boolean(curSig && curSig.active);
+      const nxtIsSig = Boolean(nxtSig && nxtSig.active);
+      const pedMoveVert = p.nz !== p.tz;
+
+      // Only step indoors when safely on a straight sidewalk outside intersection roadway!
+      const inIntersectionRoadway = (nxtIsSig && p.t > 0.54) || (curIsSig && p.t < 0.46);
+      if (p.returningHome && p.fadeState === 'walking' && !inIntersectionRoadway) {
         const bDir = this._findAdjacentBuildingDir(p.tx, p.tz);
         if (bDir) {
           p.fadeState = 'exiting';
@@ -3750,47 +3889,114 @@ export class TrafficManager {
         }
       }
 
-      // Physical Pedestrian-vs-Vehicle OBB Blocking (checks BOTH stopped AND moving cars -> ZERO phasing through vehicles!)
-      let pedBlocked = false;
-      let pedInsideCar = false;
-      const stepDist = p.speed * effDt;
-      const candWx = p.wx + (p.dirX || 0) * (stepDist + 0.08);
-      const candWz = p.wz + (p.dirZ || 0) * (stepDist + 0.08);
-      const vehs = this.vehicles;
-      for (let vj = 0; vj < vehs.length; vj++) {
-        const veh = vehs[vj];
-        if (!veh || veh.inTunnel) continue;
-        const vCur = veh.path && veh.path[veh.seg];
-        if (vCur && (vCur.layer === 1 || vCur.onRamp)) continue; // Elevated highway cars are overhead
-        const dx = candWx - veh.wx;
-        const dz = candWz - veh.wz;
-        if (dx * dx + dz * dz > 0.64) continue;
-        const vdx = veh.dirX || 0;
-        const vdz = veh.dirZ || 1;
-        const localFwd = dx * vdx + dz * vdz;
-        const localLat = Math.abs(-dx * vdz + dz * vdx);
-        const halfL = (veh.length || 0.34) * 0.5;
-        const halfW = (veh.width || 0.16) * 0.5;
-        const moveLead = (veh.speed || 0) > 0.10 ? 0.28 : 0.06;
-        if (localFwd > -(halfL + 0.12) && localFwd < (halfL + 0.12 + moveLead) && localLat < (halfW + 0.12)) {
-          pedBlocked = true;
-          // Check if citizen is already right inside vehicle's tight envelope (step gently back onto curb)
-          const cDx = p.wx - veh.wx;
-          const cDz = p.wz - veh.wz;
-          const cFwd = cDx * vdx + cDz * vdz;
-          const cLat = Math.abs(-cDx * vdz + cDz * vdx);
-          if (Math.abs(cFwd) < halfL + 0.05 && cLat < halfW + 0.05) {
-            pedInsideCar = true;
+      // 1. Traffic Signal Pedestrian Curb Control & Brisk Green-Window Crosswalk Clearing!
+      let waitingAtCurbRed = false;
+      let effWalkSpd = p.speed;
+      if (p.retreatingToCurb) {
+        // Smoothly finish stepping backward onto the near granite curb (zero ping-pong!)
+        const backDist = Math.max(p.speed, 0.72) * effDt;
+        p.t -= backDist;
+        p.walkPhase = (p.walkPhase + p.speed * effDt * 15) % (Math.PI * 2);
+        if (curIsSig && p.t < 0) {
+          const backX = 2 * p.tx - p.nx;
+          const backZ = 2 * p.tz - p.nz;
+          if (this._isPedRoadTile(backX, backZ)) {
+            p.nx = p.tx;
+            p.nz = p.tz;
+            p.tx = backX;
+            p.tz = backZ;
+            p.t = Math.max(0.52, 1.0 + p.t);
+          } else {
+            p.t = 0.02;
+            p.retreatingToCurb = false;
           }
-          break;
+        } else if (!curIsSig && p.t <= 0.52) {
+          p.t = 0.52;
+          p.retreatingToCurb = false;
+          p.walkPhase = 0;
+        }
+        this._syncPedTransform(p);
+        continue;
+      }
+
+      if (nxtIsSig) {
+        const pedSig = pedMoveVert ? nxtSig.nsPed : nxtSig.ewPed;
+        if (p.t >= 0.44 && p.t <= 0.56) {
+          // On granite sidewalk corner BEFORE zebra crosswalk: ONLY step off curb during active WALK window!
+          if (pedSig !== 'walk') {
+            waitingAtCurbRed = true;
+            if (p.t > 0.52) p.t = 0.52;
+          } else {
+            effWalkSpd = Math.max(p.speed, 0.54);
+          }
+        } else if (p.t > 0.56) {
+          // Already crossing zebra crosswalk -> briskly finish crossing BEFORE green ends!
+          effWalkSpd = Math.max(p.speed, pedSig === 'walk' ? 0.54 : (pedSig === 'flashing' ? 0.70 : 0.85));
+        }
+      } else if (curIsSig && p.t < 0.46) {
+        // Second half of intersection crosswalk -> briskly reach far granite sidewalk before red!
+        const pedSig = pedMoveVert ? curSig.nsPed : curSig.ewPed;
+        effWalkSpd = Math.max(p.speed, pedSig === 'walk' ? 0.54 : (pedSig === 'flashing' ? 0.70 : 0.85));
+      }
+
+      // 2. Physical Pedestrian-vs-Vehicle OBB Blocking (checks BOTH stopped AND moving cars -> ZERO phasing, AND stopped red-light buses behind the stop line NEVER block green crosswalks!)
+      let pedBlocked = waitingAtCurbRed;
+      let pedInsideCar = false;
+      const stepDist = effWalkSpd * effDt;
+      if (!waitingAtCurbRed) {
+        const lookAhead = inIntersectionRoadway ? 0.045 : 0.08;
+        const candWx = p.wx + (p.dirX || 0) * (stepDist + lookAhead);
+        const candWz = p.wz + (p.dirZ || 0) * (stepDist + lookAhead);
+        const vehs = this.vehicles;
+        const clearingNow = inIntersectionRoadway && effWalkSpd >= 0.60;
+        for (let vj = 0; vj < vehs.length; vj++) {
+          const veh = vehs[vj];
+          if (!veh || veh.inTunnel) continue;
+          const vCur = veh.path && veh.path[veh.seg];
+          if (vCur && (vCur.layer === 1 || vCur.onRamp)) continue; // Elevated highway cars are overhead
+          const dx = candWx - veh.wx;
+          const dz = candWz - veh.wz;
+          if (dx * dx + dz * dz > 0.64) continue;
+          const vdx = veh.dirX || 0;
+          const vdz = veh.dirZ || 1;
+          const localFwd = dx * vdx + dz * vdz;
+          const localLat = Math.abs(-dx * vdz + dz * vdx);
+          const halfL = (veh.length || 0.34) * 0.5;
+          const halfW = (veh.width || 0.16) * 0.5;
+          const vehMoving = (veh.speed || 0) > 0.08;
+          // Tight physical bumper clearance for stopped cars (0.045m) so buses stopped behind stop line NEVER freeze green-light crosswalk pedestrians!
+          const pad = vehMoving ? (clearingNow ? 0.06 : 0.11) : 0.045;
+          const moveLead = vehMoving ? (clearingNow ? 0.14 : 0.26) : 0.0;
+          if (localFwd > -(halfL + pad) && localFwd < (halfL + pad + moveLead) && localLat < (halfW + pad)) {
+            pedBlocked = true;
+            // Check if citizen is already right inside vehicle's tight envelope (step gently back onto curb)
+            const cDx = p.wx - veh.wx;
+            const cDz = p.wz - veh.wz;
+            const cFwd = cDx * vdx + cDz * vdz;
+            const cLat = Math.abs(-cDx * vdz + cDz * vdx);
+            if (Math.abs(cFwd) < halfL + 0.05 && cLat < halfW + 0.05) {
+              pedInsideCar = true;
+            }
+            break;
+          }
         }
       }
+
       if (!pedBlocked) {
         p.t += stepDist;
-        p.walkPhase = (p.walkPhase + stepDist * 15) % (Math.PI * 2);
+        p.walkPhase = (p.walkPhase + Math.min(stepDist, p.speed * effDt * 2.2) * 15) % (Math.PI * 2);
+      } else if (waitingAtCurbRed) {
+        // Calmly stand still on the granite curb waiting for pedestrian WALK signal
+        p.walkPhase = 0;
+      } else if (nxtIsSig && p.t > 0.52 && (pedMoveVert ? nxtSig.nsPed : nxtSig.ewPed) !== 'walk') {
+        // Blocked in first half of crosswalk while light is flashing/red -> commit to smooth retreat back onto near granite curb!
+        p.retreatingToCurb = true;
+      } else if (curIsSig && p.t < 0.45 && (pedMoveVert ? curSig.nsPed : curSig.ewPed) !== 'walk') {
+        // Blocked mid-intersection during red/flashing by a box-blocking car -> commit to smooth retreat back onto near granite curb!
+        p.retreatingToCurb = true;
       } else if (pedInsideCar) {
         // Gently back up onto the curb so a citizen never stays inside a car that pulled up to the crosswalk
-        p.t = Math.max(0.02, p.t - stepDist * 0.8);
+        p.t = Math.max(0.02, p.t - p.speed * effDt * 0.8);
       }
 
       if (p.t >= 1.0) {
@@ -3806,7 +4012,8 @@ export class TrafficManager {
           p.t = 0.05;
           p.side = -p.side;
         }
-        if (p.returningHome) {
+        const arrivedInInter = inBounds(p.tx, p.tz) && (this.roadDegree[idx(p.tx, p.tz)] || 0) >= 3;
+        if (p.returningHome && !arrivedInInter) {
           p.homeSearchBlocks = (p.homeSearchBlocks || 0) + 1;
           const bDir = this._findAdjacentBuildingDir(p.tx, p.tz);
           if (bDir || p.homeSearchBlocks >= 4) {
@@ -3823,6 +4030,9 @@ export class TrafficManager {
         p.nz = next.z;
         if (next.reversed) {
           p.side = -p.side;
+        } else if (arrivedInInter && next.x - p.tx !== p.tx - prevX && next.z - p.tz !== p.tz - prevZ) {
+          // Turned at a T-junction corner where no straight road existed -> snap cleanly to the outgoing sidewalk edge
+          p.t = Math.max(p.t, 0.48);
         }
       }
 
