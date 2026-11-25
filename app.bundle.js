@@ -323,11 +323,11 @@ await Promise.all(workers);
 return this.glbs;
 }
 getCacheName() {
-const ver = (this.manifest && this.manifest.version) || 'v8.5';
+const ver = (this.manifest && this.manifest.version) || 'v8.6';
 return `mini-skylines-${ver}`;
 }
 getAssetCacheName() {
-const ver = (this.manifest && this.manifest.version) || 'v8.5-dev';
+const ver = (this.manifest && this.manifest.version) || 'v8.6-dev';
 const assetHash = ver.split('-')[1] || 'dev';
 return `mini-skylines-assets-${assetHash}`;
 }
@@ -336,7 +336,7 @@ if (typeof caches === 'undefined' || !this.isExternalSupported) {
 return { supported: false, version: 'offline-inline', cachedCount: 0, totalCount: 0, totalBytes: 0, complete: false };
 }
 const manifest = await this.loadManifest();
-const version = (manifest && manifest.version) || 'v8.5';
+const version = (manifest && manifest.version) || 'v8.6';
 const coreUrls = ['./', './index.html', './app.bundle.js', './vendor/three_classic.js', './manifest.json', './assets/manifest.json'];
 const assetUrls = manifest && Array.isArray(manifest.files) ? manifest.files.map((f) => './' + f.path) : [];
 const totalCount = coreUrls.length + assetUrls.length;
@@ -410,7 +410,7 @@ if (onProgress) onProgress(done / total, done, total);
 const workers = [];
 for (let i = 0; i < concurrency; i++) workers.push(run());
 await Promise.all(workers);
-return { ok: failed === 0, cached: done - failed, total: items.length, failed, version: this.manifest?.version || 'v8.5' };
+return { ok: failed === 0, cached: done - failed, total: items.length, failed, version: this.manifest?.version || 'v8.6' };
 }
 async checkForUpdates() {
 if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) {
@@ -9975,6 +9975,40 @@ else if (this.sfx.tap) this.sfx.tap();
 }
 return { ok: true, cost };
 }
+setJunctionSignalPreset(x, z, preset) {
+const t = this.getTile(x, z);
+if (!t || !(t.roadGround === 1 || t.roadGround === 2)) return { ok: false };
+if (!['balanced', 'ns_heavy', 'ew_heavy'].includes(preset)) return { ok: false };
+if ((t.signalPreset || 'balanced') === preset && (t.junctionMode || 'signal') === 'signal') {
+return { ok: true };
+}
+this.pushUndoSnapshot('红绿灯配时方案');
+t.junctionMode = 'signal';
+t.signalPreset = preset;
+this.infraDirty = true;
+if (this.traffic && typeof this.traffic.refreshRoadGraph === 'function') {
+this.traffic.refreshRoadGraph();
+}
+if (this.sfx && this.sfx.tap) this.sfx.tap();
+return { ok: true, preset };
+}
+setJunctionYieldAxis(x, z, axis) {
+const t = this.getTile(x, z);
+if (!t || !(t.roadGround === 1 || t.roadGround === 2)) return { ok: false };
+if (!['auto', 'ns', 'ew'].includes(axis)) return { ok: false };
+if ((t.yieldAxis || 'auto') === axis && t.junctionMode === 'yield') {
+return { ok: true };
+}
+this.pushUndoSnapshot('主路优先方向');
+t.junctionMode = 'yield';
+t.yieldAxis = axis;
+this.infraDirty = true;
+if (this.traffic && typeof this.traffic.refreshRoadGraph === 'function') {
+this.traffic.refreshRoadGraph();
+}
+if (this.sfx && this.sfx.tap) this.sfx.tap();
+return { ok: true, axis };
+}
 canUndo() {
 return this.undoStack.length > 0;
 }
@@ -10000,6 +10034,8 @@ banTrucks: Boolean(t.banTrucks),
 busStop: Boolean(t.busStop),
 shippingLane: Boolean(t.shippingLane),
 junctionMode: t.junctionMode || null,
+signalPreset: t.signalPreset || null,
+yieldAxis: t.yieldAxis || null,
 roundaboutPaid: Boolean(t.roundaboutPaid),
 roadElevated: t.roadElevated,
 ramp: t.ramp,
@@ -10052,6 +10088,8 @@ t.banTrucks = s.banTrucks;
 t.busStop = s.busStop;
 t.shippingLane = Boolean(s.shippingLane);
 t.junctionMode = s.junctionMode;
+t.signalPreset = s.signalPreset || null;
+t.yieldAxis = s.yieldAxis || null;
 t.roundaboutPaid = s.roundaboutPaid;
 t.roadElevated = s.roadElevated;
 t.ramp = s.ramp;
@@ -11817,6 +11855,8 @@ t.roadDir = -1;
 t.banTrucks = false;
 t.busStop = false;
 t.junctionMode = null;
+t.signalPreset = null;
+t.yieldAxis = null;
 t.roundaboutPaid = false;
 }
 t.roadElevated = 0;
@@ -11900,6 +11940,8 @@ if ((this.getTile(nt.x + qx, nt.z + qz)?.roadGround || 0) > 0) deg++;
 }
 if (deg < 3 && nt.junctionMode && nt.junctionMode !== 'signal') {
 nt.junctionMode = 'signal';
+nt.signalPreset = null;
+nt.yieldAxis = null;
 nt.roundaboutPaid = false;
 }
 }
@@ -14656,6 +14698,8 @@ bt: t.banTrucks ? 1 : undefined,
 bs: t.busStop ? 1 : undefined,
 sl: t.shippingLane ? 1 : undefined,
 jm: t.junctionMode || undefined,
+sp: (t.signalPreset && t.signalPreset !== 'balanced') ? t.signalPreset : undefined,
+ya: (t.yieldAxis && t.yieldAxis !== 'auto') ? t.yieldAxis : undefined,
 rbp: t.roundaboutPaid ? 1 : undefined,
 re: t.roadElevated || undefined,
 rp: t.ramp ? 1 : undefined,
@@ -14759,6 +14803,8 @@ t.banTrucks = Boolean(s.bt);
 t.busStop = Boolean(s.bs);
 t.shippingLane = Boolean(s.sl);
 t.junctionMode = s.jm || null;
+t.signalPreset = s.sp || null;
+t.yieldAxis = s.ya || null;
 t.roundaboutPaid = Boolean(s.rbp || s.jm === 'roundabout');
 t.roadElevated = s.re || 0;
 t.ramp = Boolean(s.rp);
@@ -17292,13 +17338,106 @@ dirZ: head ? head.dirZ : 1
 }
 }
 }
-isSignalRed(x, z, moveVertical) {
-if (this.roadDegree[idx(x, z)] < 3) return false;
+getSignalState(x, z) {
+if (!inBounds(x, z)) {
+return { active: false, nsVeh: 'green', ewVeh: 'green', nsPed: 'walk', ewPed: 'walk', phaseLabel: '无信号灯', activeRem: 0, cycle: 16 };
+}
+const ti = idx(x, z);
 const tile = this.sim.getTile(x, z);
-if (tile && tile.junctionMode && tile.junctionMode !== 'signal') return false;
-const localPhase = (this.signalClock + (x + z) * 0.65) % 8.0;
-const nsGreen = localPhase < 4.0;
-return moveVertical ? !nsGreen : nsGreen;
+if (this.roadDegree[ti] < 3 || (tile && tile.junctionMode && tile.junctionMode !== 'signal')) {
+return { active: false, nsVeh: 'green', ewVeh: 'green', nsPed: 'walk', ewPed: 'walk', phaseLabel: '无信号灯', activeRem: 0, cycle: 16 };
+}
+const preset = (tile && tile.signalPreset) || 'balanced';
+const nsGreen = preset === 'ns_heavy' ? 9.2 : (preset === 'ew_heavy' ? 6.0 : 6.6);
+const ewGreen = preset === 'ew_heavy' ? 9.2 : (preset === 'ns_heavy' ? 6.0 : 6.6);
+const yellow = 0.8;
+const allRed = 0.6;
+const pedClearBuf = 2.6; // Guaranteed 2.6s flashing clearance BEFORE vehicle green ends (+1.4s yellow/all-red = 4.0s before cross traffic!)
+const nsEnd = nsGreen;
+const nsYelEnd = nsEnd + yellow;
+const nsClearEnd = nsYelEnd + allRed;
+const ewEnd = nsClearEnd + ewGreen;
+const ewYelEnd = ewEnd + yellow;
+const cycle = ewYelEnd + allRed;
+const raw = this.signalClock + (x + z) * 0.65;
+const phase = ((raw % cycle) + cycle) % cycle;
+if (phase < nsEnd) {
+const pedWalkEnd = Math.max(1.2, nsEnd - pedClearBuf);
+const nsPed = phase < pedWalkEnd ? 'walk' : 'flashing';
+return {
+active: true, preset, cycle, phase,
+nsVeh: 'green', ewVeh: 'red',
+nsPed, ewPed: 'dont_walk',
+phaseLabel: nsPed === 'walk' ? '🟢 南北绿灯（人车同行）' : '🟢 南北绿灯（行人清场）',
+activeRem: nsEnd - phase,
+pedRem: Math.max(0, pedWalkEnd - phase)
+};
+}
+if (phase < nsYelEnd) {
+return {
+active: true, preset, cycle, phase,
+nsVeh: 'yellow', ewVeh: 'red',
+nsPed: 'dont_walk', ewPed: 'dont_walk',
+phaseLabel: '🟡 南北黄灯清场',
+activeRem: nsYelEnd - phase,
+pedRem: 0
+};
+}
+if (phase < nsClearEnd) {
+return {
+active: true, preset, cycle, phase,
+nsVeh: 'red', ewVeh: 'red',
+nsPed: 'dont_walk', ewPed: 'dont_walk',
+phaseLabel: '🔴 全红安全清空',
+activeRem: nsClearEnd - phase,
+pedRem: 0
+};
+}
+if (phase < ewEnd) {
+const pedWalkEnd = nsClearEnd + Math.max(1.2, ewGreen - pedClearBuf);
+const ewPed = phase < pedWalkEnd ? 'walk' : 'flashing';
+return {
+active: true, preset, cycle, phase,
+nsVeh: 'red', ewVeh: 'green',
+nsPed: 'dont_walk', ewPed,
+phaseLabel: ewPed === 'walk' ? '🟢 东西绿灯（人车同行）' : '🟢 东西绿灯（行人清场）',
+activeRem: ewEnd - phase,
+pedRem: Math.max(0, pedWalkEnd - phase)
+};
+}
+if (phase < ewYelEnd) {
+return {
+active: true, preset, cycle, phase,
+nsVeh: 'red', ewVeh: 'yellow',
+nsPed: 'dont_walk', ewPed: 'dont_walk',
+phaseLabel: '🟡 东西黄灯清场',
+activeRem: ewYelEnd - phase,
+pedRem: 0
+};
+}
+return {
+active: true, preset, cycle, phase,
+nsVeh: 'red', ewVeh: 'red',
+nsPed: 'dont_walk', ewPed: 'dont_walk',
+phaseLabel: '🔴 全红安全清空',
+activeRem: cycle - phase,
+pedRem: 0
+};
+}
+isSignalRed(x, z, moveVertical) {
+const st = this.getSignalState(x, z);
+if (!st.active) return false;
+return (moveVertical ? st.nsVeh : st.ewVeh) !== 'green';
+}
+_hasPedestrianCrossingTile(tx, tz) {
+for (let i = 0; i < this.pedestrians.length; i++) {
+const p = this.pedestrians[i];
+if (!p || p.fadeState === 'exiting') continue;
+if ((p.nx === tx && p.nz === tz && p.t > 0.54) || (p.tx === tx && p.tz === tz && p.t < 0.46)) {
+return true;
+}
+}
+return false;
 }
 isTurningRightAtNext(v) {
 const cur = v.path[v.seg];
@@ -17318,6 +17457,9 @@ if (tile.roadGround === 2) return 2;
 return 1;
 }
 isMajorYieldApproach(curTile, nx, nz, moveVertical) {
+const jTile = this.sim.getTile(nx, nz);
+if (jTile && jTile.yieldAxis === 'ns') return moveVertical;
+if (jTile && jTile.yieldAxis === 'ew') return !moveVertical;
 const myRank = this.getGroundRoadPriorityRank(curTile);
 let crossRank = 0;
 if (moveVertical) {
@@ -17563,19 +17705,19 @@ if (v.kind !== 'firetruck' && v.kind !== 'police' && !inJamGreenWave && nxtDeg >
 const jMode = nxtTile.junctionMode || 'signal';
 const moveVertical = Math.abs(nxt.z - cur.z) > 0;
 if (jMode === 'roundabout') {
-if (v.t > 0.08 && v.t < 0.44 && !inRoundaboutHub && this.tileOccupancy[nxtIdx] >= 4) {
+if (v.t > 0.04 && v.t < 0.44 && !inRoundaboutHub && this.tileOccupancy[nxtIdx] >= 4) {
 targetSpeed = 0;
 blockedBySignal = true;
 }
 } else if (jMode === 'yield') {
 const isMajor = this.isMajorYieldApproach(curTile, nxt.x, nxt.z, moveVertical);
-if (!isMajor && v.t > 0.08 && v.t < 0.44 && this.tileOccupancy[nxtIdx] >= 2) {
+if (!isMajor && v.t > 0.04 && v.t < 0.44 && this.tileOccupancy[nxtIdx] >= 2) {
 targetSpeed = 0;
 blockedBySignal = true;
 }
 } else {
-if (v.t > 0.08 && v.t < 0.44 && this.isSignalRed(nxt.x, nxt.z, moveVertical)) {
-if (this.isTurningRightAtNext(v) && this.tileOccupancy[nxtIdx] < 2) {
+if (v.t > 0.04 && v.t < 0.44 && this.isSignalRed(nxt.x, nxt.z, moveVertical)) {
+if (this.isTurningRightAtNext(v) && this.tileOccupancy[nxtIdx] < 2 && !this._hasPedestrianCrossingTile(nxt.x, nxt.z)) {
 targetSpeed = Math.min(targetSpeed, v.maxSpeed * 0.78);
 } else {
 targetSpeed = 0;
@@ -17583,10 +17725,11 @@ blockedBySignal = true;
 }
 }
 }
-if (blockedBySignal && v.t > 0.22) hardStop = true;
+if (blockedBySignal && v.t > 0.18) hardStop = true;
 }
 }
 const latLimit = isMultiLane ? 0.145 : 0.185;
+let queuedBehindRed = false;
 for (let j = 0; j < this.vehicles.length; j++) {
 if (i === j) continue;
 const o = this.vehicles[j];
@@ -17620,6 +17763,7 @@ continue;
 }
 targetSpeed = 0;
 blockedByVehicle = true;
+if (o._waitingAtRed) queuedBehindRed = true;
 if (fwdDist < safeGap * 0.80) hardStop = true;
 break;
 } else {
@@ -17667,6 +17811,7 @@ const accel = targetSpeed < v.speed ? (hardStop ? 26.0 : 11.0) : 3.4;
 v.speed += (targetSpeed - v.speed) * Math.min(1, effDt * accel);
 if (hardStop && targetSpeed === 0) v.speed = Math.min(v.speed, 0.02);
 if (v.speed < 0.01 && targetSpeed === 0) v.speed = 0;
+v._waitingAtRed = Boolean((blockedBySignal && !blockedByVehicle) || queuedBehindRed);
 const nearActiveIncident = this.accidents.length > 0 && this.accidents.some(
 (a) => Math.abs(a.x - cur.x) <= 3 && Math.abs(a.z - cur.z) <= 3
 );
@@ -17674,11 +17819,14 @@ v.stuckTimer = v.stuckTimer || 0;
 if (v.speed < 0.06) {
 if (v.maxSpeed > 0.1 && (nearActiveIncident || (blockedBySignal && !blockedByVehicle))) {
 v.stuckTimer += effDt * 0.06;
+} else if (v.maxSpeed > 0.1 && queuedBehindRed) {
+v.stuckTimer += effDt * 0.08;
 } else {
 v.stuckTimer += effDt;
 }
-} else if (v.speed > 0.18) {
-v.stuckTimer = Math.max(0, v.stuckTimer - effDt * 2.5);
+} else if (v.speed > 0.15) {
+v._waitingAtRed = false;
+v.stuckTimer = Math.max(0, v.stuckTimer - effDt * 2.8);
 }
 if (v.maxSpeed > 0.1 && v.stuckTimer >= 8.5 && !nearActiveIncident && cur.layer === 0 && !cur.onRamp) {
 if (!v._reroutedOnce && this.tryRerouteVehicle(v)) {
@@ -17966,6 +18114,16 @@ tr.speed = 0;
 const hNow = this._sampleTrainPosOnPath(tr.path, Math.min(maxPathDist - 1e-4, tr.dist));
 if (hNow) { tr.wx = hNow.wx; tr.wz = hNow.wz; tr.dirX = hNow.dirX; tr.dirZ = hNow.dirZ; }
 }
+const redWaitMap = new Map();
+for (let vi = 0; vi < this.vehicles.length; vi++) {
+const v = this.vehicles[vi];
+if (!v || !v._waitingAtRed || v.accidentId) continue;
+const cur = v.path && v.path[v.seg];
+if (cur && cur.layer === 0 && !cur.onRamp) {
+const ci = idx(cur.x, cur.z);
+redWaitMap.set(ci, (redWaitMap.get(ci) || 0) + 1);
+}
+}
 for (let i = 0; i < this.sim.grid.length; i++) {
 const t = this.sim.grid[i];
 if (t.roadElevated > 0) {
@@ -17982,9 +18140,11 @@ if (gridlockTiles && gridlockTiles.has(i)) {
 t.congestion = 1.0;
 continue;
 }
-const cap = t.roadGround >= 2 ? 3.8 : 1.9;
-const raw = Math.min(1, this.tileOccupancy[i] / cap);
-t.congestion = t.congestion * 0.90 + raw * 0.10;
+const redWaiting = redWaitMap.get(i) || 0;
+const effOcc = Math.max(0, this.tileOccupancy[i] - redWaiting * 0.45);
+const cap = t.roadGround >= 2 ? 4.4 : 2.3;
+const raw = Math.min(1, effOcc / cap);
+t.congestion = t.congestion * 0.95 + raw * 0.05;
 }
 this.updateAircraft(effDt);
 this.updateShips(effDt);
@@ -17999,6 +18159,13 @@ return Boolean(t && (t.roadGround === 1 || t.roadGround === 2) && !t.dam && !t.r
 }
 _pickPedNextTile(tx, tz, prevX, prevZ) {
 const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+if (prevX >= 0 && prevZ >= 0 && inBounds(tx, tz) && (this.roadDegree[idx(tx, tz)] || 0) >= 3) {
+const straightX = tx + (tx - prevX);
+const straightZ = tz + (tz - prevZ);
+if (this._isPedRoadTile(straightX, straightZ)) {
+return { x: straightX, z: straightZ, reversed: false };
+}
+}
 const forwardChoices = [];
 let backChoice = null;
 for (let k = 0; k < 4; k++) {
@@ -18105,9 +18272,10 @@ let spawnBudget = Math.min(6, Math.max(0, targetPed - this.pedestrians.length));
 while (spawnBudget-- > 0 && this.pedestrians.length < 240) {
 let spot = null;
 let doorDir = null;
-for (let tries = 0; tries < 4; tries++) {
+for (let tries = 0; tries < 6; tries++) {
 const cand = this._pedRoadPool[(Math.random() * this._pedRoadPool.length) | 0];
 if (!cand || !this._isPedRoadTile(cand.x, cand.z)) continue;
+if ((this.roadDegree[idx(cand.x, cand.z)] || 0) >= 3) continue; // Keep spawns strictly on straight sidewalk blocks!
 spot = cand;
 doorDir = this._findAdjacentBuildingDir(cand.x, cand.z);
 if (doorDir) break;
@@ -18120,7 +18288,7 @@ tx: spot.x,
 tz: spot.z,
 nx: next.x,
 nz: next.z,
-t: Math.random() * 0.5,
+t: 0.05 + Math.random() * 0.30,
 side: Math.random() < 0.5 ? 1 : -1,
 wx: 0,
 wy: 0,
@@ -18169,7 +18337,15 @@ p.ttl -= effDt;
 if (p.ttl <= 0) {
 p.returningHome = true;
 }
-if (p.returningHome && p.fadeState === 'walking') {
+const curTileDeg = inBounds(p.tx, p.tz) ? (this.roadDegree[idx(p.tx, p.tz)] || 0) : 0;
+const nxtTileDeg = inBounds(p.nx, p.nz) ? (this.roadDegree[idx(p.nx, p.nz)] || 0) : 0;
+const curSig = curTileDeg >= 3 ? this.getSignalState(p.tx, p.tz) : null;
+const nxtSig = nxtTileDeg >= 3 ? this.getSignalState(p.nx, p.nz) : null;
+const curIsSig = Boolean(curSig && curSig.active);
+const nxtIsSig = Boolean(nxtSig && nxtSig.active);
+const pedMoveVert = p.nz !== p.tz;
+const inIntersectionRoadway = (nxtIsSig && p.t > 0.54) || (curIsSig && p.t < 0.46);
+if (p.returningHome && p.fadeState === 'walking' && !inIntersectionRoadway) {
 const bDir = this._findAdjacentBuildingDir(p.tx, p.tz);
 if (bDir) {
 p.fadeState = 'exiting';
@@ -18180,12 +18356,58 @@ this._syncPedTransform(p);
 continue;
 }
 }
-let pedBlocked = false;
+let waitingAtCurbRed = false;
+let effWalkSpd = p.speed;
+if (p.retreatingToCurb) {
+const backDist = Math.max(p.speed, 0.72) * effDt;
+p.t -= backDist;
+p.walkPhase = (p.walkPhase + p.speed * effDt * 15) % (Math.PI * 2);
+if (curIsSig && p.t < 0) {
+const backX = 2 * p.tx - p.nx;
+const backZ = 2 * p.tz - p.nz;
+if (this._isPedRoadTile(backX, backZ)) {
+p.nx = p.tx;
+p.nz = p.tz;
+p.tx = backX;
+p.tz = backZ;
+p.t = Math.max(0.52, 1.0 + p.t);
+} else {
+p.t = 0.02;
+p.retreatingToCurb = false;
+}
+} else if (!curIsSig && p.t <= 0.52) {
+p.t = 0.52;
+p.retreatingToCurb = false;
+p.walkPhase = 0;
+}
+this._syncPedTransform(p);
+continue;
+}
+if (nxtIsSig) {
+const pedSig = pedMoveVert ? nxtSig.nsPed : nxtSig.ewPed;
+if (p.t >= 0.44 && p.t <= 0.56) {
+if (pedSig !== 'walk') {
+waitingAtCurbRed = true;
+if (p.t > 0.52) p.t = 0.52;
+} else {
+effWalkSpd = Math.max(p.speed, 0.54);
+}
+} else if (p.t > 0.56) {
+effWalkSpd = Math.max(p.speed, pedSig === 'walk' ? 0.54 : (pedSig === 'flashing' ? 0.70 : 0.85));
+}
+} else if (curIsSig && p.t < 0.46) {
+const pedSig = pedMoveVert ? curSig.nsPed : curSig.ewPed;
+effWalkSpd = Math.max(p.speed, pedSig === 'walk' ? 0.54 : (pedSig === 'flashing' ? 0.70 : 0.85));
+}
+let pedBlocked = waitingAtCurbRed;
 let pedInsideCar = false;
-const stepDist = p.speed * effDt;
-const candWx = p.wx + (p.dirX || 0) * (stepDist + 0.08);
-const candWz = p.wz + (p.dirZ || 0) * (stepDist + 0.08);
+const stepDist = effWalkSpd * effDt;
+if (!waitingAtCurbRed) {
+const lookAhead = inIntersectionRoadway ? 0.045 : 0.08;
+const candWx = p.wx + (p.dirX || 0) * (stepDist + lookAhead);
+const candWz = p.wz + (p.dirZ || 0) * (stepDist + lookAhead);
 const vehs = this.vehicles;
+const clearingNow = inIntersectionRoadway && effWalkSpd >= 0.60;
 for (let vj = 0; vj < vehs.length; vj++) {
 const veh = vehs[vj];
 if (!veh || veh.inTunnel) continue;
@@ -18200,8 +18422,10 @@ const localFwd = dx * vdx + dz * vdz;
 const localLat = Math.abs(-dx * vdz + dz * vdx);
 const halfL = (veh.length || 0.34) * 0.5;
 const halfW = (veh.width || 0.16) * 0.5;
-const moveLead = (veh.speed || 0) > 0.10 ? 0.28 : 0.06;
-if (localFwd > -(halfL + 0.12) && localFwd < (halfL + 0.12 + moveLead) && localLat < (halfW + 0.12)) {
+const vehMoving = (veh.speed || 0) > 0.08;
+const pad = vehMoving ? (clearingNow ? 0.06 : 0.11) : 0.045;
+const moveLead = vehMoving ? (clearingNow ? 0.14 : 0.26) : 0.0;
+if (localFwd > -(halfL + pad) && localFwd < (halfL + pad + moveLead) && localLat < (halfW + pad)) {
 pedBlocked = true;
 const cDx = p.wx - veh.wx;
 const cDz = p.wz - veh.wz;
@@ -18213,11 +18437,18 @@ pedInsideCar = true;
 break;
 }
 }
+}
 if (!pedBlocked) {
 p.t += stepDist;
-p.walkPhase = (p.walkPhase + stepDist * 15) % (Math.PI * 2);
+p.walkPhase = (p.walkPhase + Math.min(stepDist, p.speed * effDt * 2.2) * 15) % (Math.PI * 2);
+} else if (waitingAtCurbRed) {
+p.walkPhase = 0;
+} else if (nxtIsSig && p.t > 0.52 && (pedMoveVert ? nxtSig.nsPed : nxtSig.ewPed) !== 'walk') {
+p.retreatingToCurb = true;
+} else if (curIsSig && p.t < 0.45 && (pedMoveVert ? curSig.nsPed : curSig.ewPed) !== 'walk') {
+p.retreatingToCurb = true;
 } else if (pedInsideCar) {
-p.t = Math.max(0.02, p.t - stepDist * 0.8);
+p.t = Math.max(0.02, p.t - p.speed * effDt * 0.8);
 }
 if (p.t >= 1.0) {
 const prevX = p.tx;
@@ -18231,7 +18462,8 @@ p.tz = prevZ;
 p.t = 0.05;
 p.side = -p.side;
 }
-if (p.returningHome) {
+const arrivedInInter = inBounds(p.tx, p.tz) && (this.roadDegree[idx(p.tx, p.tz)] || 0) >= 3;
+if (p.returningHome && !arrivedInInter) {
 p.homeSearchBlocks = (p.homeSearchBlocks || 0) + 1;
 const bDir = this._findAdjacentBuildingDir(p.tx, p.tz);
 if (bDir || p.homeSearchBlocks >= 4) {
@@ -18248,6 +18480,8 @@ p.nx = next.x;
 p.nz = next.z;
 if (next.reversed) {
 p.side = -p.side;
+} else if (arrivedInInter && next.x - p.tx !== p.tx - prevX && next.z - p.tz !== p.tz - prevZ) {
+p.t = Math.max(p.t, 0.48);
 }
 }
 this._syncPedTransform(p);
@@ -20736,19 +20970,40 @@ this._signalSyncAccum += dt;
 if (this._signalSyncAccum < 0.12) return;
 this._signalSyncAccum = 0;
 const brightRed = 0xff2b3a;
+const brightAmber = 0xfbbf24;
 const dimRed = 0x3b1216;
 const brightGreen = 0x22f57a;
 const dimGreen = 0x103321;
+const hasStateApi = this.traffic && typeof this.traffic.getSignalState === 'function';
+const hasRedApi = this.traffic && typeof this.traffic.isSignalRed === 'function';
 for (let i = 0; i < this._signalEntries.length; i++) {
 const s = this._signalEntries[i];
 const isNS = s.axis === 'NS';
-const isRed = this.traffic && typeof this.traffic.isSignalRed === 'function'
-? this.traffic.isSignalRed(s.tx, s.tz, isNS)
-: false;
-this._tmpColor.setHex(isRed ? brightRed : dimRed);
+let state = 'green';
+if (hasStateApi) {
+const sig = this.traffic.getSignalState(s.tx, s.tz);
+if (sig && sig.active) {
+state = isNS ? sig.nsVeh : sig.ewVeh;
+}
+} else if (hasRedApi) {
+state = this.traffic.isSignalRed(s.tx, s.tz, isNS) ? 'red' : 'green';
+}
+if (state === 'green') {
+this._tmpColor.setHex(dimRed);
 this._signalRedInst.setColorAt(i, this._tmpColor);
-this._tmpColor.setHex(isRed ? dimGreen : brightGreen);
+this._tmpColor.setHex(brightGreen);
 this._signalGreenInst.setColorAt(i, this._tmpColor);
+} else if (state === 'yellow') {
+this._tmpColor.setHex(brightAmber);
+this._signalRedInst.setColorAt(i, this._tmpColor);
+this._tmpColor.setHex(dimGreen);
+this._signalGreenInst.setColorAt(i, this._tmpColor);
+} else {
+this._tmpColor.setHex(brightRed);
+this._signalRedInst.setColorAt(i, this._tmpColor);
+this._tmpColor.setHex(dimGreen);
+this._signalGreenInst.setColorAt(i, this._tmpColor);
+}
 }
 if (this._signalRedInst.instanceColor) this._signalRedInst.instanceColor.needsUpdate = true;
 if (this._signalGreenInst.instanceColor) this._signalGreenInst.instanceColor.needsUpdate = true;
@@ -22689,11 +22944,16 @@ this.showToast(`⚠️ ${res?.reason || '请点击道路上已建成的【🚏 �
 return;
 }
 const tappedTile = this.sim.getTile(hit.tx, hit.tz);
+const tappedDeg = (tappedTile && (tappedTile.roadGround === 1 || tappedTile.roadGround === 2) && !tappedTile.dam)
+? this.sim.getRoadIntersectionDegree(hit.tx, hit.tz)
+: 0;
 const fallbackW = tileToWorld(hit.tx, hit.tz);
 const wx = typeof hit.wx === 'number' ? hit.wx : fallbackW.wx;
 const wz = typeof hit.wz === 'number' ? hit.wz : fallbackW.wz;
-const veh = (!tappedTile?.building && !tappedTile?.dam)
-? this.traffic?.findVehicleNearWorld?.(wx, wz, 0.58)
+const vehPickRadius = tappedDeg >= 3 ? 0.18 : 0.28;
+const alreadyInspectingVeh = Boolean(this.inspectedVehicle);
+const veh = (!tappedTile?.building && !tappedTile?.dam && !(tappedDeg >= 3 && alreadyInspectingVeh))
+? this.traffic?.findVehicleNearWorld?.(wx, wz, vehPickRadius)
 : null;
 if (veh) {
 this.inspectVehicle(veh);
@@ -22863,23 +23123,68 @@ if (hasDest) {
 this.renderer.selectedTile = { x: dx, z: dz };
 this.renderer.previewTiles = [{ x: dx, z: dz }];
 this.renderer.previewColor = [0.22, 0.92, 0.55];
+}
 if (actionsEl && !isLiveRefresh) {
-actionsEl.style.display = 'flex';
-actionsEl.innerHTML = `
+const curNode = veh.path && veh.path[veh.seg];
+const nxtNode = veh.path && veh.path[veh.seg + 1];
+let roadTarget = null;
+let roadTargetDeg = 0;
+for (const cand of [curNode, nxtNode]) {
+if (!cand || cand.layer !== 0 || cand.onRamp) continue;
+const ct = this.sim.getTile(cand.x, cand.z);
+if (!ct || !(ct.roadGround === 1 || ct.roadGround === 2) || ct.dam) continue;
+const d = this.sim.getRoadIntersectionDegree(cand.x, cand.z);
+if (d >= 3) {
+roadTarget = { x: cand.x, z: cand.z };
+roadTargetDeg = d;
+break;
+}
+if (!roadTarget) {
+roadTarget = { x: cand.x, z: cand.z };
+roadTargetDeg = d;
+}
+}
+let btnHtml = '';
+if (roadTarget) {
+const lbl = roadTargetDeg >= 3
+? `🚦 切换下方路口管制 (${roadTarget.x}, ${roadTarget.z})`
+: `🛣️ 管理下方路段 (${roadTarget.x}, ${roadTarget.z})`;
+btnHtml += `
+<button class="btn-primary" id="btn-inspect-under-road" style="width:100%;padding:6px 10px;font-size:11.5px;">
+${lbl}
+</button>
+`;
+}
+if (hasDest) {
+btnHtml += `
 <button class="btn-secondary" id="btn-jump-veh-dest" style="width:100%;padding:6px 10px;font-size:11.5px;">
 📍 镜头追踪至目的地 (${dx}, ${dz})
 </button>
 `;
+}
+if (btnHtml) {
+actionsEl.style.display = 'flex';
+actionsEl.style.flexDirection = 'column';
+actionsEl.style.gap = '5px';
+actionsEl.innerHTML = btnHtml;
+const roadBtn = document.getElementById('btn-inspect-under-road');
+if (roadBtn && roadTarget) {
+roadBtn.addEventListener('click', (ev) => {
+ev.stopPropagation();
+this.inspectTile(roadTarget.x, roadTarget.z);
+});
+}
 const jumpBtn = document.getElementById('btn-jump-veh-dest');
-if (jumpBtn) {
-jumpBtn.addEventListener('click', () => {
+if (jumpBtn && hasDest) {
+jumpBtn.addEventListener('click', (ev) => {
+ev.stopPropagation();
 this.flyToTile(dx, dz);
 });
 }
-}
-} else if (actionsEl && !isLiveRefresh) {
+} else {
 actionsEl.style.display = 'none';
 actionsEl.innerHTML = '';
+}
 }
 hintEl.textContent = activeAcc
 ? '🚓 交警巡逻车抵达现场后将布设警示锥桶并按倒计时勘查清障；完善【🚓 警察总局】覆盖可缩短处置耗时！'
@@ -23040,10 +23345,17 @@ accBadgeHtml = tileAcc.state === 'clearing'
 : `<span class="badge warn">${isJam ? '🚦 严重拥堵' : '🚨 交通事故'} · 等待交警 (${Math.ceil(rem)}s)</span>`);
 accRowHtml = `<div style="grid-column:1/-1;color:#fde68a;">${isJam ? '🚦 <strong>拥堵疏导：</strong>' : '🚨 <strong>交通事故：</strong>'}${tileAcc.cause} · 预计 <strong>${rem.toFixed(1)} 秒</strong>恢复 (${pct}%)</div>`;
 }
+const sigState = (deg >= 3 && curJMode === 'signal' && typeof this.traffic?.getSignalState === 'function')
+? this.traffic.getSignalState(x, z)
+: null;
+const sigLiveHtml = (sigState && sigState.active)
+? `<span class="badge info" id="insp-sig-live">${sigState.phaseLabel} · ${sigState.activeRem.toFixed(1)}s</span>`
+: '';
 badgesEl.innerHTML = `
 <span class="badge info">海拔 ${elev}m</span>
 ${accBadgeHtml}
 ${deg >= 3 ? `<span class="badge ok">${jBadgeLabel}</span>` : ''}
+${sigLiveHtml}
 ${isOneWay ? `<span class="badge info">${dirArrows[t.roadDir] || '➡️ 单行道'}</span>` : ''}
 ${t.banTrucks ? `<span class="badge warn">🚫 禁行重卡</span>` : ''}
 ${t.busStop ? `<span class="badge ok">🚌 智能公交站</span>` : ''}
@@ -23072,41 +23384,91 @@ actionsEl.style.gap = '6px';
 let htmlAct = '';
 if (deg >= 3) {
 const rbtCost = (t.roundaboutPaid || this.sim.difficulty === 'sandbox') ? '已建/免费' : '¥120';
+const curSigPreset = t.signalPreset || 'balanced';
+const curYieldAxis = t.yieldAxis || 'auto';
 htmlAct += `
 <div class="junction-ctrl-lbl">🎛️ 路口交通管制方案（治堵利器）：</div>
 <div class="junction-ctrl-wrap">
-<button class="junction-btn ${curJMode === 'signal' ? 'active' : ''}" data-jmode="signal">
-<span>🚦 标准红绿灯</span>
-<span style="font-size:10px;opacity:0.8;">正交均衡放行</span>
+<button type="button" class="junction-btn ${curJMode === 'signal' ? 'active' : ''}" data-jmode="signal">
+<span>🚦 智能红绿灯</span>
+<span style="font-size:10px;opacity:0.85;">黄灯+全红+行人清场</span>
 </button>
-<button class="junction-btn ${curJMode === 'yield' ? 'active' : ''}" data-jmode="yield">
-<span>🛑 支路让主路(无灯)</span>
-<span style="font-size:10px;opacity:0.8;">大道全速直行</span>
+<button type="button" class="junction-btn ${curJMode === 'yield' ? 'active' : ''}" data-jmode="yield">
+<span>🛑 主路优先(无灯)</span>
+<span style="font-size:10px;opacity:0.85;">主干全速·支路礼让</span>
 </button>
-<button class="junction-btn ${curJMode === 'roundabout' ? 'active' : ''}" data-jmode="roundabout">
+<button type="button" class="junction-btn ${curJMode === 'roundabout' ? 'active' : ''}" data-jmode="roundabout">
 <span>🔄 改建环岛(${rbtCost})</span>
 <span style="font-size:10px;opacity:0.85;color:#fde68a;">消除红绿灯死锁</span>
 </button>
 </div>
 `;
+if (curJMode === 'signal') {
+htmlAct += `
+<div class="junction-ctrl-lbl" style="margin-top:2px;">⏱️ 红绿灯配时方案（行人仅绿灯前段进斑马线）：</div>
+<div class="junction-sub-row">
+<button type="button" class="junction-sub-btn ${curSigPreset === 'balanced' ? 'active' : ''}" data-sigpreset="balanced">⚖️ 均衡 16s</button>
+<button type="button" class="junction-sub-btn ${curSigPreset === 'ns_heavy' ? 'active' : ''}" data-sigpreset="ns_heavy">↕️ 南北加长</button>
+<button type="button" class="junction-sub-btn ${curSigPreset === 'ew_heavy' ? 'active' : ''}" data-sigpreset="ew_heavy">↔️ 东西加长</button>
+</div>
+`;
+} else if (curJMode === 'yield') {
+htmlAct += `
+<div class="junction-ctrl-lbl" style="margin-top:2px;">🛣️ 主路优先方向（可手动指定南北/东西主路）：</div>
+<div class="junction-sub-row">
+<button type="button" class="junction-sub-btn ${curYieldAxis === 'auto' ? 'active' : ''}" data-yieldaxis="auto">✨ 自动大道</button>
+<button type="button" class="junction-sub-btn ${curYieldAxis === 'ns' ? 'active' : ''}" data-yieldaxis="ns">↕️ 南北为主</button>
+<button type="button" class="junction-sub-btn ${curYieldAxis === 'ew' ? 'active' : ''}" data-yieldaxis="ew">↔️ 东西为主</button>
+</div>
+`;
+}
 }
 if (canManageRoad) {
 htmlAct += `<div style="display:flex;gap:6px;flex-wrap:wrap;">`;
 if (isOneWay) {
-htmlAct += `<button class="btn-primary" id="btn-flip-oneway" style="flex:1;font-size:11.5px;padding:6px 8px;">🔁 反转单行方向</button>`;
+htmlAct += `<button type="button" class="btn-primary" id="btn-flip-oneway" style="flex:1;font-size:11.5px;padding:6px 8px;">🔁 反转单行方向</button>`;
 }
 if (t.busStop) {
-htmlAct += `<button class="btn-primary" id="btn-open-bus-lines" style="flex:1;font-size:11.5px;padding:6px 8px;">🚌 公交线路管理</button>`;
+htmlAct += `<button type="button" class="btn-primary" id="btn-open-bus-lines" style="flex:1;font-size:11.5px;padding:6px 8px;">🚌 公交线路管理</button>`;
 }
-htmlAct += `<button class="${t.banTrucks ? 'btn-primary' : 'btn-secondary'}" id="btn-toggle-truck-ban" style="flex:1;font-size:11.5px;padding:6px 8px;">${t.banTrucks ? '✅ 解除重卡禁行' : '🚫 禁行重型货车(降噪)'}</button>`;
+htmlAct += `<button type="button" class="${t.banTrucks ? 'btn-primary' : 'btn-secondary'}" id="btn-toggle-truck-ban" style="flex:1;font-size:11.5px;padding:6px 8px;">${t.banTrucks ? '✅ 解除重卡禁行' : '🚫 禁行重型货车(降噪)'}</button>`;
 htmlAct += `</div>`;
 }
 actionsEl.innerHTML = htmlAct;
 actionsEl.querySelectorAll('[data-jmode]').forEach((jbtn) => {
-jbtn.addEventListener('click', () => {
+jbtn.addEventListener('click', (ev) => {
+ev.stopPropagation();
 const nextMode = jbtn.dataset.jmode;
 const res = this.sim.setJunctionMode(x, z, nextMode);
 if (res.ok) {
+const modeNames = { signal: '🚦 智能红绿灯', yield: '🛑 主路优先(无灯)', roundabout: '🔄 景观环岛' };
+this.showToast(`✅ 路口 (${x},${z}) 已切换为【${modeNames[nextMode] || nextMode}】`, 2000);
+this.refreshHUD();
+this.inspectTile(x, z);
+}
+});
+});
+actionsEl.querySelectorAll('[data-sigpreset]').forEach((pbtn) => {
+pbtn.addEventListener('click', (ev) => {
+ev.stopPropagation();
+const preset = pbtn.dataset.sigpreset;
+const res = this.sim.setJunctionSignalPreset?.(x, z, preset);
+if (res && res.ok) {
+const names = { balanced: '⚖️ 均衡 16s（6.6s+6.6s）', ns_heavy: '↕️ 南北加长 18s（9.2s+6.0s）', ew_heavy: '↔️ 东西加长 18s（6.0s+9.2s）' };
+this.showToast(`⏱️ 路口 (${x},${z}) 配时已设为【${names[preset] || preset}】`, 2200);
+this.refreshHUD();
+this.inspectTile(x, z);
+}
+});
+});
+actionsEl.querySelectorAll('[data-yieldaxis]').forEach((abtn) => {
+abtn.addEventListener('click', (ev) => {
+ev.stopPropagation();
+const axis = abtn.dataset.yieldaxis;
+const res = this.sim.setJunctionYieldAxis?.(x, z, axis);
+if (res && res.ok) {
+const names = { auto: '✨ 自动按道路等级识别', ns: '↕️ 强制南北方向为主路', ew: '↔️ 强制东西方向为主路' };
+this.showToast(`🛣️ 路口 (${x},${z}) 主路方向已设为【${names[axis] || axis}】`, 2200);
 this.refreshHUD();
 this.inspectTile(x, z);
 }
@@ -23203,11 +23565,20 @@ badgesEl.innerHTML = `<span class="badge ok">✅ 该车辆已抵达终点或结�
 }
 } else if (
 this.renderer?.selectedTile &&
-document.getElementById('inspector-card')?.classList.contains('open') &&
-Array.isArray(this.traffic?.accidents) &&
-this.traffic.accidents.some((a) => a.x === this.renderer.selectedTile.x && a.z === this.renderer.selectedTile.z)
+document.getElementById('inspector-card')?.classList.contains('open')
 ) {
 const st = this.renderer.selectedTile;
+const sigLiveEl = document.getElementById('insp-sig-live');
+if (sigLiveEl && typeof this.traffic?.getSignalState === 'function') {
+const sig = this.traffic.getSignalState(st.x, st.z);
+if (sig && sig.active) {
+sigLiveEl.textContent = `${sig.phaseLabel} · ${sig.activeRem.toFixed(1)}s`;
+}
+}
+if (
+Array.isArray(this.traffic?.accidents) &&
+this.traffic.accidents.some((a) => a.x === st.x && a.z === st.z)
+) {
 const tileAcc = this.traffic.accidents.find((a) => a.x === st.x && a.z === st.z);
 if (tileAcc) {
 const rem = tileAcc.state === 'awaiting_police' ? tileAcc.selfClearTimer : tileAcc.remainingTime;
@@ -23218,6 +23589,7 @@ const progFill = document.getElementById('insp-prog-fill');
 if (progWrap && progFill) {
 progWrap.style.display = 'block';
 progFill.style.width = `${pct}%`;
+}
 }
 }
 }
@@ -24574,7 +24946,7 @@ setTimeout(() => {
 ui.showToast(
 restored
 ? `👋 已恢复离线进度【${sim.cityName}】(${sim.getFormattedDate()})`
-: '🏞️ 山河天际线 Pro v8.5 已启动！全尺寸物理防穿模、行人避车、高架零倒车与未竣工封闭全面升级！'
+: '🏞️ 山河天际线 Pro v8.6 已启动！路口一键管控、四相位黄灯/全红清场配时与行人绿灯安全过街全面升级！'
 );
 }, 550);
 let lastTime = performance.now();
